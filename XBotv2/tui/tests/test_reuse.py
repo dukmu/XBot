@@ -22,6 +22,7 @@ from XBotv2.tui.impl.events import (
     ClientNoticeReceived,
     CompactionChanged,
     ConnectionChanged,
+    DisplayHistoryLoaded,
     ErrorFrame,
     HistoryReplaced,
     GoalChangedReceived,
@@ -61,6 +62,7 @@ from XBotv2.tui.impl.timeline import ToolStatus
 # Events that carry a protocol payload, and events the client originates itself.
 # Every member of the union must be in exactly one of these sets.
 SERVER_SHAPED = {
+    DisplayHistoryLoaded,
     SnapshotAdopted,
     SessionConfigured,
     TurnStarted,

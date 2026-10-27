@@ -19,6 +19,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Mapping, Union
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.session.api.records import DisplayRecord
 from XBotv2.agentloop.api.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
@@ -66,6 +68,11 @@ CompactionPayload = Union[
 class ConnectionChanged:
     connection: Connection
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class DisplayHistoryLoaded:
+    payload: HistoryPage[DisplayRecord]
 
 
 @dataclass(frozen=True)
@@ -313,6 +320,7 @@ class JobUpdated:
 
 
 UiEvent = Union[
+    DisplayHistoryLoaded,
     ConnectionChanged,
     SnapshotAdopted,
     SessionConfigured,

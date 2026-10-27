@@ -73,6 +73,8 @@ Use `kind=main&limit=1` to locate a session's main thread, or
 | Method | Path | Operation | Result |
 |---|---|---|---|
 | GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `HistoryPage[ConversationRecord]` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/display-messages` | `display_messages_endpoint` | cursor-paginated `HistoryPage[DisplayRecord]` previews |
+| GET | `/sessions/{session_id}/threads/{thread_id}/display-messages/{message_id}/body` | `display_body_endpoint` | one bounded display field page |
 | GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `TrajectoryRead` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
 | POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted` command submission |
@@ -92,10 +94,18 @@ conversation-message identity, so clients can merge live and paged records
 without inventing a second identity. Trajectory positions remain a separate
 identity for append-log entries and are not substituted for message IDs.
 
+`display-messages` is a separate presentation contract: each field carries a
+bounded preview and full length, not a complete `ConversationRecord`. Its body
+endpoint accepts `field`, `offset`, and `limit` and returns one page. Message
+fields use character offsets; `artifact:<id>` fields for referenced text tool
+artifacts use byte offsets and UTF-8 replacement decoding. Original records and
+artifact downloads remain available through their full-content endpoints.
+
 A client that does not want the whole conversation asks for a bounded window:
 
 - `POST /sessions` (`open_session`) and `POST .../threads` (`open_thread`) accept
-  `history_limit` (1-500). The response's `history` is a `HistoryPage` with the
+  `history_limit` (1-500) and `include_history` (default `true`). Set
+  `include_history=false` to omit the history body from the attach snapshot. The response's `history` is a `HistoryPage` with the
   newest that many records and `older_cursor` naming the page before them; the
   cursor is `null` when the window already holds the beginning.
 - `GET .../messages?limit=N` reads the newest `N` records. `cursor` accepts

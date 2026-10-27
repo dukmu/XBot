@@ -197,10 +197,13 @@ class TranscriptView:
         limit: int = 100,
         assistant_label: str = "Assistant",
         visibility: BlockVisibility | None = None,
+        body_reader=None,
     ) -> None:
         if limit < 1:
             raise ValueError("transcript window limit must be positive")
         self.container = container
+        self.body_reader = body_reader
+        self._identity = None
         self.limit = limit
         self.assistant_label = assistant_label
         self.visibility = visibility or BlockVisibility()
@@ -275,6 +278,16 @@ class TranscriptView:
     async def _render_locked(
         self, state: SessionState, *, thinking: bool | None = None
     ) -> bool:
+        identity = (state.session_id, state.thread_id)
+        if self._identity != identity:
+            for widget in self._widgets.values():
+                if widget.parent is not None:
+                    await widget.remove()
+            self._widgets.clear()
+            self._rendered.clear()
+            self._mounted = ()
+            self._anchor = None
+            self._identity = identity
         ids = state.timeline.ids()
         if self._anchor is not None and self._anchor not in ids:
             # The anchored entry left the timeline (history rewritten, or the
@@ -359,6 +372,7 @@ class TranscriptView:
             widget = entry_widget(
                 entry, body_renderable=body,
                 assistant_label=self.assistant_label, visibility=self.visibility,
+                body_reader=(lambda entry_id, field, offset, identity=self._identity: self.body_reader(*identity, entry_id, field, offset)) if self.body_reader else None,
             )
             self._widgets[entry_id] = widget
             self._rendered[entry_id] = entry
@@ -436,6 +450,17 @@ class TranscriptView:
             and current.status not in {"pending", "running"}
             and previous.call_id == current.call_id
         )
+        if assistant_transition and (
+            (current.body_ref and current.body_ref.length > len(current.body_ref.preview))
+            or (current.reasoning_ref and current.reasoning_ref.length > len(current.reasoning_ref.preview))
+        ):
+            return plan
+        if tool_transition and (
+            current.artifacts
+            or (current.args_ref and current.args_ref.length > len(current.args_ref.preview))
+            or (current.result_ref and current.result_ref.length > len(current.result_ref.preview))
+        ):
+            return plan
         if widget is None or not (assistant_transition or tool_transition):
             return plan
 

@@ -13,6 +13,7 @@ class OpenSessionRequest(WireModel):
     mode: SessionMode = "new"
     agent: str | None = None
     history_limit: int | None = Field(default=None, ge=1, le=500)
+    include_history: bool = True
 
 
 class ThreadListResponse(WireModel):
@@ -48,6 +49,7 @@ class OpenThreadRequest(WireModel):
     mode: SessionMode = "new"
     agent: str | None = None
     history_limit: int | None = Field(default=None, ge=1, le=500)
+    include_history: bool = True
 
 
 class UndoRequest(WireModel):

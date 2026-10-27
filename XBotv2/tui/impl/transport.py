@@ -43,9 +43,10 @@ from XBotv2.agentloop.api.models import AttachmentInput, MediaInput
 from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
 from XBotv2.session.api.protocol import OpenSessionResponse, SessionListResponse, ThreadListResponse
 from XBotv2.session.api.protocol import InterruptResponse
-from XBotv2.session.api.records import ConversationRecord
+from XBotv2.session.api.records import ConversationRecord, DisplayRecord, DisplayBodyPage
 from XBotv2.tui.impl.events import (
     ConnectionChanged,
+    DisplayHistoryLoaded,
     ErrorFrame,
     InterruptAsked,
     InterruptSettled,
@@ -91,6 +92,7 @@ class SessionBackend(Protocol):
         mode: SessionMode,
         agent: str | None,
         history_limit: int | None,
+        include_history: bool,
     ) -> OpenSessionResponse: ...
 
     async def open_thread(
@@ -103,6 +105,7 @@ class SessionBackend(Protocol):
         mode: SessionMode,
         agent: str | None,
         history_limit: int | None,
+        include_history: bool,
     ) -> OpenSessionResponse: ...
 
     async def get_session_policy(self, session_id: str) -> SessionPolicyResponse: ...
@@ -147,6 +150,9 @@ class SessionBackend(Protocol):
         before_id: str | None = None,
         after_id: str | None = None,
     ) -> HistoryPage[ConversationRecord]: ...
+
+    async def list_display_messages(self, session_id: str, thread_id: str, *, cursor: Cursor | None = None, limit: int = 50, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[DisplayRecord]: ...
+    async def read_display_body(self, session_id: str, thread_id: str, message_id: str, *, field: str, offset: int = 0, limit: int = 4096) -> DisplayBodyPage: ...
 
     async def list_providers(self) -> ProviderCatalog: ...
 
@@ -312,8 +318,7 @@ class TransportSession:
             self._emit(ErrorFrame(payload=LoopError(code="connect_failed", message=str(exc))))
             self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
             raise
-        self._attached_to(opened)
-        self._adopt(opened)
+        await self._adopt(opened)
         # The descriptor carries no turn answer, so the thread read is what
         # settles whether a turn is already running on attach.
         await self.watchdog_once()
@@ -331,8 +336,12 @@ class TransportSession:
             session_id=self._session_id, thread_id=self._thread_id
         )
 
-    def _adopt(self, opened: OpenSessionResponse) -> None:
+    async def _adopt(self, opened: OpenSessionResponse) -> None:
+        key = opened.data.key
+        page = await self._backend.list_display_messages(key.session_id, key.thread_id, limit=self._config.history_window)
+        self._attached_to(opened)
         self._emit(SnapshotAdopted(opened))
+        self._emit(DisplayHistoryLoaded(page))
         for event in replay_pending_interactions(opened.data.pending_interactions):
             self._emit(event)
         self._cursor = opened.data.event_cursor
@@ -354,10 +363,9 @@ class TransportSession:
         opened = await self._open(
             mode=mode, session_id=session_id or None, thread_id=thread_id,
         )
-        self._attached_to(opened)
         self._cursor_recoveries = 0
         self._baseline_rebuilds = 0
-        self._adopt(opened)
+        await self._adopt(opened)
         self._restart.set()
         await self.watchdog_once()
         return opened
@@ -590,7 +598,7 @@ class TransportSession:
         opened = await self._open(mode="resume", session_id=self._session_id or None)
         self._baseline_rebuilds += 1
         self._cursor_recoveries = 0
-        self._adopt(opened)
+        await self._adopt(opened)
         return True
 
     async def _open(
@@ -619,6 +627,7 @@ class TransportSession:
                     mode=mode,
                     agent=None,
                     history_limit=self._config.history_window,
+                    include_history=False,
                 )
         return await self._backend.open_session(
             session_id=session_id,
@@ -627,10 +636,11 @@ class TransportSession:
             mode=mode,
             agent=self._config.agent or None,
             history_limit=self._config.history_window,
+            include_history=False,
         )
 
-    async def history_page(self, *, cursor: Cursor | None = None, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[ConversationRecord]:
-        return await self._backend.list_messages(
+    async def history_page(self, *, cursor: Cursor | None = None, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[DisplayRecord]:
+        return await self._backend.list_display_messages(
             self._session_id, self._thread_id, cursor=cursor,
             before_id=before_id, after_id=after_id, limit=min(self._config.history_window, self._config.history_retention),
         )

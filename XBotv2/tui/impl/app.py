@@ -175,6 +175,8 @@ class TuiApp(App[None]):
         Binding("ctrl+t", "agents", "Agent threads"),
         Binding("f2", "settings", "Settings", priority=True),
         Binding("ctrl+o", "expand_blocks", "Expand folded content", priority=True),
+        Binding("ctrl+right", "body_next", "Next body page", show=False, priority=True),
+        Binding("ctrl+left", "body_previous", "Previous body page", show=False, priority=True),
     ]
 
     def __init__(
@@ -244,6 +246,7 @@ class TuiApp(App[None]):
                 self.query_one("#transcript", TranscriptScroll),
                 limit=self.transcript_limit,
                 assistant_label=self.assistant_label,
+                body_reader=lambda session, thread, message, field, offset: self._backend.read_display_body(session, thread, message, field=field, offset=offset),
             ),
             status=self.query_one("#status", StatusBar),
             jobs=self.query_one("#jobs", JobPanel),
@@ -1235,6 +1238,22 @@ class TuiApp(App[None]):
     async def action_live(self) -> None:
         if self.controller is not None:
             await self.controller.go_to_tail()
+
+    def _focused_body_block(self):
+        from XBotv2.tui.impl.view.blocks import LazyBodyBlock
+        if isinstance(self.focused, LazyBodyBlock) and self.focused.expanded:
+            return self.focused
+        return next((block for block in reversed(list(self.query(LazyBodyBlock))) if block.expanded), None)
+
+    def action_body_next(self) -> None:
+        block = self._focused_body_block()
+        if block is not None:
+            block.action_next_page()
+
+    def action_body_previous(self) -> None:
+        block = self._focused_body_block()
+        if block is not None:
+            block.action_previous_page()
 
     async def action_expand_blocks(self) -> None:
         """Fold content open (or closed again) without leaving the composer.

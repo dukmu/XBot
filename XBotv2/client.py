@@ -26,7 +26,7 @@ from XBotv2.protocol.api.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.api.version import PROTOCOL_VERSION
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
-from XBotv2.session.api.records import ConversationRecord
+from XBotv2.session.api.records import ConversationRecord, DisplayRecord, DisplayBodyPage
 
 ResponseModel = TypeVar("ResponseModel")
 
@@ -175,6 +175,7 @@ class XBotClient:
         mode: SessionMode = "new",
         agent: str | None = None,
         history_limit: int | None = None,
+        include_history: bool = True,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -187,6 +188,7 @@ class XBotClient:
                 mode=mode,
                 agent=agent,
                 history_limit=history_limit,
+                include_history=include_history,
             ),
         )
 
@@ -293,6 +295,7 @@ class XBotClient:
         mode: SessionMode = "new",
         agent: str | None = None,
         history_limit: int | None = None,
+        include_history: bool = True,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -305,6 +308,7 @@ class XBotClient:
                 mode=mode,
                 agent=agent,
                 history_limit=history_limit,
+                include_history=include_history,
             ),
         )
 
@@ -415,6 +419,13 @@ class XBotClient:
                 if value is not None
             },
         )
+
+    async def list_display_messages(self, session_id: str, thread_id: str, *, cursor: Cursor | None = None, limit: int = 50, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[DisplayRecord]:
+        params = {key: value for key, value in {"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id}.items() if value is not None}
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/display-messages", HistoryPage[DisplayRecord], params=params)
+
+    async def read_display_body(self, session_id: str, thread_id: str, message_id: str, *, field: str, offset: int = 0, limit: int = 4096) -> DisplayBodyPage:
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/display-messages/{_segment(message_id)}/body", DisplayBodyPage, params={"field": field, "offset": offset, "limit": limit})
 
     async def list_trajectory(
         self,

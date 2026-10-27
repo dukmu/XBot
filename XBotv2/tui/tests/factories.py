@@ -521,6 +521,31 @@ class ScriptedBackend:
             return self.pages[0]
         return HistoryPage(items=(), older_cursor=None)
 
+    async def list_display_messages(self, session_id: str, thread_id: str, *, cursor=None, limit=50, before_id=None, after_id=None):
+        from XBotv2.session.api.records import DisplayBody, DisplayRecord, AssistantRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord, CompactionSummaryRecord
+        import json
+        if cursor is not None or before_id is not None or after_id is not None:
+            page = await self.list_messages(session_id, thread_id, cursor=cursor, limit=limit, before_id=before_id, after_id=after_id)
+        else:
+            page = self.session.data.history
+        records = []
+        for item in page.items:
+            def preview(text):
+                return DisplayBody(preview=text[:512], length=len(text))
+            if isinstance(item, HumanInputRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content)}, media=item.media, artifacts=item.artifacts))
+            elif isinstance(item, AssistantRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content), "reasoning": preview(item.reasoning)}))
+            elif isinstance(item, RuntimeNoticeRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content)}, source=item.source, event=item.event, media=item.media, artifacts=item.artifacts))
+            elif isinstance(item, CompactionSummaryRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"summary": preview(item.summary)}))
+            elif isinstance(item, ToolRecord):
+                outcome = item.outcome
+                text = "".join(part.text for part in outcome.output.parts if hasattr(part, "text")) if hasattr(outcome, "output") else ""
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"args": preview(json.dumps({})), "result": preview(text)}, tool_name=item.call.name, call_id=item.call.id, outcome=outcome.kind, artifacts=outcome.output.artifacts if hasattr(outcome, "output") else ()))
+        return HistoryPage(tuple(records), page.older_cursor, page.newer_cursor)
+
     # --- reads --------------------------------------------------------
     async def list_threads(self, session_id: str, *, limit: int = 100, cursor: str | None = None, parent_thread_id: str | None = None, kind: str | None = None) -> Any:
         self.thread_list_requests.append({"session_id": session_id, "limit": limit, "cursor": cursor, "parent_thread_id": parent_thread_id, "kind": kind})

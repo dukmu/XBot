@@ -12,11 +12,14 @@ from XBotv2.session.api.contracts import OpenedThread, THREAD_EVENTS
 from XBotv2.session.api.records import conversation_replay
 
 
-async def thread_snapshot(scope: Context) -> OpenedThread:
+async def thread_snapshot(scope: Context, *, include_history: bool = True) -> OpenedThread:
     cursor = scope.require(THREAD_EVENTS).sequence
     state = scope.require(LOOP_STATE)
-    page = await scope.require(ARCHIVE).message_page(
-        state.session.session_id, state.session.thread_id, limit=160
+    page = (
+        await scope.require(ARCHIVE).message_page(
+            state.session.session_id, state.session.thread_id, limit=160
+        )
+        if include_history else HistoryPage((), None)
     )
     return OpenedThread(
         key=state.session.key,

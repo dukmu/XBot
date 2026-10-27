@@ -36,7 +36,7 @@ from XBotv2.tui.impl.state import (
     HistoryKnown,
     SessionState,
     reduce,
-    _rebuild_from_items,
+    _rebuild_display_items,
     _older_from_cursor,
 )
 from XBotv2.tui.impl.status import ServerTurn, Status, derive
@@ -450,7 +450,7 @@ class TuiController:
         self._history_before_id = kept[0].id if truncated and not newer else None
         self._history_after_id = kept[-1].id if truncated and newer else None
         view = replace(self.state, viewing_history=True)
-        _rebuild_from_items(view, tuple(kept))
+        _rebuild_display_items(view, tuple(kept))
         view.older = _older_from_cursor(page.older_cursor)
         self._history_state = view
         self._history_newer = page.newer_cursor

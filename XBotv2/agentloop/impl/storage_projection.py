@@ -5,8 +5,9 @@ from pydantic import TypeAdapter
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.messages import ToolMessage
 from XBotv2.core.api.parts import MediaPart
-from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
+from XBotv2.core.api.tools import ToolCall, ToolSucceeded, ToolFailed
 from XBotv2.core.api.messages import (
+    AssistantMessage,
     ConversationMessage,
     HumanInputMessage,
     RuntimeNoticeMessage,
@@ -57,6 +58,16 @@ def _add_message(connection, thread, message_id, record_id, ordinal=0):
         connection.execute(
             f"INSERT INTO {table} VALUES(?,?,?)",
             (thread, _order(connection, table, thread), message_id),
+        )
+
+
+
+def _index_tool_calls(connection, thread, message):
+    if isinstance(message, AssistantMessage):
+        _many(
+            connection,
+            "INSERT INTO tool_call_owners VALUES(?,?,?)",
+            ((thread, str(part.id), str(message.id)) for part in message.parts if isinstance(part, ToolCall)),
         )
 
 
@@ -287,6 +298,7 @@ def project(connection, thread, records):
         elif kind == "message":
             message = MESSAGE.validate_python(data["message"])
             _message_artifacts(connection, thread, message)
+            _index_tool_calls(connection, thread, message)
             _add_message(connection, thread, message.id, identity)
             if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
                 connection.execute(
@@ -299,6 +311,7 @@ def project(connection, thread, records):
             ]
             for ordinal, message in enumerate(replacements):
                 _message_artifacts(connection, thread, message)
+                _index_tool_calls(connection, thread, message)
                 connection.execute(
                     "INSERT INTO message_refs VALUES(?,?,?,?)",
                     (thread, message.id, identity, ordinal),

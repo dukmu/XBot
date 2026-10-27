@@ -37,7 +37,7 @@ from textual.strip import Strip
 from textual.widget import Widget
 from textual.widgets import Static
 
-from XBotv2.tui.impl.view.blocks import BLOCK_PREVIEW_LINES, ClampedBlock
+from XBotv2.tui.impl.view.blocks import BLOCK_PREVIEW_LINES, ClampedBlock, LazyBodyBlock
 from XBotv2.tui.impl.timeline import (
     AssistantEntry,
     Delivery,
@@ -217,6 +217,8 @@ def entry_header(entry: Entry, *, assistant_label: str = "Assistant") -> str:
 
 def entry_body(entry: Entry, *, visibility: BlockVisibility | None = None) -> str:
     """The entry's body text, with structured payloads rendered readably."""
+    if isinstance(entry, AssistantEntry) and entry.stream_truncated:
+        return entry.content + "\n[Live preview; full text available after completion]"
     if isinstance(entry, (UserEntry, AssistantEntry)):
         return entry.content
     if isinstance(entry, ToolEntry):
@@ -377,6 +379,7 @@ def entry_widget(
     body_renderable: Text | Markdown | None,
     assistant_label: str = "Assistant",
     visibility: BlockVisibility | None = None,
+    body_reader=None,
 ) -> EntryWidget:
     """Build the widget for one entry.
 
@@ -386,16 +389,27 @@ def entry_widget(
     """
     children: list[Widget] = []
     if isinstance(entry, ToolEntry):
-        children.extend(_tool_blocks(entry, visibility=visibility))
+        children.extend(_tool_blocks(entry, visibility=visibility, body_reader=body_reader))
+        if body_reader and (visibility is None or visibility.details):
+            for artifact in entry.artifacts:
+                if artifact.media_type.lower().startswith("text/"):
+                    children.append(LazyBodyBlock("", length=artifact.size, reader=lambda offset, identity=artifact.id: body_reader(entry.id, f"artifact:{identity}", offset), label=artifact.name or artifact.id, classes="tool-artifact", always_show_label=True, preview_lines=0, inline_label=True, unit="bytes"))
         return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
     if isinstance(entry, NoticeEntry) and entry.notice_kind == "context":
-        children.append(_body_block(entry, entry.detail, renderable=body_renderable))
+        if entry.body_ref and entry.body_ref.length > len(entry.body_ref.preview) and body_reader:
+            children.append(LazyBodyBlock(entry.body_ref.preview, length=entry.body_ref.length, reader=lambda offset: body_reader(entry.id, entry.body_field, offset), label=entry.text, classes="body"))
+        else:
+            children.append(_body_block(entry, entry.detail, renderable=body_renderable))
         return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
     if not isinstance(entry, (UserEntry, AssistantEntry)):
         children.append(Static(_header(entry, assistant_label), classes="meta"))
     reasoning = entry_reasoning(entry, visibility=visibility)
     if reasoning is not None:
-        children.append(ClampedBlock(
+        reasoning_ref = entry.reasoning_ref if isinstance(entry, AssistantEntry) else None
+        if reasoning_ref and reasoning_ref.length > len(reasoning_ref.preview) and body_reader:
+            children.append(LazyBodyBlock(reasoning_ref.preview, length=reasoning_ref.length, reader=lambda offset: body_reader(entry.id, "reasoning", offset), label="Think", classes="reasoning", always_show_label=True))
+        else:
+            children.append(ClampedBlock(
             str(reasoning.plain),
             label="Think",
             classes="reasoning",
@@ -406,7 +420,11 @@ def entry_widget(
         ))
     body = entry_body(entry, visibility=visibility)
     if body:
-        children.append(_body_block(entry, body, renderable=body_renderable))
+        body_ref = getattr(entry, "body_ref", None)
+        if body_ref and body_ref.length > len(body_ref.preview) and body_reader:
+            children.append(LazyBodyBlock(body_ref.preview, length=body_ref.length, reader=lambda offset: body_reader(entry.id, getattr(entry, "body_field", "content"), offset), label=block_label(entry), classes="body"))
+        else:
+            children.append(_body_block(entry, body, renderable=body_renderable))
     return EntryWidget(*children, name=entry.id, classes=entry_classes(entry))
 
 
@@ -608,6 +626,8 @@ def _tool_call_label(entry: ToolEntry) -> str:
     arguments = _tool_arguments(entry.args)
     if arguments:
         call = f"{call}({arguments})"
+    elif entry.args_ref is not None and entry.args_ref.length > 2:
+        call = f"{call}(…)"
     elif entry.status in _UNFINISHED_TOOL_STATUSES:
         call = f"{call}(*)"
     return f"● {call}"
@@ -631,30 +651,19 @@ def _tool_arguments(args: Mapping[str, Any]) -> str:
 
 
 def _tool_blocks(
-    entry: ToolEntry, *, visibility: BlockVisibility | None
+    entry: ToolEntry, *, visibility: BlockVisibility | None, body_reader=None
 ) -> tuple[ClampedBlock, ClampedBlock]:
     details = visibility is None or visibility.details
     args = format_payload(entry.args) if details and entry.args else ""
     result = format_payload(entry.result) if details and entry.result not in ("", None) else ""
+    def block(ref, text, field, label, classes):
+        if details and ref and ref.length > len(ref.preview) and body_reader and entry.status not in _UNFINISHED_TOOL_STATUSES:
+            return LazyBodyBlock(ref.preview, length=ref.length, reader=lambda offset: body_reader(entry.id, field, offset), label=label, classes=classes, always_show_label=True, preview_lines=0, inline_label=True)
+        return ClampedBlock(text, label=label, classes=classes, always_show_label=True, always_collapsible=bool(text), preview_lines=0, inline_label=True)
+
     return (
-        ClampedBlock(
-            args,
-            label=_tool_call_label(entry),
-            classes="tool-call",
-            always_show_label=True,
-            always_collapsible=bool(args),
-            preview_lines=0,
-            inline_label=True,
-        ),
-        ClampedBlock(
-            result,
-            label=_tool_outcome_label(entry),
-            classes="tool-result",
-            always_show_label=True,
-            always_collapsible=bool(result),
-            preview_lines=0,
-            inline_label=True,
-        ),
+        block(entry.args_ref, entry.args_ref.preview if entry.args_ref else args, "args", _tool_call_label(entry), "tool-call"),
+        block(entry.result_ref, result, "result", _tool_outcome_label(entry), "tool-result"),
     )
 
 
@@ -666,7 +675,7 @@ async def _sync_tool_blocks(
 ) -> None:
     details = visibility is None or visibility.details
     texts = (
-        format_payload(entry.args) if details and entry.args else "",
+        entry.args_ref.preview if details and entry.args_ref else format_payload(entry.args) if details and entry.args else "",
         format_payload(entry.result)
         if details and entry.result not in ("", None)
         else "",

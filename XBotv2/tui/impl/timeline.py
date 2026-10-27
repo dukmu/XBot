@@ -20,6 +20,8 @@ from itertools import islice
 from typing import Any, ClassVar, Iterator, Literal, Mapping
 
 from pydantic import JsonValue
+from XBotv2.session.api.records import DisplayBody
+from XBotv2.core.api.artifacts import ArtifactRef
 
 
 class EntryKind(Enum):
@@ -77,6 +79,7 @@ class Entry:
 class UserEntry(Entry):
     content: str = ""
     delivery: Delivery = Delivery.PENDING
+    body_ref: DisplayBody | None = None
 
     kind: ClassVar[EntryKind] = EntryKind.USER
 
@@ -86,6 +89,9 @@ class AssistantEntry(Entry):
     content: str = ""
     reasoning: str = ""
     streaming: bool = False
+    stream_truncated: bool = False
+    body_ref: DisplayBody | None = None
+    reasoning_ref: DisplayBody | None = None
 
     kind: ClassVar[EntryKind] = EntryKind.ASSISTANT
 
@@ -102,6 +108,9 @@ class ToolEntry(Entry):
     result: JsonValue = ""
     started_at: float = 0.0
     finished_at: float = 0.0
+    args_ref: DisplayBody | None = None
+    result_ref: DisplayBody | None = None
+    artifacts: tuple[ArtifactRef, ...] = ()
 
     kind: ClassVar[EntryKind] = EntryKind.TOOL
 
@@ -112,6 +121,8 @@ class NoticeEntry(Entry):
     text: str = ""
     detail: str = ""
     level: str = "info"
+    body_ref: DisplayBody | None = None
+    body_field: str = "content"
 
     kind: ClassVar[EntryKind] = EntryKind.NOTICE
 

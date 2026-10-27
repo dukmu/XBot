@@ -204,7 +204,7 @@ def build_session_router(
                     no_plugins=options.no_plugins,
                 )
             )
-            opened = await thread_snapshot(opened_scope)
+            opened = await thread_snapshot(opened_scope, include_history=False)
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
@@ -227,11 +227,10 @@ def build_session_router(
                 "".join(format_exception_only(exc)).strip(),
                 status=500,
             ) from exc
-        page = await _requested_history_page(
-            archive,
-            opened.key.session_id,
-            opened.key.thread_id,
-            payload.history_limit,
+        page = (
+            await _requested_history_page(
+                archive, opened.key.session_id, opened.key.thread_id, payload.history_limit,
+            ) if payload.include_history else HistoryPage((), None)
         )
         return _open_session_response(opened, page)
 
@@ -326,16 +325,15 @@ def build_session_router(
                     no_plugins=options.no_plugins,
                 )
             )
-            opened = await thread_snapshot(opened_scope)
+            opened = await thread_snapshot(opened_scope, include_history=False)
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
-        page = await _requested_history_page(
-            archive,
-            opened.key.session_id,
-            opened.key.thread_id,
-            payload.history_limit,
+        page = (
+            await _requested_history_page(
+                archive, opened.key.session_id, opened.key.thread_id, payload.history_limit,
+            ) if payload.include_history else HistoryPage((), None)
         )
         return _open_session_response(opened, page)
 

@@ -164,6 +164,84 @@ class ArchiveService:
             except HistoryCursorInvalid as error:
                 raise OperationError("invalid_cursor", str(error)) from error
 
+    async def _display_args(self, store, message):
+        from XBotv2.core.api.messages import AssistantMessage
+        from XBotv2.core.api.tools import ToolCall
+
+        rows = await store.sql(lambda sql: sql.execute(
+            "SELECT owners.assistant_id FROM tool_call_owners owners "
+            "JOIN transcript assistant ON assistant.thread_id=owners.thread_id "
+            "AND assistant.record_id=owners.assistant_id "
+            "JOIN transcript result ON result.thread_id=owners.thread_id "
+            "AND result.record_id=? WHERE owners.thread_id=? AND owners.call_id=? "
+            "AND assistant.order_key<result.order_key ORDER BY assistant.order_key DESC LIMIT 1",
+            (str(message.id), store.thread_id, str(message.call.id)),
+        ))
+        if not rows:
+            raise OperationError("tool_call_not_found", f"No assistant call for {message.call.id}")
+        assistant = await store.message(rows[0][0])
+        if isinstance(assistant, AssistantMessage):
+            for part in assistant.parts:
+                if isinstance(part, ToolCall) and part.id == message.call.id:
+                    return part.args
+        raise OperationError("tool_call_not_found", f"No assistant call for {message.call.id}")
+
+    async def display_page(self, session_id, thread_id, *, cursor=None, limit=160, before_id=None, after_id=None):
+        from XBotv2.agentloop.impl.display import display_record
+        from XBotv2.core.api.history import HistoryPage
+        from XBotv2.core.api.messages import ToolMessage
+
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            try:
+                async with store.operation():
+                    page = await store.history.page_refs("transcript", limit or 160, cursor, before_id, after_id)
+                    records = []
+                    for identity in page.items:
+                        message = await store.message(identity)
+                        args = await self._display_args(store, message) if isinstance(message, ToolMessage) else None
+                        records.append(display_record(message, args))
+                    return HistoryPage(tuple(records), page.older_cursor, page.newer_cursor)
+            except HistoryCursorInvalid as error:
+                raise OperationError("invalid_cursor", str(error)) from error
+
+    async def display_body(self, session_id, thread_id, message_id, *, field, offset=0, limit=4096):
+        import codecs
+        from XBotv2.agentloop.impl.display import body_fields
+        from XBotv2.core.api.messages import ToolMessage
+        from XBotv2.core.api.tools import ToolSucceeded, ToolFailed
+        from XBotv2.session.api.records import DisplayBodyPage
+
+        async with self.backend.use(session_id):
+            store = self._store(session_id, thread_id)
+            async with store.operation():
+                message = await store.message(message_id)
+                if field.startswith("artifact:"):
+                    identity = field[len("artifact:"):]
+                    refs = message.outcome.output.artifacts if isinstance(message, ToolMessage) and isinstance(message.outcome, (ToolSucceeded, ToolFailed)) else ()
+                    ref = next((item for item in refs if item.id == identity and item.media_type.lower().startswith("text/")), None)
+                    if ref is None:
+                        raise OperationError("field_not_found", "Text artifact is not referenced by this tool result")
+                    if offset > ref.size:
+                        raise OperationError("invalid_offset", "Body offset exceeds field length")
+                    prefix = min(offset, 3)
+                    artifact = await self.artifact(session_id, thread_id, identity, offset=offset-prefix, limit=prefix+limit)
+                    data = b"".join([chunk async for chunk in artifact.content])
+                    decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+                    decoder.decode(data[:prefix], final=False)
+                    content = decoder.decode(data[prefix:], final=offset + len(data) - prefix >= ref.size)
+                    end = min(offset + limit, ref.size)
+                    return DisplayBodyPage(content=content, offset=offset, total=ref.size, next_offset=end if end < ref.size else None)
+                args = await self._display_args(store, message) if isinstance(message, ToolMessage) and field == "args" else None
+                fields = body_fields(message, args)
+                if field not in fields:
+                    raise OperationError("field_not_found", f"Unknown field {field!r}")
+                text = fields[field]
+                if offset > len(text):
+                    raise OperationError("invalid_offset", "Body offset exceeds field length")
+                end = min(offset + limit, len(text))
+                return DisplayBodyPage(content=text[offset:end], offset=offset, total=len(text), next_offset=end if end < len(text) else None)
+
     async def trajectory_page(
         self, session_id, thread_id, *, cursor=None, limit=160, before=None
     ):
@@ -195,7 +273,7 @@ class ArchiveService:
                 if claim is not None:
                     claim.release()
 
-    async def artifact(self, session_id, thread_id, artifact_id):
+    async def artifact(self, session_id, thread_id, artifact_id, *, offset=0, limit=None):
         async with self.backend.use(session_id):
             store = self._store(session_id, thread_id)
             metadata = None
@@ -213,7 +291,8 @@ class ArchiveService:
             if not await artifacts.exists(ref):
                 raise OperationError("artifact_not_found", "Referenced artifact is missing")
             return ArtifactPayload(
-                artifacts.read_chunks(ref), ref.media_type, ref.name, ref.size,
+                artifacts.read_chunks(ref, offset=offset, limit=limit), ref.media_type, ref.name,
+                min(ref.size - min(offset, ref.size), limit) if limit is not None else ref.size - min(offset, ref.size),
             )
 
     async def export_rollout(self, session_id, thread_id, destination):

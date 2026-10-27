@@ -54,6 +54,8 @@ class ConversationArchive(Protocol):
         before_id: str | None = None,
         after_id: str | None = None,
     ) -> HistoryPage[ConversationMessage]: ...
+    async def display_page(self, session_id: str, thread_id: str, *, cursor: Cursor | None = None, limit: int = 160, before_id: str | None = None, after_id: str | None = None): ...
+    async def display_body(self, session_id: str, thread_id: str, message_id: str, *, field: str, offset: int = 0, limit: int = 4096): ...
     async def trajectory_page(
         self,
         session_id: str,
@@ -68,7 +70,7 @@ class ConversationArchive(Protocol):
         through_seq: int | None = None, record_ids: list[str] | None = None,
     ) -> ArtifactRef: ...
     async def artifact(
-        self, session_id: str, thread_id: str, artifact_id: str
+        self, session_id: str, thread_id: str, artifact_id: str, *, offset: int = 0, limit: int | None = None
     ) -> ArtifactPayload: ...
     async def export_rollout(
         self, session_id: str, thread_id: str, destination: Path

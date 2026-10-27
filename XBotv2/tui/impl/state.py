@@ -22,6 +22,7 @@ Invariants this module is responsible for:
 from __future__ import annotations
 
 import time
+import json
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
@@ -41,6 +42,7 @@ from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.agentloop.api.models import PendingInputData
 from XBotv2.session.api.records import (
     AssistantRecord,
+    DisplayBody,
     CompactionSummaryRecord,
     ConversationRecord,
     HumanInputRecord,
@@ -52,6 +54,7 @@ from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSuc
 from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
     AssistantCompleted,
+    DisplayHistoryLoaded,
     AssistantDelta,
     ClientNoticeReceived,
     CompactionChanged,
@@ -233,6 +236,10 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 
     elif isinstance(event, SnapshotAdopted):
         _adopt_snapshot(state, event.snapshot)
+
+    elif isinstance(event, DisplayHistoryLoaded):
+        _rebuild_display_items(state, event.payload.items)
+        state.older = _older_from_cursor(event.payload.older_cursor)
 
     elif isinstance(event, SessionConfigured):
         state.runtime_selection = event.payload.runtime_selection
@@ -482,7 +489,7 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             # to "sending": the echo can arrive before the local bookkeeping.
             _append(state, UserEntry(
                 id=event.input_id,
-                content=event.content,
+                content=event.content[:512],
                 delivery=Delivery.PENDING,
             ))
         state.submission_in_flight = True
@@ -583,9 +590,10 @@ def _append_delta(state: SessionState, content: str, reasoning: str) -> None:
         existing = AssistantEntry(id=entry_id)
     _append(state, replace(
         existing,
-        content=existing.content + content,
-        reasoning=existing.reasoning + reasoning,
+        content=(existing.content + content[:512])[:512],
+        reasoning=(existing.reasoning + reasoning[:512])[:512],
         streaming=True,
+        stream_truncated=existing.stream_truncated or len(existing.content) + len(content) > 512 or len(existing.reasoning) + len(reasoning) > 512,
     ))
 
 
@@ -599,9 +607,12 @@ def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
         completed = replace(
             streamed,
             id=record.id,
-            content=record.content,
-            reasoning=record.reasoning,
+            content=record.content[:512],
+            reasoning=record.reasoning[:512],
+            body_ref=DisplayBody(preview=record.content[:512], length=len(record.content)),
+            reasoning_ref=DisplayBody(preview=record.reasoning[:512], length=len(record.reasoning)),
             streaming=False,
+            stream_truncated=False,
         )
         if stream_id != record.id:
             state.timeline.replace_identity(stream_id, completed)
@@ -611,8 +622,10 @@ def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
         return
     _append(state, AssistantEntry(
         id=record.id,
-        content=record.content,
-        reasoning=record.reasoning,
+        content=record.content[:512],
+        reasoning=record.reasoning[:512],
+        body_ref=DisplayBody(preview=record.content[:512], length=len(record.content)),
+        reasoning_ref=DisplayBody(preview=record.reasoning[:512], length=len(record.reasoning)),
     ))
 
 
@@ -635,20 +648,24 @@ def _finalize_open_tools(state: SessionState, status: ToolStatus, now: float) ->
 
 def _start_tool_calls(state: SessionState, calls, now: float) -> None:
     for call in calls:
+        args_text = json.dumps(call.args, ensure_ascii=False, indent=2)
+        args_ref = DisplayBody(preview=args_text[:512], length=len(args_text))
         existing = state.timeline.get(call.id)
         if isinstance(existing, ToolEntry):
             _append(state, replace(
                 existing,
                 name=call.name or existing.name,
                 call_id=str(call.id),
-                args=dict(call.args) or existing.args,
+                args=dict(call.args) if len(args_text) <= 512 else {},
+                args_ref=args_ref,
             ))
             continue
         _append(state, ToolEntry(
             id=call.id,
             name=call.name,
             call_id=str(call.id),
-            args=dict(call.args),
+            args=dict(call.args) if len(args_text) <= 512 else {},
+            args_ref=args_ref,
             status="running",
             started_at=now,
         ))
@@ -678,13 +695,20 @@ def _finish_tool_call(state: SessionState, record: ToolRecord, now: float) -> No
         name=record.call.name,
         call_id=call_id,
         args=existing.args if known else {},
+        args_ref=existing.args_ref if known else DisplayBody(preview="", length=1),
         status=status,
-        result=body,
+        result=body[:512],
+        result_ref=DisplayBody(preview=body[:512], length=len(body)),
+        artifacts=outcome.output.artifacts if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
         started_at=existing.started_at if known else now,
         finished_at=now,
     )
     if known and call_id != record.id:
-        state.timeline.replace_identity(call_id, completed)
+        if record.id in state.timeline:
+            state.timeline.remove(call_id)
+            _append(state, completed)
+        else:
+            state.timeline.replace_identity(call_id, completed)
     else:
         _append(state, completed)
 
@@ -702,13 +726,15 @@ def _publish_user_message(state: SessionState, event: UserMessagePublished) -> N
     existing = state.timeline.get(message_id)
     if isinstance(existing, UserEntry):
         _append(state, replace(
-            existing, content=event.payload.content, delivery=Delivery.ACCEPTED,
+            existing, content=event.payload.content[:512], delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
         ))
     else:
         _append(state, UserEntry(
             id=message_id,
-            content=event.payload.content,
+            content=event.payload.content[:512],
             delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
         ))
     state.submission_in_flight = False
 
@@ -759,6 +785,27 @@ def _rebuild_from_items(
             state.timeline.upsert(entry)
 
 
+def _rebuild_display_items(state: SessionState, items) -> None:
+    state.timeline = Timeline()
+    state.stream_entry_id = None
+    for item in items:
+        fields = item.fields
+        if item.kind == "human_input":
+            body = fields["content"]
+            entry = UserEntry(id=item.id, content=body.preview, delivery=Delivery.ACCEPTED, body_ref=body)
+        elif item.kind == "assistant":
+            body, reasoning = fields["content"], fields["reasoning"]
+            entry = AssistantEntry(id=item.id, content=body.preview, reasoning=reasoning.preview, body_ref=body, reasoning_ref=reasoning)
+        elif item.kind == "tool":
+            args, result = fields["args"], fields["result"]
+            entry = ToolEntry(id=item.id, name=item.tool_name, call_id=item.call_id, status={"succeeded": "success", "failed": "error"}.get(item.outcome, item.outcome), result=result.preview, args_ref=args, result_ref=result, artifacts=item.artifacts, finished_at=item.duration_ms / 1000)
+        elif item.kind == "runtime_notice":
+            entry = NoticeEntry(id=item.id, notice_kind="context", text=f"Context · {item.source} · {item.event}", detail=fields["content"].preview, body_ref=fields["content"])
+        else:
+            entry = NoticeEntry(id=item.id, notice_kind="compaction", text=fields["summary"].preview, body_ref=fields["summary"], body_field="summary")
+        state.timeline.upsert(entry)
+
+
 def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
     """What a server cursor means about the conversation before the window.
 
@@ -775,7 +822,8 @@ def _context_notice(item: RuntimeNoticeRecord) -> NoticeEntry:
         id=item.id,
         notice_kind="context",
         text=f"Context · {item.source} · {item.event}",
-        detail=item.content,
+        detail=item.content[:512],
+        body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
     )
 
 
@@ -797,20 +845,25 @@ def _entry_from_history_item(
     if isinstance(item, HumanInputRecord):
         return UserEntry(
             id=entry_id,
-            content=item.content,
+            content=item.content[:512],
             delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
         )
     if isinstance(item, AssistantRecord):
         return AssistantEntry(
             id=entry_id,
-            content=item.content,
-            reasoning=item.reasoning,
+            content=item.content[:512],
+            reasoning=item.reasoning[:512],
+            body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+            reasoning_ref=DisplayBody(preview=item.reasoning[:512], length=len(item.reasoning)),
         )
     if isinstance(item, CompactionSummaryRecord):
         return NoticeEntry(
             id=entry_id,
             notice_kind="compaction",
-            text=item.summary,
+            text=item.summary[:512],
+            body_ref=DisplayBody(preview=item.summary[:512], length=len(item.summary)),
+            body_field="summary",
         )
     if isinstance(item, ToolRecord):
         outcome = item.outcome
@@ -820,17 +873,29 @@ def _entry_from_history_item(
                 part.text for part in outcome.output.parts
                 if isinstance(part, TextPart)
             )
+        args = (tool_args or {}).get(str(item.call.id))
+        args_ref = _args_preview(args)
         return ToolEntry(
             id=entry_id,
             name=item.call.name,
             call_id=str(item.call.id),
-            args=dict((tool_args or {}).get(str(item.call.id), {})),
+            args=dict(args) if args is not None and args_ref.length <= 512 else {},
+            args_ref=args_ref,
+            artifacts=outcome.output.artifacts if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
+            result_ref=DisplayBody(preview=result[:512], length=len(result)),
             status={"succeeded": "success", "failed": "error"}.get(
                 outcome.kind, outcome.kind
             ),
-            result=result,
+            result=result[:512],
         )
     raise TypeError(f"Unsupported conversation record: {type(item).__name__}")
+
+
+def _args_preview(args):
+    if args is None:
+        return DisplayBody(preview="", length=1)
+    text = json.dumps(args, ensure_ascii=False, indent=2)
+    return DisplayBody(preview=text[:512], length=len(text))
 
 
 def _tool_args_in(

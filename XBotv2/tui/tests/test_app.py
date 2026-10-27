@@ -2595,3 +2595,70 @@ async def test_thread_picker_navigates_pages_and_opens_read_only_subagent() -> N
         await settle(pilot)
         assert app.controller.state.thread_id == "child-099"
         assert app.controller.state.read_only
+
+async def test_display_history_loads_body_only_on_expansion_and_releases_it() -> None:
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.session.api.records import DisplayBody, DisplayBodyPage, DisplayRecord
+    from XBotv2.tui.impl.view.blocks import LazyBodyBlock
+
+    text = "A" * 4096 + "B" * 4096
+    backend = ScriptedBackend()
+    calls = []
+
+    async def display_page(session_id, thread_id, **kwargs):
+        return HistoryPage((DisplayRecord(kind="assistant", id="answer", fields={"content": DisplayBody(preview=text[:64], length=len(text)), "reasoning": DisplayBody(preview="", length=0)}),), None)
+
+    async def body_page(session_id, thread_id, message_id, *, field, offset=0, limit=4096):
+        calls.append((session_id, thread_id, message_id, field, offset))
+        return DisplayBodyPage(content=text[offset:offset + limit], offset=offset, total=len(text), next_offset=offset + limit if offset + limit < len(text) else None)
+
+    backend.list_display_messages = display_page
+    backend.read_display_body = body_page
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        block = app.query_one(LazyBodyBlock)
+        assert not calls and block._text == text[:64]
+        block.toggle()
+        await settle(pilot)
+        assert block.shown_text == text[:4096]
+        block.action_next_page()
+        await settle(pilot)
+        assert block.shown_text == text[4096:8192]
+        block.toggle()
+        await settle(pilot)
+        assert block._text == text[:64]
+        assert [call[-1] for call in calls] == [0, 4096]
+
+async def test_tool_result_text_artifact_expands_on_demand() -> None:
+    from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.session.api.records import DisplayBody, DisplayBodyPage, DisplayRecord
+    from XBotv2.tui.impl.view.blocks import LazyBodyBlock
+
+    ref = ArtifactRef(id="tool_results/output", kind=ArtifactKind.TOOL_RESULT, name="shell-output.txt", media_type="text/plain; charset=utf-8", size=8192)
+    backend = ScriptedBackend()
+    calls = []
+
+    async def display_page(session_id, thread_id, **kwargs):
+        record = DisplayRecord(kind="tool", id="tool-output", tool_name="shell", call_id="call", outcome="succeeded", artifacts=(ref,), fields={"args": DisplayBody(preview="{}", length=2), "result": DisplayBody(preview="preview", length=7)})
+        return HistoryPage((record,), None)
+
+    async def body_page(session_id, thread_id, message_id, *, field, offset=0, limit=4096):
+        calls.append((message_id, field, offset))
+        return DisplayBodyPage(content="shell body", offset=offset, total=8192, next_offset=4096)
+
+    backend.list_display_messages = display_page
+    backend.read_display_body = body_page
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        block = app.query_one(".tool-artifact", LazyBodyBlock)
+        assert not calls
+        block.toggle()
+        await settle(pilot)
+        assert calls == [("tool-output", "artifact:tool_results/output", 0)]
+        assert block.shown_text == "shell body"
+        block.toggle()
+        await settle(pilot)
+        assert block._text == ""

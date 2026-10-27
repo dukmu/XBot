@@ -286,3 +286,42 @@ async def test_manual_think_expansion_survives_stream_completion() -> None:
         assert block.expanded is True
         assert block.region.height == BLOCK_MAX_LINES
         assert "line 41" in block_text(block)
+
+async def test_lazy_body_pages_collapse_and_discard_late_response():
+    import asyncio
+    from XBotv2.session.api.records import DisplayBodyPage
+    from XBotv2.tui.impl.view.blocks import LazyBodyBlock
+
+    requested = asyncio.Event()
+    release = asyncio.Event()
+    calls = []
+
+    async def read(offset):
+        calls.append(offset)
+        if offset == 4096:
+            requested.set()
+            await release.wait()
+        return DisplayBodyPage(content=("A" if offset == 0 else "B") * 4096, offset=offset, total=8192, next_offset=4096 if offset == 0 else None)
+
+    class AppWithLazyBlock(App):
+        def compose(self):
+            yield LazyBodyBlock("preview", length=8192, reader=read, label="Reply", id="lazy")
+
+    app = AppWithLazyBlock()
+    async with app.run_test() as pilot:
+        block = app.query_one("#lazy", LazyBodyBlock)
+        block.toggle()
+        await pilot.pause()
+        assert block.shown_text == "A" * 4096
+        block.action_next_page()
+        await asyncio.wait_for(requested.wait(), 5)
+        block.toggle()
+        release.set()
+        await pilot.pause()
+        assert not block.expanded
+        assert block._text == "preview"
+        assert "B" * 100 not in block.shown_text
+        block.toggle()
+        await pilot.pause()
+        assert calls == [0, 4096, 0]
+        assert block.shown_text == "A" * 4096

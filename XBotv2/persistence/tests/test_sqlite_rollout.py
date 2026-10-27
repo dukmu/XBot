@@ -456,3 +456,115 @@ async def test_transcript_pages_move_both_directions_from_record_anchor(opened):
     assert newer.newer_cursor is None
     anchored = await archive.message_page("session", "main", limit=2, after_id="page-3")
     assert [item.id for item in anchored.items] == ["page-4", "page-5"]
+
+async def test_display_pages_bound_body_and_resolve_tool_args_across_pages(opened):
+    from XBotv2.core.api.messages import AssistantMessage, ToolMessage
+    from XBotv2.core.api.parts import TextPart, ReasoningPart
+    from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolSucceeded, ToolOutput
+    from XBotv2.core.api.domain import ToolTiming
+    from XBotv2.tests.acp.test_adapter import _exchange
+
+    _, scope, _ = opened
+    large = "λ" * (1024 * 1024)
+    history = scope.require(LOOP_STATE).history
+    await history.extend((
+        AssistantMessage(id="assistant-large", parts=(TextPart(text=large), ReasoningPart(text=large), ToolCall(id="call-1", name="example", args={"text": large})), exchange=_exchange()),
+        ToolMessage(id="tool-large", call=ToolCallRef(id="call-1", name="example"), outcome=ToolSucceeded(output=ToolOutput(parts=(TextPart(text=large),))), timing=ToolTiming(duration_ms=1)),
+    ))
+    archive = scope.root.require(ARCHIVE)
+    page = await archive.display_page("session", "main", limit=1)
+    assert [item.id for item in page.items] == ["tool-large"]
+    tool = page.items[0]
+    assert tool.fields["args"].length > len(large)
+    assert len(tool.fields["args"].preview) <= 512
+    assert tool.fields["result"].length == len(large)
+    assert len(tool.fields["result"].preview) <= 512
+    chunk = await archive.display_body("session", "main", "tool-large", field="args", offset=512, limit=4096)
+    assert chunk.content == json.dumps({"text": large}, ensure_ascii=False, indent=2)[512:512 + 4096]
+    pieces = []
+    offset = 0
+    while True:
+        result = await archive.display_body("session", "main", "tool-large", field="result", offset=offset, limit=16384)
+        pieces.append(result.content)
+        if result.next_offset is None:
+            break
+        offset = result.next_offset
+    assert "".join(pieces) == large
+    assert (await archive.message("session", "main", "assistant-large")).parts[2].args["text"] == large
+
+async def test_display_tool_index_rebuilds_existing_rollout(tmp_path):
+    from XBotv2.core.api.messages import AssistantMessage, ToolMessage
+    from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolSucceeded, ToolOutput
+    from XBotv2.core.api.domain import ToolTiming
+    from XBotv2.tests.acp.test_adapter import _exchange
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    scope = await thread_scope(paths=paths, session_id="rebuild", llm_override=MockLLM())
+    try:
+        history = scope.require(LOOP_STATE).history
+        await history.extend((
+            AssistantMessage(id="assistant", parts=(ToolCall(id="call", name="read", args={"path": "文档"}),), exchange=_exchange()),
+            ToolMessage(id="result", call=ToolCallRef(id="call", name="read"), outcome=ToolSucceeded(output=ToolOutput()), timing=ToolTiming(duration_ms=1)),
+        ))
+    finally:
+        await scope.root.close()
+    with sqlite3.connect(paths.session("rebuild").database_file) as db:
+        db.execute("DROP TABLE tool_call_owners")
+    resumed = await thread_scope(paths=paths, session_id="rebuild", mode="resume", llm_override=MockLLM())
+    try:
+        page = await resumed.root.require(ARCHIVE).display_page("rebuild", "main", limit=1)
+        assert page.items[0].id == "result"
+        assert "文档" in page.items[0].fields["args"].preview
+    finally:
+        await resumed.root.close()
+
+async def test_display_pages_real_shell_text_artifact_without_changing_bytes(opened, tmp_path):
+    import shlex
+    import sys
+    from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+    from XBotv2.agentloop.impl.tool_runtime import execute_tools
+    from XBotv2.core.api.messages import AssistantMessage
+    from XBotv2.core.api.tools import ToolCall, ToolSucceeded
+    from XBotv2.coretools.impl.shell import shell_tools
+    from XBotv2.jobs.impl.registry import JobRegistry
+    from XBotv2.tests.acp.test_adapter import _exchange
+
+    _, scope, _ = opened
+    expected = b"A" * 4095 + "界".encode() + b"\xff" + ("尾".encode() * 3000)
+    source = "import sys; sys.stdout.buffer.write(b'A'*4095+'界'.encode()+bytes([255])+('尾'.encode()*3000))"
+    command = f"{shlex.quote(sys.executable)} -c {shlex.quote(source)}"
+    call = ToolCall(id="shell-call", name="shell", args={"command": command})
+    registry = ToolRegistry()
+    for tool in shell_tools(None, JobRegistry(), str(tmp_path), scope.artifacts, max_timeout_seconds=10):
+        registry.register(tool)
+    results = [result async for result in execute_tools([call], registry)]
+    message = results[0].message
+    assert isinstance(message.outcome, ToolSucceeded)
+    artifact = message.outcome.output.artifacts[0]
+    history = scope.require(LOOP_STATE).history
+    await history.extend((AssistantMessage(id="shell-assistant", parts=(call,), exchange=_exchange()), message))
+    archive = scope.root.require(ARCHIVE)
+    display = await archive.display_page("session", "main", limit=1)
+    assert display.items[0].artifacts[0].id == artifact.id
+    pages = []
+    offset = 0
+    while True:
+        page = await archive.display_body("session", "main", str(message.id), field=f"artifact:{artifact.id}", offset=offset, limit=4096)
+        pages.append(page.content)
+        if page.next_offset is None:
+            break
+        offset = page.next_offset
+    assert "".join(pages) == expected.decode("utf-8", errors="replace")
+    full = await archive.artifact("session", "main", artifact.id)
+    assert b"".join([chunk async for chunk in full.content]) == expected
+
+    from fastapi import FastAPI
+    import httpx
+    from XBotv2.agentloop.impl.archive_http import build_router
+    from XBotv2.client import XBotClient
+    app = FastAPI()
+    app.include_router(build_router(sessions=scope.root.require(SESSIONS), archive=archive))
+    async with XBotClient("http://test", transport=httpx.ASGITransport(app=app)) as client:
+        assert await client.read_artifact("session", "main", artifact.id) == expected
+        body = await client.read_display_body("session", "main", str(message.id), field=f"artifact:{artifact.id}", offset=4096)
+        assert body.offset == 4096 and body.content.startswith("界")

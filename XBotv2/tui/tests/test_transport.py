@@ -843,6 +843,7 @@ async def test_switching_to_a_subagent_uses_the_typed_thread_endpoint(
         "mode": "resume",
         "agent": None,
         "history_limit": 40,
+        "include_history": False,
     }
 
 

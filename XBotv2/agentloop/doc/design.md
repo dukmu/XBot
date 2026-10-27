@@ -99,3 +99,7 @@ extract referenced nested artifacts; imported dependency metadata is backed by
 owner facts after the original prefix, preserving all original sequence cuts.
 Repeated export/import therefore retains full referenced originals while the
 backend remains unaware of message formats.
+
+The display history API returns `DisplayRecord` previews and field lengths, not complete `ConversationRecord` values. `display-messages/{message_id}/body` reads a bounded character page from the canonical field; `messages` remains the full-record export API. Tool argument fields resolve their assistant call through a rebuildable projection that stores identities only. One original record is still decoded in full for each field request; the API bounds client residency, not that server-side decode peak.
+
+A text artifact referenced by a tool result is displayed through the same field-page route using an `artifact:` field. Its cursor and length are byte offsets; the owner authorizes the original artifact and reads a bounded byte range, preserving UTF-8 characters across page boundaries. Invalid UTF-8 displays replacement characters without altering the original bytes.

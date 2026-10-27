@@ -330,3 +330,68 @@ __all__ = [
     "count_lines",
     "plan_block",
 ]
+
+
+class LazyBodyBlock(ClampedBlock):
+    """A collapsible archive field holding only its current requested slice."""
+
+    BINDINGS = [
+        Binding("enter", "toggle", "Expand or collapse", show=False),
+        Binding("space", "toggle", "Expand or collapse", show=False),
+        Binding("right", "next_page", "Next body page", show=False),
+        Binding("left", "previous_page", "Previous body page", show=False),
+    ]
+
+    def __init__(self, preview, *, length, reader, unit="chars", **kwargs):
+        super().__init__(preview, always_collapsible=True, **kwargs)
+        self.preview = preview
+        self.length = length
+        self.unit = unit
+        self.reader = reader
+        self._page_offset = 0
+        self._load_generation = 0
+
+    def toggle(self):
+        super().toggle()
+        self._load_generation += 1
+        if self.expanded:
+            self._load(0)
+        else:
+            self._page_offset = 0
+            self.show(self.preview)
+
+    def action_next_page(self):
+        if self.expanded and self._page_offset + 4096 < self.length:
+            self._load(self._page_offset + 4096)
+
+    def action_previous_page(self):
+        if self.expanded and self._page_offset:
+            self._load(max(0, self._page_offset - 4096))
+
+    def _load(self, offset):
+        self._load_generation += 1
+        generation = self._load_generation
+        self.run_worker(self._read(offset, generation), exclusive=True, group="body-page")
+
+    async def _read(self, offset, generation):
+        try:
+            page = await self.reader(offset)
+        except Exception as exc:  # noqa: BLE001 — show the failure at the block
+            if generation == self._load_generation and self.is_mounted and self.expanded:
+                self.show(f"Could not load body: {exc}")
+            return
+        if generation != self._load_generation or not self.is_mounted or not self.expanded:
+            return
+        self._page_offset = page.offset
+        self.show(page.content)
+
+    def _head_text(self):
+        text = super()._head_text()
+        if self.expanded:
+            return f"{text} · {self._page_offset + 1}–{min(self._page_offset + 4096, self.length)}/{self.length} · Ctrl+←/→ pages"
+        return f"{text} · {self.length} {self.unit}"
+
+    def on_unmount(self):
+        self._load_generation += 1
+        self._text = self.preview
+        self._renderable = None

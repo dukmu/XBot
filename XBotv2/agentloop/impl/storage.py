@@ -236,6 +236,12 @@ class MessageHistoryStore:
         return await self._page("transcript", limit, cursor, before_id, after_id)
 
     async def _page(self, table, limit, cursor, before_id=None, after_id=None):
+        async with self.store.operation():
+            page = await self.page_refs(table, limit, cursor, before_id, after_id)
+            messages = tuple([await self.store.message(identity) for identity in page.items])
+            return HistoryPage(messages, page.older_cursor, page.newer_cursor)
+
+    async def page_refs(self, table, limit, cursor=None, before_id=None, after_id=None):
         if limit < 1 or limit > 500:
             raise ValueError("History page limit must be between 1 and 500")
         if sum(value is not None for value in (cursor, before_id, after_id)) > 1:
@@ -297,9 +303,8 @@ class MessageHistoryStore:
                 return revision, rows, older, later
 
             revision, rows, older, later = await self.store.sql(query)
-            messages = tuple([await self.store.message(row[1]) for row in rows])
             return HistoryPage(
-                messages,
+                tuple(row[1] for row in rows),
                 encode_history_cursor(revision, rows[0][0]) if older else None,
                 encode_history_cursor(revision, -rows[-1][0]) if later else None,
             )

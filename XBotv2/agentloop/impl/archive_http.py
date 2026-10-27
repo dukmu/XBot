@@ -8,7 +8,7 @@ from fastapi.responses import Response, StreamingResponse
 from contextlib import aclosing
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
-from XBotv2.session.api.records import ConversationRecord
+from XBotv2.session.api.records import ConversationRecord, DisplayBodyPage, DisplayRecord
 
 
 class ArtifactResponse(StreamingResponse):
@@ -49,6 +49,23 @@ def build_router(*, sessions, archive):
             older_cursor=page.older_cursor,
             newer_cursor=page.newer_cursor,
         )
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/display-messages")
+    async def display_messages_endpoint(
+        session_id: str, thread_id: str, cursor: str | None = None,
+        limit: int = Query(default=50, ge=1, le=500),
+        before_id: str | None = None, after_id: str | None = None,
+    ) -> HistoryPage[DisplayRecord]:
+        await sessions.thread_summary(session_id, thread_id)
+        return await archive.display_page(session_id, thread_id, cursor=cursor, limit=limit, before_id=before_id, after_id=after_id)
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/display-messages/{message_id}/body")
+    async def display_body_endpoint(
+        session_id: str, thread_id: str, message_id: str, field: str,
+        offset: int = Query(default=0, ge=0), limit: int = Query(default=4096, ge=1, le=16384),
+    ) -> DisplayBodyPage:
+        await sessions.thread_summary(session_id, thread_id)
+        return await archive.display_body(session_id, thread_id, message_id, field=field, offset=offset, limit=limit)
 
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/trajectory",

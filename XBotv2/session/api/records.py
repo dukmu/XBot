@@ -132,3 +132,38 @@ def project_message(message: ConversationMessage) -> ConversationRecord:
 def conversation_replay(messages):
     return tuple(project_message(message) for message in messages)
 
+
+
+class DisplayBody(BaseModel):
+    """A bounded preview of one field, backed by its canonical message."""
+
+    preview: str
+    length: int
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class DisplayRecord(BaseModel):
+    """Presentation metadata and previews; not a complete ConversationRecord."""
+
+    kind: Literal["human_input", "runtime_notice", "assistant", "tool", "compaction_summary"]
+    id: str
+    fields: dict[str, DisplayBody]
+    source: str = ""
+    event: str = ""
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    tool_name: str = ""
+    call_id: str = ""
+    outcome: str = ""
+    duration_ms: float = 0
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class DisplayBodyPage(BaseModel):
+    """One character range of a canonical display field."""
+
+    content: str
+    offset: int
+    total: int
+    next_offset: int | None
+    model_config = ConfigDict(extra="forbid", frozen=True)

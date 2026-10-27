@@ -1470,3 +1470,45 @@ def test_task_notice_counts_completed_history_with_active_tasks() -> None:
     notice = state.timeline.get("tasks:active")
     assert isinstance(notice, NoticeEntry)
     assert notice.text == "Tasks 2/3 completed"
+
+
+def test_large_live_completion_and_tool_arguments_leave_only_previews() -> None:
+    from XBotv2.agentloop.api.outputs import AssistantTextDelta, StartedToolCall, ToolCallsStarted as StartedPayload
+    from XBotv2.core.api.domain import CompletedStop, ModelTiming
+    from XBotv2.core.api.tools import ToolCall
+    from XBotv2.session.api.records import AssistantRecord
+    from XBotv2.tui.impl.events import AssistantCompleted, AssistantDelta, ToolCallsStarted
+    from XBotv2.tui.impl.state import SessionState, reduce
+
+    large = "text" * (512 * 1024)
+    state = SessionState()
+    reduce(state, AssistantDelta(payload=AssistantTextDelta(text=large)))
+    streamed = state.timeline.get(state.stream_entry_id)
+    assert len(streamed.content) == 512 and streamed.stream_truncated
+    from XBotv2.tui.impl.view.entries import entry_body
+    assert "Live preview" in entry_body(streamed)
+    reduce(state, AssistantCompleted(payload=AssistantRecord(id="answer", content=large, reasoning=large, timing=ModelTiming(total_ms=0), stop=CompletedStop())))
+    answer = state.timeline.get("answer")
+    assert len(answer.content) == len(answer.reasoning) == 512
+    assert answer.body_ref.length == answer.reasoning_ref.length == len(large)
+    reduce(state, ToolCallsStarted(payload=StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="edit", args={"value": large}), category="tool"),))))
+    tool = state.timeline.get("call")
+    assert tool.args == {}
+    assert len(tool.args_ref.preview) == 512 and tool.args_ref.length > len(large)
+
+
+def test_replayed_tool_completion_merges_with_display_snapshot() -> None:
+    from XBotv2.agentloop.api.outputs import StartedToolCall, ToolCallsStarted as StartedPayload
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolSucceeded, text_output
+    from XBotv2.core.api.domain import ToolTiming
+    from XBotv2.session.api.records import DisplayBody, DisplayRecord, ToolRecord
+    from XBotv2.tui.impl.events import DisplayHistoryLoaded, ToolCallsStarted, ToolRecordReceived
+    from XBotv2.tui.impl.state import SessionState, reduce
+
+    state = SessionState()
+    display = DisplayRecord(kind="tool", id="tool-result", tool_name="read", call_id="call", outcome="succeeded", fields={"args": DisplayBody(preview="{}", length=2), "result": DisplayBody(preview="ok", length=2)})
+    reduce(state, DisplayHistoryLoaded(HistoryPage((display,), None)))
+    reduce(state, ToolCallsStarted(StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="read"), category="tool"),))))
+    reduce(state, ToolRecordReceived(ToolRecord(id="tool-result", call=ToolCallRef(id="call", name="read"), outcome=ToolSucceeded(output=text_output("ok")), timing=ToolTiming(duration_ms=1))))
+    assert state.timeline.ids() == ("tool-result",)
