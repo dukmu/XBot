@@ -126,3 +126,80 @@ def test_agent_frontmatter_expands_permission_config_before_typed_loading(tmp_pa
 
     assert definition.prompt == str(tmp_path / "state/artifacts/tool_results")
     assert definition.permission_policy.rules[0].path_scope == f"{tmp_path}/workspace/.*\\.md"
+
+
+def test_sources_share_unexpanded_data_and_invalidate(tmp_path, monkeypatch):
+    from XBotv2.agents.impl import loader
+
+    path = tmp_path / "worker.md"
+    path.write_text(
+        '---\ndescription: "Worker $${thread_id}"\n---\n'
+        '```var\n${thread_id}\n```\n', encoding="utf-8"
+    )
+    sources = loader.AgentSources(max_bytes=100_000)
+    original = loader._parse_source
+    calls = []
+
+    def parse(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(loader, "_parse_source", parse)
+    first = AgentCatalog(ownership="caller", sources=sources)
+    second = AgentCatalog(ownership="caller", sources=sources)
+    first.register_markdown(tmp_path, variables=RuntimeVariables({"thread_id": "one"}))
+    second.register_markdown(tmp_path, variables=RuntimeVariables({"thread_id": "two"}))
+    assert len(calls) == 1
+    assert (first.get("worker").description, first.get("worker").prompt) == ("Worker one", "one")
+    assert (second.get("worker").description, second.get("worker").prompt) == ("Worker two", "two")
+    path.write_text('---\ndescription: Changed\n---\nNew text\n', encoding="utf-8")
+    assert loader.load_definition(path, sources=sources).description == "Changed"
+    assert len(calls) == 2 and len(sources._entries) == 1
+    path.unlink()
+    assert loader.load_definitions(tmp_path, sources=sources) == []
+    assert not sources._entries
+    assert first.get("worker").prompt == "one"
+
+
+def test_source_cache_budget_and_uncached_callers(tmp_path, monkeypatch):
+    from XBotv2.agents.impl import loader
+
+    a, b = (tmp_path / f"{name}.md" for name in ("a", "b"))
+    for path in (a, b):
+        path.write_text('---\ndescription: Worker\n---\n' + 'x' * 50, encoding="utf-8")
+    original = loader._parse_source
+    calls = []
+
+    def parse(path):
+        calls.append(path)
+        return original(path)
+
+    monkeypatch.setattr(loader, "_parse_source", parse)
+    sources = loader.AgentSources(max_bytes=7_000)
+    loader.load_definition(a, sources=sources)
+    loader.load_definition(b, sources=sources)
+    loader.load_definition(a, sources=sources)
+    assert calls == [a, b, a]
+    tiny = loader.AgentSources(max_bytes=100)
+    loader.load_definition(a, sources=tiny)
+    loader.load_definition(a, sources=tiny)
+    loader.load_definition(a)
+    loader.load_definition(a)
+    assert calls == [a, b, a, a, a, a, a]
+    assert not tiny._entries
+
+
+async def test_process_close_releases_source_cache(tmp_path):
+    from xcore.api.context import Context
+    from XBotv2.agents.impl.loader import load_definition
+    from XBotv2.agents.impl.plugin import _AGENT_SOURCES, mount_process
+
+    root = Context()
+    mount_process(root, None)
+    sources = root.require(_AGENT_SOURCES)
+    path = tmp_path / "worker.md"
+    path.write_text('---\ndescription: Worker\n---\nPrompt', encoding="utf-8")
+    load_definition(path, sources=sources)
+    assert sources._entries
+    await root.close()
+    assert not sources._entries

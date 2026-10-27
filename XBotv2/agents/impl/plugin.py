@@ -10,6 +10,7 @@ from XBotv2.agentloop.api.state import LOOP_STATE
 from pathlib import Path
 from pydantic import JsonValue
 from xcore.api.context import Context
+from xcore.api.services import ServiceKey
 from XBotv2.agents.impl.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.agents.impl.catalog import AgentCatalog
 from XBotv2.agents.impl.commands import build_agent_commands
@@ -23,7 +24,7 @@ from XBotv2.agents.api.contracts import (
     SELECT_AGENT,
     SelectAgent,
 )
-from XBotv2.agents.impl.loader import load_definitions
+from XBotv2.agents.impl.loader import AgentSources, load_definitions
 from XBotv2.agents.impl.router import build_router
 from XBotv2.agents.impl.service import AgentsService
 from XBotv2.core.api.operations import EmptyRequest
@@ -40,7 +41,10 @@ from XBotv2.llm.api.contracts import (
 from XBotv2.server.api.contracts import contribute_router
 
 
+_AGENT_SOURCES: ServiceKey[AgentSources] = ServiceKey("agents.sources")
+
 _CATALOG_DEPENDENCIES = [
+    _AGENT_SOURCES,
     "data_root",
     "variables",
     "workspace_root",
@@ -69,7 +73,8 @@ _RUNTIME_DEPENDENCIES = [
 
 
 def mount_catalog(ctx: Context) -> None:
-    catalog = AgentCatalog()
+    sources = ctx.require(_AGENT_SOURCES)
+    catalog = AgentCatalog(sources=sources)
     definitions = {
         definition.name: definition for definition in BUILTIN_AGENT_DEFINITIONS
     }
@@ -79,6 +84,7 @@ def mount_catalog(ctx: Context) -> None:
             for definition in load_definitions(
                 Path(ctx.data_root) / ".agents",
                 ctx.variables,
+                sources=sources,
             )
         }
     )
@@ -165,8 +171,11 @@ mount_thread.provide = (AGENT_CATALOG, AGENT_RUNTIME)
 
 
 def mount_process(ctx, config):
+    sources = AgentSources()
+    ctx.set(_AGENT_SOURCES, sources)
+    ctx.dispose(sources.close)
     ctx.inject(["server", "sessions"], mount_http)
 
 
 mount_process.inject = ()
-mount_process.provide = ()
+mount_process.provide = (_AGENT_SOURCES,)

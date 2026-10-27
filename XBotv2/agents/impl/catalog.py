@@ -6,7 +6,7 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 from xcore.api.plugins import bound_effect, current_plugin_name
-from XBotv2.agents.impl.loader import load_definitions
+from XBotv2.agents.impl.loader import AgentSources, load_definitions
 from XBotv2.agents.api.contracts import AgentCatalogPort, AgentDefinition
 from XBotv2.core.api.variables import RuntimeVariables
 
@@ -14,7 +14,9 @@ from XBotv2.core.api.variables import RuntimeVariables
 class AgentCatalog(AgentCatalogPort):
     """Store immutable definitions in base and workspace-overlay layers."""
 
-    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
+    def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber",
+                 sources: AgentSources | None = None) -> None:
+        self._sources = sources
         self._ownership = ownership
         self._base: dict[str, AgentDefinition] = {}
         self._base_owners: dict[str, str] = {}
@@ -56,7 +58,7 @@ class AgentCatalog(AgentCatalogPort):
         owner = owner or current_plugin_name()
         names = tuple(
             self._register(definition, owner=owner, overlay=overlay)
-            for definition in load_definitions(directory, variables)
+            for definition in load_definitions(directory, variables, sources=self._sources)
         )
         if names and bind_cleanup:
             if bound_effect(partial(self._unregister_many, names, owner)) is False:
