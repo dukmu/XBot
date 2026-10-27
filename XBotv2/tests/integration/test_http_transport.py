@@ -5014,6 +5014,16 @@ async def test_todo_and_usage_survive_http_close_resume(
         },
     ]
 
+    class SDKStream:
+        def __init__(self, iterator):
+            self.iterator = iterator
+
+        def __aiter__(self):
+            return self.iterator
+
+        async def close(self):
+            await self.iterator.aclose()
+
     class SDKCompletions:
         def __init__(self):
             self.responses = iter(sdk_responses)
@@ -5055,12 +5065,18 @@ async def test_todo_and_usage_survive_http_close_resume(
                 if "usage" in response:
                     yield chunk(choices=[], usage=response["usage"])
 
-            return chunks()
+            return SDKStream(chunks())
+
+    class SDKClient:
+        def __init__(self):
+            self.chat = SimpleNamespace(completions=SDKCompletions())
+
+        async def close(self):
+            pass
 
     sdk_provider = OpenAICompatibleProvider(api_key="test", base_url=None)
-    sdk_provider.client = SimpleNamespace(
-        chat=SimpleNamespace(completions=SDKCompletions())
-    )
+    await sdk_provider.client.close()
+    sdk_provider.client = SDKClient()
     full_http_app.state.test_context.require(LLM).unregister("openai")
     full_http_app.state.test_context.require(LLM).register("openai", lambda *_: sdk_provider)
     opened = await client.post(
@@ -5451,7 +5467,7 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert undone.status_code == 200
     payload = undone.json()
     assert set(payload) == {"removed_turns", "history", "stats"}
-    assert set(payload["history"]) == {"items", "older_cursor"}
+    assert set(payload["history"]) == {"items", "older_cursor", "newer_cursor"}
     messages = payload["history"]["items"]
     timing = messages[1].pop("timing")
     assert timing["total_ms"] >= 0
@@ -7038,7 +7054,7 @@ async def test_empty_thread_trajectory_validates_http_cursors_without_persisting
     result = await client.get(path, params={"limit": 10})
     assert result.status_code == 200
     assert result.json() == {
-        "page": {"items": [], "older_cursor": None}, "newest_position": 0,
+        "page": {"items": [], "older_cursor": None, "newer_cursor": None}, "newest_position": 0,
     }
     for params in ({"before": 2}, {"cursor": "invalid"}):
         invalid = await client.get(path, params=params)

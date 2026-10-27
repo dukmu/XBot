@@ -21,7 +21,7 @@ def test_idle_footer_shows_client_actions_without_claiming_interrupt_is_availabl
     assert "Ctrl+P" in shown
     assert "Ctrl+T agents" in shown
     assert "F2 settings" in shown
-    assert "? for shortcuts" in shown
+    assert "PageUp/PageDown history" in shown
     assert "Esc interrupt" not in shown
 
 

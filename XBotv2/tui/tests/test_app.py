@@ -1374,13 +1374,14 @@ async def test_a_failed_thread_read_is_reported_and_changes_nothing() -> None:
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
-        backend.open_error = RuntimeError("no such thread")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/thread ghost")
         await pilot.press("enter")
         await settle(pilot)
-        assert "no such thread" in transcript_text(app)
+        error = transcript_text(app)
+        assert "ghost" in error and "not found" in error
         assert app.controller is not None
+        assert app.controller.state.session_id == SESSION
         assert app.controller.state.thread_id == THREAD
 
 

@@ -177,6 +177,7 @@ async def test_a_frame_for_the_old_thread_is_rejected_after_switching(
 ) -> None:
     """A late frame from the session we left must not land in the new transcript."""
     backend.session = snapshot(session_id=OTHER_SESSION, thread_id="other")
+    backend.threads = (thread(), thread(session_id=OTHER_SESSION, thread_id="other"))
     backend.streams = [
         stream(hold=True),
         stream(
