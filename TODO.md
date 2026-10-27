@@ -444,3 +444,20 @@
 - [x] Web必要受影响验证：最初4文件6项（14505 exit0，`/tmp/xbot-web-catalog-vitest-final.log`），scope切换并发缺陷首轮71278 exit1后定向修复；后续实际并发/删除/过期游标resnapshot/stop/空末页返回共5文件13项（82727 exit0，`/tmp/xbot-web-catalog-vitest-concurrency.log`），再新增成员双向单节点1 passed/5 skipped（`/tmp/xbot-web-catalog-vitest-member.log`）及最终tsc（40254 exit0，`/tmp/xbot-web-catalog-tsc-final.log`）。有重叠不累加；误相对路径No tests found的55235 exit1也已终态。纯可读性多行整理不重复旧测试/浏览器。
 - [ ] 本轮thread列表本身仍全量，后续需明确分页与subagent/客户端消费；session目录每页仍需O(目录数)枚举，尚未实测是否要可重建索引。完整goal其余配置/预算定值、TUI样式及虚拟化、指定独立网络Mock工况和最终安装产物验收继续保留，未由本轮目录证据替代。
 - [x] 本轮独立提交：子线程缺省720b9397、服务端目录daca3a7f、Python客户端8aa6a84f、Web窗口751b087c；本轮验收归档对应开发源码提交`751b087caaff5622c208a3f27c9c6d133d911560`，各范围证据及未验限制如上，非整个产品验收。最后仅整理可读性/文档并作暂存检查，未重跑旧验证、wheel或hash快照；之后只提交TODO日志，完整goal继续active。
+
+### 迭代15：线程目录与精确线程读取（进行中）
+
+- [x] 从目录源码751b087c/日志6760faae继续，上一轮确有提交及真实客户端证据；tracked clean，仅原用户设计稿/.worktrees未跟踪。继续只三名Terra，职责分为session/config/subagent服务端、Python SDK/TUI、Web线程窗口。第14轮目录/媒体/MiniMax等已过验证不重跑。
+- [x] 线程API双向keyset页，父线程/kind过滤在取页前完成，合并活跃未落盘thread；精确查找/恢复及ID分配不先收集全部thread IDs，业务schema和查询仍归session owner。
+- [x] list_subagents实际消费直接子线程页，返回当前页状态与明确可继续游标；主线程查找用kind=main的1条页，不能取列表首个子线程或造兼容全量旁路。
+- [ ] SDK/TUI/Web只持当前线程页及前后游标，watchdog/活动状态/undo/clear等精确读取当前thread；线程离开列表窗口仍保持独立活动，真实后页可选择。完成后追加证据/限制。
+- [x] 实际实现线程owner SQL过滤/双向页后只构建当前页摘要；active未落盘线程与SQL有序合并去重。locate、_persisted_thread、open/resume、ThreadRepository及ID分配均走has_thread，不经全目录；移除无调用的全量thread_ids读取。主代理修正一个persistence fork测试的旧tuple消费为page.items，及过时主线程查找注释，不为纯契约适配重复旧验证。
+- [x] 服务端owner首组14项3.88s（`/tmp/xbot-thread-pages-v15-1.log`）、真实policy HTTP单项3.12s（`/tmp/xbot-thread-policy-v15-2.log`）actual exit0；实际新增混合active/持久页和第550条精确查找后仅相关2项3.02s（`/tmp/xbot-thread-merge-v15-3.log`）、空末页单项2.35s（`/tmp/xbot-thread-empty-v15-4.log`）、205直接子线程工具遍历三页单项0.22s（`/tmp/xbot-subagent-paging-v15-5.log`）通过；fork批次读取确有改动，因此真实HTTP fork/resume单项2.77s（`/tmp/xbot-thread-fork-v15-6.log`）通过。组合重叠不累计为独立覆盖，不重跑第14轮目录/浏览器/全套。
+- [x] SDK分页/过滤与TUI共享线程选择器落盘；恢复/watchdog精确get_thread，主线程用kind=main&limit=1，无首子线程回退。客户端聚焦9项2.94s（`/tmp/xbot-thread-client-focus.log`，actual exit0）；另受影响回归3 passed/1失败（`/tmp/xbot-thread-client-regression.log` exit1）为旧fixture未声明恢复目标，修正只该节点0.69s通过（`/tmp/xbot-thread-window-rerun.log` exit0）。
+- [x] 真实owner产生main+101持久子线程，实际serve+tmux PTY /thread翻后页、筛选child-100并选择，精确HTTP确认active/subagent，终端Ready subagent:child-100且只读。`/tmp/xbot-thread-pty-accept-retry.log`脚本actual exit0，TUI退出0、server SIGTERM并wait得-15；证据`/tmp/xbot-thread-pty-25pcyy5n/{page-two.txt,selected.txt,target-threads.json}`主代理已读。首次`/tmp/xbot-thread-pty-accept.log`exit1是测试Down选到上一页而非目标，修正筛选输入并复用fixture；不冒称产品缺陷或本次优雅关闭资源计数验收。
+- [x] 删除731行旧tests/tui/factories副本，真实服务测试和conftest直接用tui/tests的canonical builders，无兼容转出口。仅49 tests collected/0.61s（`/tmp/xbot-tui-canonical-factories-collect.log` actual exit0），未执行这些旧真实服务用例或重跑PTY。
+- [x] Web仅持当前线程页+游标；current精确读取不依赖目录窗口，activation/undo/clear/main查找同步当前契约。现有750ms读取只合并当前thread的观测usage/stats，保留事件及既有watchdog的turn状态语义；其他thread明确为手动Refresh的页快照，跨页父节点作为页内根显示。真实Web后页/子代理点击本轮未验，不能以定向状态测试替代浏览器结论，留至最终客户端验收。
+- [x] Web受影响跨模块首组72 passed/1失败（27176 exit1，新增API stub重复消费Response）；仅失败API节点复验exit0（`/tmp/xbot-web-threads-vitest-api-retest.log`）；新控件、陈旧usage、陈旧turn读各定向节点通过，日志`/tmp/xbot-web-threads-vitest-controls.log`、`/tmp/xbot-web-threads-vitest-usage.log`、`/tmp/xbot-web-threads-vitest-race.log`。最终review再修跨页collapsed IDs累计，离开页清退而保留树open；仅新增跨页节点1 passed/5 skipped（`/tmp/xbot-web-threads-collapse-test.log`）和代码改变后的tsc（87969 exit0，`/tmp/xbot-web-threads-collapse-tsc.log`），未重跑旧72项或浏览器。
+- [x] 本轮按责任提交服务端f9c77734、Python客户端18e8de0e、Web19a0bc4a，验收归档对应开发源码提交`19a0bc4af64e5332e53d25a80702eb999695ccbc`；各证据范围见上，非完整产品已验。主代理已读实际代码、日志及PTY/HTTP产物，所有代理报告工具终态，最后仅提交TODO；无用户文件、bundle、运行数据或新hash快照入库。
+- [ ] ForkState既有特殊业务事件仍持完整thread_ids/cuts/origins；读取/flush已分批，不能冒称整个fork内存已随thread数常量。目录每页枚举O(H)的实测、TUI交互样式/虚拟化、配置一致性和缓存预算、指定独立网络Mock产品工况、Web真实线程后页及最终安装资源验收仍属完整goal，继续active。
+- [x] Web首组原始日志确认为`/tmp/xbot-web-threads-vitest.log`，主代理读到6文件5通过/1失败、73项72通过/1失败及Response已消费堆栈；修正后的单节点日志另存，不补造最终全套全绿。
