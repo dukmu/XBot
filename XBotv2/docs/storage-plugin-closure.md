@@ -1,4 +1,4 @@
-> Historical closure report: this describes the earlier JSON-based implementation and its then-current evidence. For the current storage architecture and outstanding verification, see [Persistence and storage](persistence.md).
+> Historical closure report: this describes the earlier JSON-based implementation and its then-current evidence. For current storage behavior, see [Persistence and storage](persistence.md) and the [persistence owner design](../persistence/doc/design.md).
 
 # Storage and plugin closure evidence
 

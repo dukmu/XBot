@@ -502,3 +502,16 @@
 - [x] 网络桩改为识别真实Product workload turn标记，内部todo提醒不重置；新真实5轮节点6.77s（`/tmp/xbot-product-notice-v17-12.log`75526 exit0），确实含runtime notice、恰好40主请求/5publish/5创建1完成/6范围refs。c4/c16未启动，200MiB未跑；长档待本设计还缺的共用记录缓存、进程事件总预算和fork metadata收尾后统一测，避免影响同工况后再盲目重跑。
 - [x] 本轮责任提交：jobs03836c2a、权限1876131c、惰性正文b53bff2d、工况40ce000f、线程策略ee002493、TUI契约45a2dc69、提醒边界52690dda；当前归档源码`52690ddac307bd081740080d4dc5263d21073d70`。源码/产物/日志范围已由主代理读实际数据，用户两项未跟踪文件未动，无bundle/运行数据入库或新hash快照；goal完整active，最后只提交TODO。
 - [ ] completion审读仍有明确实现缺口：ForkState及physical copy cuts/origins/pending ID全量、共享记录页RAM缓存（现artifact_cache是磁盘物化视图，不可冒充）、事件512/8MiB目前逐thread不是process合计预算，起始缓存预算须同工况实测。XBotv2/docs/persistence.md仍有过时未实现声明。后续先收尾上述实际边界，再正式1/4/16矩阵/慢SSE/200MiB、最终source套件与独立wheel安装/资源验证；当前中间wheel及旧清单无display.py，不作最终证据。
+
+### 迭代18：共享读取缓存、事件总预算与fork元数据（进行中）
+
+- [x] 从源码52690dda/日志f65b2765继续；上一轮有实际jobs/display/config/TUI提交，首次c1错误已SIGINT/poll为130，未冒充矩阵。tracked clean，仅原用户文件两项未跟踪；仍只三名Terra，明确分工原始记录RAM cache、进程事件pool、fork元数据，接口段彼此协调。
+- [x] 记录cache归process物理资源，原始不可变bytes LRU与临时pin、按bytes/key计账，conversation/team共用；append保前缀，重置/损坏/会话与root关闭失效，不把现有磁盘artifact视图当作RAM页cache，不加业务codec/callback或全文hash。
+- [x] session/workspace使用唯一process replay pool，保留逐流窗口但共享总字节预算；订阅仅cursor+唤醒，跨流淘汰明确expired并唤醒，关闭不保历史owner，0/单大帧语义与config scope明确。
+- [x] fork只从冻结staging DB分页读取cuts/按ID查，业务按thread处理origins与finalize，规范discard_pending投影退休所复制pending而不写全ID大记录；CAS逐项扫描，所有owner/empty情况一致，失败不发布且不改源。
+- [ ] 上述实际生产内存边界都归档后，重新启动受影响且未通过c1，再首次c4/c16与全轮一次200MiB；旧short/MiniMax/客户端全套及hash快照不重复。
+
+- [x] 记录cache默认16MiB（0禁用），只存物理原始bytes，每次返回新解码对象；计入key/entry开销，临时decode pin、LRU淘汰/oversize bypass、conversation/team共用、staging发布/失败/root关闭清退。真实路径证据含 `/tmp/xbot-record-cache-shared-v18-3.log`、`/tmp/xbot-record-cache-pin-v18-6.log`、`/tmp/xbot-record-cache-fork-v18-7.log`（handle80471 exit0）、`/tmp/xbot-record-cache-stage-real-v18-9.log`、尾部修复/完整损坏/commit uncertain重放3项 `/tmp/xbot-record-cache-recovery-v18-11.log`（97800 exit0）。原v18-1/v18-5失败日志保留；最后mtime改变损坏节点 `/tmp/xbot-record-cache-corrupt-v18-8.log` 1项exit0。真实文件系统实测连续同长写可有相同mtime/ctime；活跃rollout的外部并发原位改写不受支持，相同stat无法即时发现，明确记录，不以hash/每读全文/监控补防御。
+- [x] fork新证据 `/tmp/xbot-fork-bounded-v18.log` 8项（61799 exit0）：505 pending重建后仍退休、505播种子线程+主线程共506切点、owner失败不发布、team/对象引用；冻结usage与逐项对象复制后仅受影响4项 `/tmp/xbot-fork-frozen-objects-v18.log`（80013 exit0），staging缓存发布/失败释放2项 `/tmp/xbot-fork-cache-release-v18.log`（91321 exit0）。usage baseline从冻结目标副本读取，非复制后的活源；物理backend不解释pending/usage/permissions业务。
+- [x] 事件总池默认32MiB（0禁用），各流仍512/8MiB；单份payload、全局写序淘汰与跨流唤醒，公开唯一stats四个整数，close释放正文及window。已有局部14项 `/tmp/xbot-replay-local-contract.log`、真实loader4项 `/tmp/xbot-process-replay-focus.log`、配置1项 `/tmp/xbot-process-replay-config.log`、反向跨流/订阅持有close/超大帧隔离3项 `/tmp/xbot-replay-release-focus.log` 均actual0；最终stats接口节点 `/tmp/xbot-replay-stats-dict.log` 1项actual0。真实socket `/tmp/xbot-process-replay-socket.log` 日志为1 passed/2.23s，原工具返回截断，实际退出码证据缺失，仅确认无pytest残留，不补造退出码或重复socket。UTF-8序列化字节预算不包含临时编码/传输缓冲，不冒充RSS上限。
+- [x] 生产责任提交：共享记录cache/有界fork `0b763751`、共享事件池 `99015f3a`。只读ownership审查未见生产跨插件impl导入或按总归档H驻留全文；这不是新运行验收。整理agentloop README为说明/索引，正文移doc；主线程ID按调用方指定；移除总览已完成机制的过时“未实现”列表，usage文档改为真实namespaced KV，历史存储报告保留历史标记。未为文档跑测试/构建。

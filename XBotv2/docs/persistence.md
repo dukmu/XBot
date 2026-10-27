@@ -11,14 +11,18 @@ The process database is `plugin-state.sqlite3`. Each persisted session has
 content-addressed objects. Paths are defined by `RuntimePaths`, `SessionPaths`
 and `ThreadPaths`. Empty read-only startup does not create a session.
 
-Usage and todo own their tables; permissions and goal own their state. Workspace
+Todo owns its tables; usage, permissions and goal own their namespaced state. Workspace
 membership, archive status and ordering live in the process database. Fork
 uses public owner events before publishing a staged copy. Artifact IDs are
 logical references resolved against the active thread's artifact store.
 
-The present SQL and KV storage does not make all collections bounded. Todo
-active/completed pagination and quotas, workspace large-collection pagination,
-streaming shell and artifact handling, fixed ranges and pins, and cache byte
-budgets remain work to do. Product-scale 512/4096 stress tests and an end-to-end
-MiniMax/TUI run remain outstanding, as do full core, integration, TUI and wheel
-acceptance for this source revision.
+Todo, workspace, session and thread listings expose bounded pages. Shell output
+and artifacts support streaming; record selections have fixed cuts and can be
+pinned while their materialized paths are in use. Persistence owns a shared,
+byte-budgeted cache of physical record bytes and a separate materialized-file
+cache. See the owner design for their different accounting and lifetimes.
+
+Configured limits and cache budgets are starting values, not measured universal
+performance targets. Product-scale workload results and installed-wheel
+acceptance must be assessed for the exact source revision under review; these
+storage mechanisms alone do not establish those results.
