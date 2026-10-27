@@ -6126,8 +6126,11 @@ async def test_background_task_updates_and_completion_use_session_stream(
 async def test_multiple_completions_keep_distinct_inbox_messages(
     http_app, monkeypatch
 ) -> None:
-    async def run(*args, **kwargs):
-        await asyncio.sleep(0)
+    release_first = asyncio.Event()
+
+    async def run(command, **kwargs):
+        if command == "printf one":
+            await release_first.wait()
         ref = await kwargs["artifacts"].put(ArtifactKind.TOOL_RESULT, b"task output")
         return ShellJobResult(ref, 0)
 
@@ -6150,7 +6153,19 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
     )
     await _start_background_shell(ctx, "printf one")
     await _start_background_shell(ctx, "printf two")
-    await asyncio.sleep(0.1)
+    try:
+        async with asyncio.timeout(5):
+            while len(ctx.require(INBOX)) != 1:
+                await asyncio.sleep(0.01)
+        first = ctx.require(INBOX).pending[0]
+        assert json.loads(ET.fromstring(first.input.content).findtext("payload"))["view"]["label"] == "printf two"
+    finally:
+        release_first.set()
+    async with asyncio.timeout(5):
+        while len(ctx.require(INBOX)) != 2:
+            await asyncio.sleep(0.01)
+    pending = ctx.require(INBOX).pending
+    assert len({item.id for item in pending}) == 2
     # Completions stage into the inbox without waking a turn.
     assert llm.call_count == 0, "completions must not wake an LLM turn"
     assert len(ctx.require(INBOX)) == 2
@@ -6175,7 +6190,7 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
         json.loads(ET.fromstring(message).findtext("payload"))["view"]["label"]
         for message in runtime_msgs
     ]
-    assert commands == ["printf one", "printf two"]
+    assert commands == ["printf two", "printf one"]
     assert len(ctx.require(INBOX)) == 0
     assert [message.kind for message in ctx.require(LOOP_STATE).history.snapshot()] == [
         "runtime_notice", "runtime_notice", "human_input", "assistant",

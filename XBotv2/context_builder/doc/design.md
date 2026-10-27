@@ -50,3 +50,11 @@ component = InlinePromptComponent(
 Owner tests exercise component order, canonical message projection, artifact
 paths and missing-store failures. Composed loop and compaction tests exercise
 the production event handler and the shared compiler service.
+
+Before compiling file paths, `pin_components(built_context, resources,
+artifacts=...)` acquires the referenced artifacts into the caller's
+`AsyncExitStack`. The synchronous compiler only renders already prepared
+paths. `ContextBuildRequest.resources` is the candidate's runtime resource
+scope, not part of any provider request or persistent message. Attachment
+instructions carry both the logical `artifact_id` and the current absolute
+path. Logical references survive restore; process cache paths do not.

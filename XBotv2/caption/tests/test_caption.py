@@ -3,6 +3,8 @@ from XBotv2.tests.runtime import engine_of
 
 import asyncio
 import xcore
+from contextlib import AsyncExitStack
+
 import pytest
 from XBotv2.agentloop.api.events import BeforeContextBuild
 from XBotv2.agentloop.api.outputs import LoopError
@@ -412,6 +414,7 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
                 sandbox_summary="",
                 runtime_paths=None,
                 turn=turn,
+                resources=AsyncExitStack(),
             )
             return BeforeContextBuild(request=request)
 

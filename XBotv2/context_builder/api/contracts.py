@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import AsyncExitStack
 from typing import Literal, Protocol, TypeAlias
 from xcore.api.services import ServiceKey
 from XBotv2.core.api.messages import ConversationMessage
@@ -54,6 +55,11 @@ class BuiltContext:
 
 class ContextCompiler(Protocol):
     """Compile canonical context components for model requests."""
+    async def pin_components(
+        self, built_context: BuiltContext, resources: AsyncExitStack, *,
+        artifacts: ArtifactStorePort | None = None,
+    ) -> None: ...
+
     def messages_from_components(
         self, built_context: BuiltContext, *,
         artifacts: ArtifactStorePort | None = None,

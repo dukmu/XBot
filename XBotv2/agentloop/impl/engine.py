@@ -17,6 +17,7 @@ contracts. Application composition resolves all feature-plugin dependencies.
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 import time
 import uuid
 from collections.abc import AsyncIterator
@@ -230,6 +231,7 @@ class Engine:
         max_iterations: int | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
         inbox: AgentInbox,
+        artifacts=None,
     ) -> None:
         self.model_client = model_client
         self.tools = tools
@@ -240,6 +242,7 @@ class Engine:
         self.max_iterations = max_iterations
         self._log = runtime_log.bind("agent_loop")
         self.inbox = inbox
+        self.artifacts = artifacts
         self._request_id: ContextVar[str] = ContextVar(
             f"xbotv2_request_id_{id(self)}",
             default="",
@@ -507,9 +510,15 @@ class Engine:
                 )
                 reset_log_context(log_token)
 
-    async def _run_turn_impl(
+    async def _run_turn_impl(self, claimed):
+        async with AsyncExitStack() as resources:
+            async for event in self._run_turn_with_resources(claimed, resources):
+                yield event
+
+    async def _run_turn_with_resources(
         self,
         claimed: list[InboxItem],
+        resources: AsyncExitStack,
     ) -> AsyncIterator[LoopEvent]:
         """Execute one user turn through the ReAct loop.
 
@@ -546,7 +555,10 @@ class Engine:
                 retry_request = None
             else:
                 while True:
-                    context_build = await self._build_turn_context()
+                    await resources.aclose()
+                    if self.artifacts is not None:
+                        await resources.enter_async_context(self.artifacts.using())
+                    context_build = await self._build_turn_context(resources)
                     if isinstance(context_build, _ContextCompleted):
                         yield context_build.event
                         turn_complete = True
@@ -751,6 +763,8 @@ class Engine:
                     turn_complete = True
                     break
 
+            await resources.aclose()
+
             # Both response paths share the same input boundary. A hook may
             # end the turn; only the processed prefix may then be consumed.
             items = await self.inbox.claim_step()
@@ -913,7 +927,7 @@ class Engine:
             message="User message was rejected before entering history.",
         )
 
-    async def _build_turn_context(self) -> _ContextBuildResult:
+    async def _build_turn_context(self, resources) -> _ContextBuildResult:
         await self.messages.synchronize()
         build_request = ContextBuildRequest(
             history=tuple(self.messages),
@@ -923,6 +937,7 @@ class Engine:
             runtime_paths=self.state.variables,
             turn=self.turn_count,
             sandbox_summary="",
+            resources=resources,
         )
         before_context_result = await self._dispatch(
             Events.BEFORE_CONTEXT_BUILD,
@@ -943,6 +958,8 @@ class Engine:
                 "ReplaceContextRequest, CompleteTurn, or None"
             )
 
+        if build_request.resources is not resources:
+            raise ValueError("Context preparation cannot replace its resource scope")
         await self._events.emit(CONTEXT_BUILD_INPUTS_READY, build_request)
         context_messages = await self._events.serial(BUILD_CONTEXT, build_request)
         if context_messages is None:

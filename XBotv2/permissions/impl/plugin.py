@@ -83,6 +83,7 @@ class PermissionsService(PermissionsPort):
         thread_repository,
         parent: PermissionsPort | None = None,
         tools: ToolsPort | None = None,
+        artifacts=None,
     ) -> None:
         self._base_policies = tuple(policies)
         self._agent_policy: PermissionPolicy | None = None
@@ -91,7 +92,7 @@ class PermissionsService(PermissionsPort):
         self._thread_repository = thread_repository
         self._lock = asyncio.Lock()
         self._tools = tools
-        self._system = PermissionSystem(variables=variables, parent=parent)
+        self._system = PermissionSystem(variables=variables, parent=parent, artifacts=artifacts)
         self._rebuild()
 
     def _rebuild(self) -> None:
@@ -233,6 +234,7 @@ class PermissionsComponent:
         COMMANDS,
         SETTINGS,
         "state",
+        "artifacts",
         AGENT_CATALOG,
     ]
     """Register the permission system as ``ctx.permissions`` and its guard."""
@@ -277,6 +279,7 @@ class PermissionsComponent:
             ctx.require(THREAD_REPOSITORY),
             parent=parent,
             tools=ctx.require(TOOLS),
+            artifacts=ctx.artifacts,
         )
         ctx.set(PERMISSIONS, permissions)
         for command in build_permissions_commands(ctx.require(SETTINGS), permissions):

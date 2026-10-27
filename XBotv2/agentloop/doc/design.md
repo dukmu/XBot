@@ -62,3 +62,30 @@ chunks and close readers on completion, send failure or disconnect.
 Uploaded image/attachment objects are still written before inbox acceptance;
 failed/conflicting uploads can leave unreferenced objects. Long-text
 preparation cleanup does not claim atomicity for that separate upload path.
+
+`archive_records(after_seq=0, through_seq=None, record_ids=None)` is an ordinary
+registered read tool for the current thread's canonical JSONL. It returns a
+small description and a managed record-selection artifact. Bounds freeze at
+the confirmed head; explicit IDs preserve caller order. It reads no other
+thread through a permission shortcut. `ConversationArchive.record_selection`
+owns selection/authorization and records `artifact_referenced` facts so the
+same metadata index authorizes downloads after restart or fork. A closed
+session uses a short actual writer claim when this metadata must be committed.
+The backend handles raw records and physical selection facts only.
+
+Each request candidate owns an `AsyncExitStack`: preparation pins attachments
+before any provider-facing path is emitted, and the same scope survives model
+return until that response's tool batch ends. Reusing an unchanged request
+through `RetryRequest` retains its scope. History changes or a rejected/rebuilt
+candidate close it before the replacement is prepared. Completed iterations
+release their own pins rather than accumulating them for the whole turn.
+Auxiliary compaction requests hold their separate component pins through their
+model invocation. Runtime resources never enter `ModelRequest` or rollout.
+
+Canonical exchange preserves the original thread's relative stream identity.
+Selection packages validate an already supplied canonical prefix, or import a
+foreign frozen source without binding a business projector. Business owners
+extract referenced nested artifacts; imported dependency metadata is backed by
+owner facts after the original prefix, preserving all original sequence cuts.
+Repeated export/import therefore retains full referenced originals while the
+backend remains unaware of message formats.

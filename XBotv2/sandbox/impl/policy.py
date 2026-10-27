@@ -49,7 +49,9 @@ class SandboxPolicy(SandboxPort):
         workspace_read: str = "allow",
         workspace_write: str = "allow",
         variables: RuntimeVariables | None = None,
+        artifacts=None,
     ) -> None:
+        self.artifacts = artifacts
         self.enabled = enabled
         self.data_root = Path(data_root).resolve()
         self.workspace_root = Path(workspace_root).resolve()
@@ -349,6 +351,8 @@ class SandboxPolicy(SandboxPort):
             value = args.get(field)
             if not isinstance(value, str):
                 continue
+            if self.artifacts is not None:
+                value = self.artifacts.resolve_model_path(value)
             write = access == "write"
             path = (
                 self.resolve_write_path(value)
@@ -442,6 +446,10 @@ class SandboxPolicy(SandboxPort):
             and lexical.is_relative_to(self.session_root)
         ):
             return "deny"
+        if self.artifacts is not None and any(
+            target.is_relative_to(Path(root)) for root in self.artifacts.managed_roots()
+        ):
+            return "deny" if write else "allow"
         if self.session_root is not None and target.is_relative_to(self.session_root):
             return "deny" if write else "allow"
         if self.artifacts_root is not None and target.is_relative_to(

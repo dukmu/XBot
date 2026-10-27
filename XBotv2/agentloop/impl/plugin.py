@@ -73,6 +73,11 @@ def mount_tools(ctx: Context) -> None:
     registry = ToolRegistry()
     tools = ToolsService(registry, events=ctx, runtime_log=ctx.runtime_log, owner=ctx)
     ctx.provide(TOOLS, tools)
+    from XBotv2.agentloop.impl.archive_tools import ArchiveTools
+    from XBotv2.core.api.tools import Tool
+    from dataclasses import replace
+    archive_tools = ArchiveTools(ctx.require(ARCHIVE), ctx.thread_info)
+    tools.register(replace(Tool.from_function(archive_tools.archive_records), kind="read"))
     ctx.pre_stop(tools.close)
     ctx.on(LIST_TOOLS.name, ToolsCatalogHandler(registry).list_tools)
 
@@ -91,6 +96,7 @@ async def mount_engine(ctx):
         max_iterations=selection.limits.max_turns,
         runtime_log=ctx.runtime_log,
         inbox=ctx.require(INBOX),
+        artifacts=ctx.artifacts,
     )
     runner = AgentLoop(_context=ctx, _engine=engine, interactive=ctx.interactive)
     ctx.provide(AGENT_LOOP, runner)
@@ -137,6 +143,7 @@ def mount_thread(ctx, config):
     )
     ctx.inject(
         [
+            "artifacts",
             AGENT_RUNTIME,
             LOOP_STATE,
             INBOX,
@@ -152,7 +159,7 @@ def mount_thread(ctx, config):
     )
 
 
-mount_thread.inject = ("runtime_log", "thread_info")
+mount_thread.inject = ("runtime_log", "thread_info", ARCHIVE)
 mount_thread.provide = (TOOLS, INBOX, LOOP_STATE, AGENT_LOOP)
 
 

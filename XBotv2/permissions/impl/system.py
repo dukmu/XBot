@@ -65,7 +65,9 @@ class PermissionSystem:
         policies: Sequence[PermissionPolicy] = (),
         variables: RuntimeVariables | None = None,
         parent: PermissionsPort | None = None,
+        artifacts=None,
     ) -> None:
+        self.artifacts = artifacts
         self.variables = variables or RuntimeVariables()
         self.parent = parent
         self._policies: tuple[PermissionPolicy, ...] = ()
@@ -241,6 +243,8 @@ class PermissionSystem:
             value = args.get(field)
             if not isinstance(value, str):
                 return False
+            if self.artifacts is not None:
+                value = self.artifacts.resolve_model_path(value)
             path = Path(value).expanduser()
             try:
                 if path.is_absolute():

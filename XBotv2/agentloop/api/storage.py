@@ -8,6 +8,7 @@ from xcore.api.services import ServiceKey
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.core.api.messages import ConversationMessage
+from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.persistence.api.models import ArtifactPayload
 
 
@@ -35,6 +36,10 @@ class ConversationArchive(Protocol):
         limit: int = 160,
         before: int | None = None,
     ) -> TrajectoryRead: ...
+    async def record_selection(
+        self, session_id: str, thread_id: str, *, after_seq: int = 0,
+        through_seq: int | None = None, record_ids: list[str] | None = None,
+    ) -> ArtifactRef: ...
     async def artifact(
         self, session_id: str, thread_id: str, artifact_id: str
     ) -> ArtifactPayload: ...

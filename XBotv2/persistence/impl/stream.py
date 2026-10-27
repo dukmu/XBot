@@ -254,6 +254,17 @@ class Stream:
         async with self.resources.operation(
             self.paths, write=write, binding=self.binding
         ):
+            if self.paths.session.database_file.exists():
+                snapshot = await self.resources.worker.call(
+                    self.paths.session.database_file,
+                    lambda c: c.execute(
+                        "SELECT 1 FROM artifact_import_sources WHERE stream_id=?", (self.thread,),
+                    ).fetchone() is not None,
+                )
+                if snapshot:
+                    raise ValueError(
+                        "Imported record snapshots cannot be bound to a domain rollout projector"
+                    )
             self._lease_task = asyncio.current_task()
             self._lease_write = write
             try:

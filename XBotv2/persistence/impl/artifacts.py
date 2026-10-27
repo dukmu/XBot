@@ -6,8 +6,9 @@ import asyncio
 import hashlib
 import os
 import tempfile
-from collections.abc import AsyncIterable
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterable, Sequence
+from contextlib import AsyncExitStack, asynccontextmanager
+from contextvars import ContextVar
 from pathlib import Path
 from uuid import uuid4
 
@@ -17,6 +18,7 @@ from XBotv2.core.api.paths import ThreadPaths
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 
 CHUNK_BYTES = 256 * 1024
+_ACTIVE_ARTIFACTS = ContextVar("xbot_artifact_request", default=None)
 
 
 class ArtifactStore:
@@ -45,6 +47,128 @@ class ArtifactStore:
                 self._paths.session_id, self._binding, write=write
             ):
                 yield
+
+    async def reference_records(
+        self,
+        stream_id: str,
+        *,
+        after_seq: int = 0,
+        through_seq: int | None = None,
+        record_ids: Sequence[str] | None = None,
+        kind: ArtifactKind = ArtifactKind.CONTEXT,
+        name: str = "records.jsonl",
+    ) -> ArtifactRef:
+        from XBotv2.persistence.impl.record_artifacts import create
+
+        return await create(
+            self, stream_id, after_seq=after_seq, through_seq=through_seq,
+            record_ids=record_ids, kind=kind, name=name,
+        )
+
+    async def reference(self, identity):
+        from XBotv2.persistence.impl.record_artifacts import is_selection, metadata
+        async with self._use():
+            if is_selection(identity):
+                return ArtifactRef.model_validate_json((await metadata(self, identity))[4])
+            path = self._paths.artifact_file(identity)
+            size = await run_file_io(lambda: path.stat().st_size)
+            return ArtifactRef(id=identity, kind=ArtifactKind(identity.split("/", 1)[0]),
+                               size=size, sha256=identity.rsplit("/", 1)[1].split(".", 1)[0])
+
+    @asynccontextmanager
+    async def using(self):
+        """One request's exposed paths; ownership stays out of provider values."""
+        token = _ACTIVE_ARTIFACTS.set({})
+        try:
+            yield
+        finally:
+            _ACTIVE_ARTIFACTS.reset(token)
+
+    @asynccontextmanager
+    async def pin(self, artifact):
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        async with self._use():
+            ref = await self.reference(_artifact_id(artifact))
+            if is_selection(ref.id):
+                async with self._resources.artifact_cache.pin(self, ref) as path:
+                    yield path
+            else:
+                yield self.model_path(ref)
+
+    async def expose(self, artifact, resources):
+        path = await resources.enter_async_context(self.pin(artifact))
+        active = _ACTIVE_ARTIFACTS.get()
+        if active is not None:
+            identity = _artifact_id(artifact)
+            active[(self._paths.session_id, identity)] = (self, identity)
+        return path
+
+    async def handoff(self):
+        """Acquire independent rights for the paths exposed by this request."""
+        resources = AsyncExitStack()
+        try:
+            for store, ref in list((_ACTIVE_ARTIFACTS.get() or {}).values()):
+                await resources.enter_async_context(store.pin(ref))
+            return resources
+        except BaseException:
+            await resources.aclose()
+            raise
+
+    def _managed_identity(self, value):
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        if value.startswith("artifact:"):
+            return value[len("artifact:"):]
+        root = self._paths.runtime.data_dir / ".cache" / "artifacts"
+        try:
+            relative = Path(value).relative_to(root)
+        except ValueError:
+            return None
+        if len(relative.parts) != 3 or relative.parts[1] != self._paths.session_id:
+            raise ValueError("Managed artifact path belongs to another session")
+        identity = "records/" + relative.parts[2]
+        is_selection(identity)
+        return identity
+
+    def resolve_model_path(self, value):
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        identity = self._managed_identity(value)
+        if identity is None:
+            return value
+        if is_selection(identity):
+            return str(self._resources.artifact_cache.path(self, identity))
+        return self.model_path(identity)
+
+    async def reference_path(self, value):
+        identity = self._managed_identity(value)
+        return await self.reference(identity) if identity is not None else None
+
+    def managed_roots(self):
+        roots = [str(self._paths.artifacts_dir)]
+        if self._resources is not None:
+            roots.append(str(self._resources.artifact_cache.root / self._paths.session_id))
+        return tuple(roots)
+
+    @asynccontextmanager
+    async def resolve_path(self, path):
+        identity = self._managed_identity(path)
+        if identity is None:
+            yield path
+            return
+        async with self.pin(identity) as pinned:
+            yield pinned
+
+    async def selection_stream(self, artifact):
+        from XBotv2.persistence.impl.record_artifacts import is_selection, metadata
+        if not is_selection(_artifact_id(artifact)):
+            return None
+        async with self._use():
+            return (await metadata(self, _artifact_id(artifact)))[0]
+
+    async def read_records(self, artifact):
+        from XBotv2.persistence.impl.record_artifacts import records
+        async with self._use():
+            async for record in records(self, _artifact_id(artifact)):
+                yield record
 
     @asynccontextmanager
     async def spool_file(self):
@@ -100,7 +224,7 @@ class ArtifactStore:
     @asynccontextmanager
     async def _publication(self, temporary, ref):
         lock = (
-            self._resources.artifact_lock(self._paths, ref.sha256)
+            self._resources.artifact_lock(self._paths.session.root, ref.sha256)
             if self._resources is not None
             else self._local_lock
         )
@@ -151,7 +275,14 @@ class ArtifactStore:
             raise ValueError("Artifact offset and limit must be non-negative")
         if not 0 < chunk_size <= CHUNK_BYTES:
             raise ValueError(f"Artifact chunk_size must be between 1 and {CHUNK_BYTES}")
-        path = self._paths.artifact_file(_artifact_id(artifact))
+        from XBotv2.persistence.impl.record_artifacts import is_selection, chunks
+        identity = _artifact_id(artifact)
+        if is_selection(identity):
+            async with self._use():
+                async for chunk in chunks(self, identity, offset=offset, limit=limit, chunk_size=chunk_size):
+                    yield chunk
+            return
+        path = self._paths.artifact_file(identity)
         async with self._use():
             remaining = limit
             while remaining is None or remaining:
@@ -168,14 +299,56 @@ class ArtifactStore:
         return b"".join([chunk async for chunk in self.read_chunks(artifact)])
 
     async def exists(self, artifact: ArtifactRef | str) -> bool:
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        if is_selection(_artifact_id(artifact)):
+            await self.reference(_artifact_id(artifact))
+            return True
         async with self._use():
             path = self._paths.artifact_file(_artifact_id(artifact))
             return await run_file_io(path.is_file)
 
     def model_path(self, artifact: ArtifactRef | str) -> str:
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        if is_selection(_artifact_id(artifact)):
+            key = (self._paths.session_id, _artifact_id(artifact))
+            entry = self._resources.artifact_cache.entries.get(key)
+            if entry is None or not entry.pins:
+                raise RuntimeError("A record artifact path requires an active pin")
+            return str(entry.path)
         return str(self._paths.artifact_file(_artifact_id(artifact)).absolute())
 
+    async def export_reference(self, artifact, destination, *, supplied_streams=()):
+        from XBotv2.persistence.impl.record_artifacts import is_selection, export_reference
+        if is_selection(artifact.id):
+            async with self._use():
+                await export_reference(self, artifact, destination, supplied_streams)
+        else:
+            await self.export_file(artifact, destination)
+
+    async def import_reference(self, source, artifact):
+        from XBotv2.persistence.impl.record_artifacts import is_selection, import_reference
+        if is_selection(artifact.id):
+            async with self._use(write=True):
+                await self._resources.materialize_database(self._paths.session.database_file)
+                async with self._resources.artifact_lock(self._paths.session.root, artifact.id):
+                    await import_reference(self, source, artifact)
+        else:
+            await self.import_file(source, artifact)
+
     async def export_file(self, artifact: ArtifactRef, destination: Path) -> None:
+        from XBotv2.persistence.impl.record_artifacts import is_selection
+        if is_selection(artifact.id):
+            destination = Path(destination)
+            temporary = destination.with_name("." + destination.name + "." + uuid4().hex)
+            async with self._use():
+                try:
+                    await run_file_io(_create, temporary)
+                    async for chunk in self.read_chunks(artifact):
+                        await run_file_io(_append, temporary, chunk)
+                    await run_file_io(_publish, temporary, destination, destination.parent)
+                finally:
+                    await run_file_io(_unlink, temporary)
+            return
         async with self._use():
             await run_file_io(
                 _copy_verified, self._paths.artifact_file(artifact.id),

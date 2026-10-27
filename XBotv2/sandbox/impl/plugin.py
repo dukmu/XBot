@@ -38,6 +38,7 @@ from XBotv2.sandbox.impl.tools import (
 class SandboxComponent:
     inject = [
         "thread_paths",
+        "artifacts",
         "thread_info",
         TOOLS,
         "data_root",
@@ -62,6 +63,7 @@ class SandboxComponent:
             session_root=ctx.thread_paths.root,
             artifacts_root=ctx.thread_paths.artifacts_dir,
             variables=ctx.variables,
+            artifacts=ctx.artifacts,
         )
         ctx.set(SANDBOX, policy)
         ctx.require(TOOLS).guard(policy.make_guard())

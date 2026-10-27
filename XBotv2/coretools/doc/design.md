@@ -85,3 +85,22 @@ and the artifact store.
 - See [permissions](../../permissions/README.md) and [sandbox](../../sandbox/README.md) for their contracts. Physical filesystem worker I/O remains in `core.filesystem` and has not migrated.
 
 For example, an Agent can call `read` with `{"path":"README.md"}` or `shell` with `{"command":"git status"}` through the normal Tool registry and guards.
+
+`read` recognizes managed logical paths such as
+`artifact:records/<selection-hash>` and earlier-process cache paths. Permission
+path scopes and sandbox checks use the same current physical target as the
+read itself; a logical ref cannot gain workspace-path authorization and then
+silently read a different data/cache target. The handler pins/rebuilds that
+view for the complete operation and still executes through ordinary registry,
+guards and sandbox filesystem I/O.
+
+Background shell startup explicitly takes independent use rights for the
+current request's exposed paths. Commands are opaque and remain unchanged, so
+this transfer conservatively covers those request paths. The runner keeps the
+rights until process completion/reaping and releases them on terminal failure
+or cancellation, including cancellation before its coroutine starts. The job
+spec/result and completion notifications contain no resource leases.
+
+Immutable managed reads do not populate the workspace edit-version observation
+map. Their identity and read-only roots own integrity/lifetime, so evicted cache
+paths do not accumulate as stale optimistic-edit metadata.

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from XBotv2.persistence.impl.database import execute
+from XBotv2.persistence.impl.record_artifacts import TABLES as ARTIFACT_TABLES
 
 _BIND_NOW = object()
 import json
@@ -31,7 +32,7 @@ class DomainStore:
     def __init__(self, state, owner, tables):
         if not re.fullmatch("[a-z][a-z0-9_]*", owner) or any(
             not re.fullmatch("[a-z][a-z0-9_]*", table)
-            or table in {"records", "stream_heads", "plugin_kv", "persistence_tables"}
+            or table in {"records", "stream_heads", "plugin_kv", "persistence_tables"} | ARTIFACT_TABLES
             for table in tables
         ):
             raise ValueError("Invalid or reserved domain table declaration")

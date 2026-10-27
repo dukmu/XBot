@@ -47,6 +47,12 @@ def _publish(source, target):
         os.close(descriptor)
 
 
+async def _record_refs(store, record):
+    if record["kind"] == "artifact_referenced":
+        return (ArtifactRef.model_validate(record["data"]["artifact"]),)
+    return tuple(ref for message in await _messages(store, record) for ref in _refs(message))
+
+
 async def _messages(store, record):
     kind, data = record["kind"], record["data"]
     if kind == "input_accepted":
@@ -81,6 +87,55 @@ def _refs(message):
     ):
         result.extend(message.outcome.output.artifacts)
     return result
+
+
+async def _export_artifact(archive, session_id, thread_id, ref, objects):
+    from XBotv2.persistence.api.files import write_text_atomic
+    target = objects / ref.id
+    if target.exists():
+        return
+    artifacts = archive.backend.artifacts(session_id, thread_id)
+    await artifacts.export_reference(ref, target, supplied_streams=(thread_id,))
+    source = await artifacts.selection_stream(ref)
+    if source is None:
+        return
+    dependencies = target / "agentloop-refs.jsonl"
+    await io(write_text_atomic, dependencies, "")
+    owner = archive._store(session_id, source)
+    if await owner.thread_repository.load() is None:
+        return
+    async for record in artifacts.read_records(ref):
+        for nested in await _record_refs(owner, record):
+            await io(_write, dependencies, nested.model_dump(mode="json"))
+            await _export_artifact(archive, session_id, thread_id, nested, objects)
+
+
+def _dependency(path, offset, budget):
+    with path.open("rb") as reader:
+        reader.seek(offset)
+        return _next(reader, budget), reader.tell()
+
+
+async def _import_artifact(archive, session_id, thread_id, ref, objects):
+    artifacts = archive.backend.artifacts(session_id, thread_id)
+    await artifacts.import_reference(objects / ref.id, ref)
+    if await artifacts.selection_stream(ref) is None:
+        return
+    offset = 0
+    while True:
+        value, offset = await io(
+            _dependency, objects / ref.id / "agentloop-refs.jsonl", offset,
+            archive.backend.record_bytes,
+        )
+        if value is None:
+            break
+        nested = ArtifactRef.model_validate(value)
+        await _import_artifact(archive, session_id, thread_id, nested, objects)
+        owner = archive._store(session_id, thread_id)
+        await owner.sql(lambda sql: sql.execute(
+            "INSERT OR REPLACE INTO conversation_artifacts VALUES(?,?,?)",
+            (thread_id, nested.id, nested.model_dump_json()),
+        ), write=True, size=len(nested.model_dump_json().encode("utf-8")))
 
 
 async def export_rollout(archive, session_id, thread_id, destination):
@@ -121,13 +176,10 @@ async def export_rollout(archive, session_id, thread_id, destination):
                 if not page:
                     raise ValueError("Export prefix has a missing record")
                 for record in page:
-                    for message in await _messages(store, record):
-                        for ref in _refs(message):
-                            target = temp_objects / ref.id
-                            if not target.exists():
-                                await archive.backend.artifacts(
-                                    session_id, thread_id
-                                ).export_file(ref, target)
+                    for ref in await _record_refs(store, record):
+                        await _export_artifact(
+                            archive, session_id, thread_id, ref, temp_objects,
+                        )
                     await io(
                         _write, temporary, {"kind": "rollout_record", "record": record}
                     )
@@ -205,10 +257,11 @@ async def import_rollout(archive, source, *, workspace_root=None, artifact_sourc
                 if artifact_source is not None
                 else source.parent / name
             )
-            repository = archive.sessions.thread_repository(target_id, "main")
+            thread_id = header["source_stream"]
+            repository = archive.sessions.thread_repository(target_id, thread_id)
             await repository.remember(facts)
             await repository.ensure()
-            store = archive._store(target_id, "main")
+            store = archive._store(target_id, thread_id)
             seq = 0
             while (
                 value := await io(_next, reader, archive.backend.record_bytes)
@@ -230,14 +283,27 @@ async def import_rollout(archive, source, *, workspace_root=None, artifact_sourc
                     await store.stream.append(
                         record["kind"], record["data"], identity=record["id"]
                     )
-                    for message in await _messages(store, record):
-                        for ref in _refs(message):
-                            await archive.backend.artifacts(
-                                target_id, "main"
-                            ).import_file(objects / ref.id, ref)
+                    for ref in await _record_refs(store, record):
+                        await _import_artifact(
+                            archive, target_id, thread_id, ref, objects,
+                        )
             if seq != header["cut_seq"]:
                 raise ValueError("Export prefix is incomplete")
             async with store.operation(write=True):
+                # Dependency metadata was staged in this unpublished target.
+                # Back it with owner facts after the original prefix so every
+                # source sequence/offset selection keeps its original meaning.
+                after_artifact = ""
+                while True:
+                    references = await store.sql(lambda sql: sql.execute(
+                        "SELECT artifact_id,metadata FROM conversation_artifacts WHERE thread_id=? AND artifact_id>? ORDER BY artifact_id LIMIT 128",
+                        (thread_id, after_artifact),
+                    ))
+                    if not references:
+                        break
+                    for _, metadata in references:
+                        await store.stream.append("artifact_referenced", {"artifact": json.loads(metadata)})
+                    after_artifact = references[-1][0]
                 pending = await store.pending_ids()
                 await store.stream.append(
                     "import_boundary",

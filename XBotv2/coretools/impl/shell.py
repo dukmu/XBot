@@ -123,28 +123,38 @@ class ShellRunner:
         *,
         artifacts: ArtifactStorePort,
         sandbox: SandboxPort | None = None,
+        uses=None,
     ) -> None:
         self.sandbox = sandbox
         self.spec = spec
         self.artifacts = artifacts
+        self._uses = uses
+        self._running = False
 
     async def run(self, job: Job) -> ShellJobResult:
-        result = await run_shell_command(
-            self.spec.command, cwd=self.spec.cwd,
-            sandbox=None if self.spec.escalated else self.sandbox,
-            timeout_seconds=self.spec.timeout_seconds, artifacts=self.artifacts,
-        )
-        if result.exit_code:
-            raise ShellCommandError(
-                f"Command failed with exit code {result.exit_code}; output: {result.output_ref.id}",
-                exit_code=result.exit_code, result=result,
+        self._running = True
+        try:
+            result = await run_shell_command(
+                self.spec.command, cwd=self.spec.cwd,
+                sandbox=None if self.spec.escalated else self.sandbox,
+                timeout_seconds=self.spec.timeout_seconds, artifacts=self.artifacts,
             )
-        return result
+            if result.exit_code:
+                raise ShellCommandError(
+                    f"Command failed with exit code {result.exit_code}; output: {result.output_ref.id}",
+                    exit_code=result.exit_code, result=result,
+                )
+            return result
+        finally:
+            if self._uses is not None:
+                await self._uses.aclose()
 
     async def cancel(self, job: Job) -> None:
-        # Task cancellation propagates into run_shell_command, which reaps the
-        # process group; nothing extra to release here.
+        # Running commands reap their process before releasing transferred
+        # paths. Pre-start cancellation never enters run's finally block.
         del job
+        if not self._running and self._uses is not None:
+            await self._uses.aclose()
 
 
 async def shell(
@@ -335,10 +345,15 @@ async def start_shell(
     runner_sandbox = (
         None if sandbox_permissions == "require_escalated" else sandbox
     )
-    job_registry.start(
-        job.id,
-        ShellRunner(spec, artifacts=artifacts, sandbox=runner_sandbox),
-    )
+    uses = await artifacts.handoff()
+    try:
+        job_registry.start(
+            job.id,
+            ShellRunner(spec, artifacts=artifacts, sandbox=runner_sandbox, uses=uses),
+        )
+    except BaseException:
+        await uses.aclose()
+        raise
     return _success(
         f"Started {job.id}"
     )

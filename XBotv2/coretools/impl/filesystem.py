@@ -20,6 +20,7 @@ import base64
 import hashlib
 import json
 from dataclasses import replace
+from contextlib import nullcontext
 from functools import partial
 from pathlib import Path
 from typing import Literal
@@ -102,71 +103,77 @@ async def read(
         max_entries: Maximum returned entries (list).
         include_hidden: Include names beginning with a dot (list).
     """
-    if mode == "utf8":
-        result = await _operation(
-            "read",
-            {
-                "path": path,
-                "offset": offset,
-                "limit": limit,
-                "char_offset": char_offset,
-                "max_chars": max_chars,
-            },
-            sandbox,
-        )
-        if not result.get("ok"):
-            return _failure(result)
-        content = str(result.pop("content", ""))
-        if result.get("changed_since_last_observation"):
-            content = (
-                "File changed since the previous read. The content and metadata "
-                f"below are current.\n{content}"
+    managed = await artifacts.reference_path(path) if artifacts is not None else None
+    references = (managed,) if managed is not None else ()
+    immutable_roots = artifacts.managed_roots() if artifacts is not None else ()
+    use = artifacts.resolve_path(path) if artifacts is not None else nullcontext(path)
+    async with use as path:
+        if mode == "utf8":
+            result = await _operation(
+                "read",
+                {
+                    "path": path,
+                    "offset": offset,
+                    "limit": limit,
+                    "char_offset": char_offset,
+                    "max_chars": max_chars,
+                },
+                sandbox, immutable_roots=immutable_roots,
             )
-        if not result.get("is_text", True):
-            image = result.get("image") or {}
-            dimensions = (
-                f", {image.get('width')}x{image.get('height')} {image.get('format')}"
-                if image else ""
-            )
+            if not result.get("ok"):
+                return _failure(result)
+            content = str(result.pop("content", ""))
+            if result.get("changed_since_last_observation"):
+                content = (
+                    "File changed since the previous read. The content and metadata "
+                    f"below are current.\n{content}"
+                )
+            if not result.get("is_text", True):
+                image = result.get("image") or {}
+                dimensions = (
+                    f", {image.get('width')}x{image.get('height')} {image.get('format')}"
+                    if image else ""
+                )
+                return _success(
+                    f"Non-text file: {path} ({result.get('media_type')}, "
+                    f"{result.get('size_bytes')} bytes{dimensions}, "
+                    f"sha256={result.get('sha256')})", artifacts=references,
+                )
             return _success(
-                f"Non-text file: {path} ({result.get('media_type')}, "
-                f"{result.get('size_bytes')} bytes{dimensions}, "
-                f"sha256={result.get('sha256')})"
+                _with_line_numbers(content, offset + 1) if line_numbers else content,
+                artifacts=references,
             )
-        return _success(
-            _with_line_numbers(content, offset + 1) if line_numbers else content
-        )
-    if mode == "binary":
-        result = await _operation("read_bytes", {"path": path}, sandbox)
-        if not result.get("ok"):
-            return _failure(result)
-        return _success(
-            f"Binary file: {path} ({result.get('size_bytes')} bytes, "
-            f"sha256={result.get('sha256')}, base64 in data)"
-        )
-    if mode == "stat":
-        return await _structured_operation("stat", {"path": path}, sandbox)
-    if mode == "media":
-        return await _read_media(
-            path=path,
-            url=url,
-            data=data,
-            media_type=media_type,
-            sandbox=sandbox,
-            artifacts=artifacts,
-        )
-    if mode == "list":
-        return await _structured_operation(
-            "list",
-            {
-                "path": path,
-                "recursive": recursive,
-                "max_entries": max_entries,
-                "include_hidden": include_hidden,
-            },
-            sandbox,
-        )
-    return _failure_result("invalid_mode", f"Unknown read mode: {mode}")
+        if mode == "binary":
+            result = await _operation("read_bytes", {"path": path}, sandbox, immutable_roots=immutable_roots)
+            if not result.get("ok"):
+                return _failure(result)
+            return _success(
+                f"Binary file: {path} ({result.get('size_bytes')} bytes, "
+                f"sha256={result.get('sha256')}, base64 in data)", artifacts=references,
+            )
+        if mode == "stat":
+            return await _structured_operation("stat", {"path": path}, sandbox, immutable_roots=immutable_roots, artifacts=references)
+        if mode == "media":
+            return await _read_media(
+                path=path,
+                url=url,
+                data=data,
+                media_type=media_type,
+                sandbox=sandbox,
+                artifacts=artifacts,
+            )
+        if mode == "list":
+            return await _structured_operation(
+                "list",
+                {
+                    "path": path,
+                    "recursive": recursive,
+                    "max_entries": max_entries,
+                    "include_hidden": include_hidden,
+                },
+                sandbox,
+            )
+        return _failure_result("invalid_mode", f"Unknown read mode: {mode}")
 
 
 MAX_CONTENT_BYTES = 25 * 1024 * 1024
@@ -685,23 +692,31 @@ async def _structured_operation(
     operation: str,
     args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
+    *,
+    immutable_roots=(),
+    artifacts=(),
 ) -> ToolSucceeded | ToolFailed:
-    data = await _operation(operation, args, sandbox)
+    data = await _operation(operation, args, sandbox, immutable_roots=immutable_roots)
     if not data.get("ok"):
         return _failure(data)
-    return _success(json.dumps(data, ensure_ascii=False, sort_keys=True))
+    return _success(json.dumps(data, ensure_ascii=False, sort_keys=True), artifacts=artifacts)
 
 
 async def _operation(
     operation: str,
     args: dict[str, JsonValue],
     sandbox: SandboxPort | None,
+    *,
+    immutable_roots=(),
 ) -> dict[str, JsonValue]:
     resolved = _resolved_args(operation, args, sandbox)
     path = resolved.get("path")
     versions = (
         _FILE_VERSIONS.setdefault(sandbox, {})
-        if sandbox is not None
+        if sandbox is not None and not (
+            isinstance(path, str)
+            and any(Path(path).is_relative_to(root) for root in immutable_roots)
+        )
         else None
     )
 

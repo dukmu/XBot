@@ -93,6 +93,26 @@ class ArchiveService:
             except HistoryCursorInvalid as error:
                 raise OperationError("invalid_cursor", str(error)) from error
 
+    async def record_selection(
+        self, session_id, thread_id, *, after_seq=0, through_seq=None, record_ids=None,
+    ):
+        """Reference this conversation's fixed canonical JSONL record selection."""
+        async with self.backend.use(session_id):
+            claim = None if self.backend.owns(session_id) else self.backend.acquire(session_id)
+            try:
+                store = self._store(session_id, thread_id)
+                async with store.operation(write=True):
+                    await store.stream.flush()
+                    ref = await self.backend.artifacts(session_id, thread_id).reference_records(
+                        thread_id, after_seq=after_seq, through_seq=through_seq,
+                        record_ids=record_ids, name="conversation-records.jsonl",
+                    )
+                    await store.stream.append("artifact_referenced", {"artifact": ref.model_dump(mode="json")})
+                    return ref
+            finally:
+                if claim is not None:
+                    claim.release()
+
     async def artifact(self, session_id, thread_id, artifact_id):
         async with self.backend.use(session_id):
             store = self._store(session_id, thread_id)

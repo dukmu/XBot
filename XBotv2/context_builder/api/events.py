@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import AsyncExitStack
 from xcore.api.events import EventKey
 from XBotv2.context_builder.api.contracts import BuiltContext
 from typing import TYPE_CHECKING
@@ -30,3 +31,4 @@ class ContextBuildRequest:
     sandbox_summary: str
     runtime_paths: RuntimeVariables
     turn: int
+    resources: AsyncExitStack

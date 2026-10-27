@@ -149,6 +149,31 @@ class ContextBuilder:
         return BuiltContext(components)
 
     @staticmethod
+    async def pin_components(built_context, resources, *, artifacts=None):
+        identities = set()
+        for component in built_context.components:
+            if not isinstance(component, HistoryComponent):
+                continue
+            message = component.message
+            refs = ()
+            parts = ()
+            if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage)):
+                refs, parts = message.artifacts, message.parts
+            elif isinstance(message, ToolMessage) and isinstance(
+                message.outcome, (ToolSucceeded, ToolFailed)
+            ):
+                refs = message.outcome.output.artifacts
+                parts = message.outcome.output.parts
+            identities.update(ref.id for ref in refs)
+            identities.update(
+                part.image.artifact_id for part in parts if isinstance(part, ImagePart)
+            )
+        if identities and artifacts is None:
+            raise RuntimeError("Context compilation requires an ArtifactStore for references")
+        for identity in sorted(identities):
+            await artifacts.expose(identity, resources)
+
+    @staticmethod
     def messages_from_components(
         built_context: BuiltContext,
         *,
@@ -285,6 +310,7 @@ def _artifact_instruction(
                 attributes={
                     "name": ref.name,
                     "media_type": ref.media_type,
+                    "artifact_id": ref.id,
                     "path": artifacts.model_path(ref),
                     "size": ref.size,
                 },

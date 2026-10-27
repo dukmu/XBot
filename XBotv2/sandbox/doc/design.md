@@ -24,3 +24,8 @@ from XBotv2.sandbox.api.models import SANDBOX
 
 resolved = ctx.require(SANDBOX).resolve_read_path("src/main.py")
 ```
+
+The mounted policy shares ArtifactStore's managed-path resolver with permission
+path scopes and coretools. Current-session artifact/cache roots are read-only
+managed roots. Resolving a logical ref does not rewrite the ToolCall or bypass
+guards, approval, mount policy, or process isolation.

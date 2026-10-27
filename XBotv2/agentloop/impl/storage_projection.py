@@ -182,7 +182,9 @@ def project(connection, thread, records):
             record["kind"],
             record["data"],
         )
-        if kind == "input_accepted":
+        if kind == "artifact_referenced":
+            _index_artifacts(connection, thread, (ArtifactRef.model_validate(data["artifact"]),))
+        elif kind == "input_accepted":
             item = InboxItem.model_validate(data["item"])
             _index_artifacts(connection, thread, item.input.artifacts, item.input.images)
             connection.execute(

@@ -62,3 +62,54 @@ must close partially consumed iterators. HTTP artifact responses do so even
 when a send fails or a client disconnects. No SQL transaction spans a network
 send. The server cancels requests and aborts transport buffers on shutdown, so
 an unread response cannot prevent the process from exiting.
+
+Record selections use the `records/<selection-hash>` artifact namespace.
+`reference_records(stream_id, after_seq=0, through_seq=None, record_ids=None)`
+captures a confirmed durable cut and registers only physical selection facts.
+Sequence bounds mean `after_seq < seq <= through_seq`; omitting the upper bound
+captures the current confirmed head. Explicit IDs retain caller order and
+repetitions. Missing IDs fail without publishing a partial selection. Empty
+selections read and materialize as empty files. Later source appends do not
+change any existing selection. The ID hashes the selector, not its content;
+`sha256` is empty; consumers can measure the streamed bytes independently.
+
+`artifact_selections`, `artifact_record_ids`, and `artifact_import_sources`
+are backend bookkeeping, excluded from business table declarations and fork
+owner coordination. ID registration and reads use internal pages bounded by
+both record count and the existing byte budget. The selector header publishes
+only after its private ID rows are complete. Source payloads stay opaque.
+`read_chunks` streams the selected original JSONL bytes; `read_records` decodes
+one bounded canonical record at a time for the responsible business owner.
+
+`pin(ref)` asynchronously materializes a selection in a process-specific cache
+and yields its current absolute path. Construction uses bounded file chunks,
+per-object build ownership and atomic publication. A short metadata lock never
+covers a complete build or file deletion. Concurrent users share a complete
+view. Failed/cancelled construction drains actual I/O before removing temporary
+files. `model_path` requires an active materialization pin for record refs.
+
+The process config `artifact_cache_bytes` defaults to 64 MiB and bounds the
+unpinned LRU. Its charge includes file bytes, encoded reference/path metadata,
+and 2 KiB per entry; even empty files consume budget. Pinned views can exceed
+this budget until their users finish. Releasing the last pin makes a view
+eligible for eviction, and the persistent selector can rebuild it. Session
+drain drops that session's entries; root close removes the process cache. Cache
+paths and old pins are not restored or copied into a fork.
+
+`resolve_model_path` is the shared pure mapping for permission path intent,
+sandbox resolution and managed reads. It recognizes `artifact:<logical-id>`
+and cache paths from an earlier process in the same data/session namespace.
+`resolve_path` acquires the actual read pin while rebuilding the current path.
+The original tool arguments stay unchanged.
+
+`export_reference`/`import_reference` exchange selector metadata and, when the
+canonical stream is not supplied separately, a verified frozen source prefix.
+Packages publish atomically. Existing business-owned streams are verified and
+never replaced or extended by an import. Backend-owned imported snapshots are
+marked read-only: domain rollout/projector ownership is rejected. Later cuts
+of the same foreign source can append a verified matching tail under the
+source's ordinary operation barrier. Its available cut advances only after
+file I/O and bounded index updates finish; failed/unconfirmed extension work
+restores the old tail/index. Old fixed-prefix readers remain valid. Fork
+copies these facts and prefixes into the target session, with no source
+session path embedded in the reference.

@@ -26,3 +26,9 @@ decision = ctx.require(PERMISSIONS).check("shell", {"command": "git status"})
 This query does not consume a grant; the registered tool guard owns authorization.
 
 Permissions handles its own persisted grants during session fork.
+
+When evaluating a filesystem `path_scope`, the mounted policy resolves managed
+artifact IDs and cache paths through the common ArtifactStore path contract.
+The original argument patterns and approval payload are unchanged. Sandbox and
+actual read execution use that same physical target; runtime materialization
+pins grant lifetime only, not permission or sandbox escape.

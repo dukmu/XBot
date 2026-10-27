@@ -16,6 +16,7 @@ from XBotv2.persistence.impl.session_lock import acquire_session
 
 class PersistenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
+    artifact_cache_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
     queue_operations: int = Field(default=64, ge=1)
     queue_bytes: int = Field(default=16 * 1024 * 1024, ge=4096)
     replay_records: int = Field(default=128, ge=1, le=1000)
@@ -29,7 +30,7 @@ class PersistenceResources:
         self._paths = paths
         self._log = runtime_log
         self._owner = owner
-        self.limits = StorageLimits(**config.model_dump())
+        self.limits = StorageLimits(**config.model_dump(exclude={"artifact_cache_bytes"}))
         if (
             self.limits.record_bytes + self.limits.replay_bytes
             > self.limits.queue_bytes
@@ -49,6 +50,8 @@ class PersistenceResources:
         self._closing = False
         self._draining = False
         self._shutdown_drained = False
+        from XBotv2.persistence.impl.artifact_cache import ArtifactCache
+        self.artifact_cache = ArtifactCache(self, config.artifact_cache_bytes)
 
     def _admit(self, session_id=None):
         if (
@@ -96,6 +99,8 @@ class PersistenceResources:
             task.cancel()
         if accepted:
             await asyncio.gather(*(done.wait() for _, done in accepted))
+        if session_id is not None:
+            await self.artifact_cache.drop_session(session_id)
         await self.worker.release(
             self.paths(session_id).database_file if session_id is not None else None
         )
@@ -197,8 +202,8 @@ class PersistenceResources:
                     self._locks[key] = (lock, count - 1)
 
     @asynccontextmanager
-    async def artifact_lock(self, paths, identity):
-        key = (paths.session.root, "artifact:" + identity)
+    async def artifact_lock(self, object_root, identity):
+        key = (object_root, "artifact:" + identity)
         lock, count = self._locks.get(key, (asyncio.Lock(), 0))
         self._locks[key] = (lock, count + 1)
         try:
@@ -305,6 +310,7 @@ class PersistenceResources:
         if not self._shutdown_drained:
             await self.drain()
             self._shutdown_drained = True
+        await self.artifact_cache.close()
         await self.worker.close()
 
 

@@ -1,6 +1,8 @@
 """Pure compaction proposal construction and auxiliary model call."""
 
 from __future__ import annotations
+from contextlib import AsyncExitStack
+from XBotv2.context_builder.api.contracts import BuiltContext, HistoryComponent
 from XBotv2.context_builder.api.contracts import ContextCompiler
 import asyncio
 import logging
@@ -229,40 +231,47 @@ async def build_compaction_plan(
         await record_trajectory(TransactionStarted(transaction=transaction))
 
     try:
-        request_messages = tuple(
-            _summary_input(
-                messages,
-                split,
-                stable_prefix,
-                summary_max_chars,
-                artifacts,
-                compiler=compiler,
+        async with AsyncExitStack() as resources:
+            if artifacts is not None:
+                await resources.enter_async_context(artifacts.using())
+            await compiler.pin_components(
+                BuiltContext([HistoryComponent(message) for message in prefix_messages]),
+                resources, artifacts=artifacts,
             )
-        )
-        auxiliary_selection = selection
-        model_request = ModelRequest(
-            messages=request_messages,
-            tools=(),
-            selection=auxiliary_selection,
-        )
-        response = await invoke_llm(model, model_request)
-        await record_usage(
-            RequestObservation(
+            request_messages = tuple(
+                _summary_input(
+                    messages,
+                    split,
+                    stable_prefix,
+                    summary_max_chars,
+                    artifacts,
+                    compiler=compiler,
+                )
+            )
+            auxiliary_selection = selection
+            model_request = ModelRequest(
+                messages=request_messages,
+                tools=(),
                 selection=auxiliary_selection,
-                purpose=AuxiliaryRequest(
-                    owner="compact",
-                    operation_id=compaction_id,
+            )
+            response = await invoke_llm(model, model_request)
+            await record_usage(
+                RequestObservation(
+                    selection=auxiliary_selection,
+                    purpose=AuxiliaryRequest(
+                        owner="compact",
+                        operation_id=compaction_id,
+                    ),
+                    estimated_input_tokens=estimate_model_request_tokens(model_request),
+                    observed_context=response.observed_context,
                 ),
-                estimated_input_tokens=estimate_model_request_tokens(model_request),
-                observed_context=response.observed_context,
-            ),
-            response.usage,
-        )
-        if any(isinstance(part, ToolCall) for part in response.parts):
-            raise RuntimeError("Compaction model must not call tools")
-        summary = normalize_summary(
-            "".join(part.text for part in response.parts if isinstance(part, TextPart)),
-        )
+                response.usage,
+            )
+            if any(isinstance(part, ToolCall) for part in response.parts):
+                raise RuntimeError("Compaction model must not call tools")
+            summary = normalize_summary(
+                "".join(part.text for part in response.parts if isinstance(part, TextPart)),
+            )
     except asyncio.CancelledError:
         if record_trajectory is not None:
             await record_trajectory(

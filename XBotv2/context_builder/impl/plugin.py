@@ -66,6 +66,9 @@ class ContextBuildHandler:
             turn=event.turn,
         )
         await self._events.emit(CONTEXT_COMPONENTS_BUILT, built_context)
+        await self._builder.pin_components(
+            built_context, event.resources, artifacts=self._builder.artifacts,
+        )
         messages = self._builder.messages_from_components(
             built_context,
             artifacts=self._builder.artifacts,
