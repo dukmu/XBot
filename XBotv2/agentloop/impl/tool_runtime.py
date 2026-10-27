@@ -34,6 +34,7 @@ from XBotv2.core.api.tools import (
     Tool,
     ToolCall,
     ToolCallRef,
+    ToolInvocation,
     ToolCancelled,
     ToolDenied,
     ToolError,
@@ -64,6 +65,7 @@ async def execute_tools(
     guards: tuple[ToolGuard, ...] = (),
     runtime_log: RuntimeLog = _DEFAULT_TOOL_LOG,
     approval_layer_active: bool = False,
+    assistant_message_id: MessageId | None = None,
 ) -> AsyncIterator[ToolExecution]:
     observed: list[ToolCall] = []
     executions: list[ToolExecution] = []
@@ -76,9 +78,10 @@ async def execute_tools(
                 output=ToolOutput(),
             )
         else:
+            invocation = (ToolInvocation(assistant_message_id, call.id)
+                          if assistant_message_id is not None else None)
             call, outcome = await _execute_one(call, entry, registry, events, guards,
-                                         runtime_log,
-                                         approval_layer_active)
+                                         runtime_log, approval_layer_active, invocation)
         message = ToolMessage(
             id=MessageId(f"tool-{call.id}-{uuid4().hex}"),
             call=ToolCallRef(id=call.id, name=call.name),
@@ -123,6 +126,7 @@ async def _execute_one(
     guards: tuple[ToolGuard, ...],
     runtime_log: RuntimeLog,
     approval_layer_active: bool,
+    invocation: ToolInvocation | None,
 ) -> tuple[ToolCall, ToolOutcome]:
     tool = entry.tool
     args = dict(call.args)
@@ -166,7 +170,7 @@ async def _execute_one(
                 raise TypeError("tool guards must return GuardDecision or None")
             return call, ToolDenied(reason=decision.reason or f"Tool denied: {call.name}")
     try:
-        value = await _invoke_tool(tool, args, call, entry.timeout_seconds)
+        value = await _invoke_tool(tool, args, call, entry.timeout_seconds, invocation)
         if isinstance(value, (ToolSucceeded, ToolFailed, ToolDenied, ToolCancelled)):
             outcome: ToolOutcome = value
         else:
@@ -196,6 +200,7 @@ async def invoke_tool_function(
     args: dict[str, JsonValue],
     *,
     tool_call: ToolCall | None = None,
+    invocation: ToolInvocation | None = None,
 ) -> Any:
     """Invoke one tool function; registry guards and timeout wrap this step."""
     kwargs = dict(args)
@@ -203,6 +208,10 @@ async def invoke_tool_function(
         if tool_call is None:
             raise TypeError(f"Tool {tool.name!r} requires its ToolCall")
         kwargs[tool.tool_call_parameter] = tool_call
+    if tool.tool_invocation_parameter is not None:
+        if invocation is None:
+            raise TypeError(f"Tool {tool.name!r} requires a scoped ToolInvocation")
+        kwargs[tool.tool_invocation_parameter] = invocation
     if inspect.iscoroutinefunction(tool.function):
         return await tool.function(**kwargs)
     worker = asyncio.create_task(asyncio.to_thread(tool.function, **kwargs))
@@ -225,10 +234,10 @@ async def invoke_tool_function(
 
 
 async def _invoke_tool(tool: Tool, args: dict[str, JsonValue], call: ToolCall,
-                       timeout_seconds: float | None) -> Any:
+                       timeout_seconds: float | None, invocation: ToolInvocation | None) -> Any:
     if timeout_seconds is None:
-        return await invoke_tool_function(tool, args, tool_call=call)
-    task = asyncio.create_task(invoke_tool_function(tool, args, tool_call=call))
+        return await invoke_tool_function(tool, args, tool_call=call, invocation=invocation)
+    task = asyncio.create_task(invoke_tool_function(tool, args, tool_call=call, invocation=invocation))
     try:
         done, _ = await asyncio.wait({task}, timeout=timeout_seconds)
     except asyncio.CancelledError:

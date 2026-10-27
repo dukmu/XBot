@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Callable, Literal, TypeAlias, get_args, get_origin, get_type_hints
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from XBotv2.core.api.artifacts import ArtifactRef
-from XBotv2.core.api.domain import StructuredToolOutput, ToolCallId
+from XBotv2.core.api.domain import MessageId, StructuredToolOutput, ToolCallId
 from XBotv2.core.api.parts import ImagePart, TextPart
 
 
@@ -34,6 +34,14 @@ class SandboxEscape:
 
     argument: str
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocation:
+    """Identity of a tool call in its canonical assistant message."""
+
+    assistant_message_id: MessageId
+    call_id: ToolCallId
 
 
 class ToolCall(BaseModel):
@@ -163,6 +171,7 @@ class Tool:
     #: call (selectors, not bulk payloads). Empty means "constrain every
     #: scalar argument", which is the conservative fallback.
     grant_selectors: tuple[str, ...] = ()
+    tool_invocation_parameter: str | None = None
 
     @classmethod
     def from_function(
@@ -190,6 +199,15 @@ class Tool:
             parameter = signature.parameters[tool_call_parameters[0]]
             if parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
                 raise TypeError("a ToolCall parameter must be keyword-only")
+        invocation_parameters = tuple(
+            parameter_name
+            for parameter_name, parameter in signature.parameters.items()
+            if type_hints.get(parameter_name, parameter.annotation) is ToolInvocation
+        )
+        if len(invocation_parameters) > 1:
+            raise TypeError("a Tool may declare only one ToolInvocation parameter")
+        if invocation_parameters and signature.parameters[invocation_parameters[0]].kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise TypeError("a ToolInvocation parameter must be keyword-only")
         return cls(
             name=name or function.__name__,
             description=description,
@@ -197,11 +215,12 @@ class Tool:
             parameters=_parameters_schema(
                 signature,
                 type_hints,
-                excluded=frozenset(tool_call_parameters) | excluded_parameters,
+                excluded=frozenset(tool_call_parameters) | frozenset(invocation_parameters) | excluded_parameters,
             ),
             tool_call_parameter=(
                 tool_call_parameters[0] if tool_call_parameters else None
             ),
+            tool_invocation_parameter=(invocation_parameters[0] if invocation_parameters else None),
         )
 
 

@@ -85,6 +85,7 @@ from XBotv2.agentloop.api.contracts import (
 from XBotv2.agentloop.api.state import LoopState, ThreadExecution
 from XBotv2.core.api.domain import (
     InboxTarget,
+    MessageId,
     ModelExchange,
     ModelTiming,
     RequestObservation,
@@ -756,7 +757,7 @@ class Engine:
 
             if tool_calls:
                 batch_result: _ToolBatchResult | None = None
-                async for tool_event in self._run_tool_batch(response):
+                async for tool_event in self._run_tool_batch(response, response_msg.id):
                     if isinstance(tool_event, _ToolBatchResult):
                         batch_result = tool_event
                     else:
@@ -793,6 +794,7 @@ class Engine:
     async def _run_tool_batch(
         self,
         response: ModelResponse,
+        assistant_message_id: MessageId,
     ) -> AsyncIterator[LoopEvent | _ToolBatchResult]:
         tool_calls = [part for part in response.parts if isinstance(part, ToolCall)]
         if not await self._prepare_tool_calls(
@@ -825,7 +827,7 @@ class Engine:
         # The serial stream yields one completed result at a time; the
         # AFTER_TOOLS boundary below remains before the next model request.
         async for execution in self.tools.execute_each(
-            tool_calls,
+            tool_calls, assistant_message_id=assistant_message_id,
         ):
             message = execution.message
             directives.append(execution.directive)

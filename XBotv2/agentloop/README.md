@@ -24,3 +24,8 @@ inbox operation; its meaning is determined by the caller.
 
 The live loop exposes `execution_id` while it owns an execution; the archive
 can retrieve its exact recorded state using `execution_for_turn`.
+
+A tool may declare a keyword-only `ToolInvocation` parameter to receive the
+canonical assistant message ID and original tool call ID for its invocation.
+This parameter is omitted from the model-facing schema. A tool requiring it
+fails if invoked outside an assistant-message execution scope.

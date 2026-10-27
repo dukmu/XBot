@@ -29,6 +29,7 @@ from xcore.api.events import EventDispatch
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_runtime import execute_tools
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.api.domain import MessageId
 from XBotv2.core.api.tools import Tool, ToolCall, ToolExecution
 from xcore.api.plugins import bound_effect, current_plugin_name
 from xcore.api.context import Context
@@ -224,7 +225,7 @@ class ToolsService(ToolsPort):
             results.append(message)
         return results
 
-    async def execute_each(self, tool_calls: list[ToolCall]) -> AsyncIterator[ToolExecution]:
+    async def execute_each(self, tool_calls: list[ToolCall], *, assistant_message_id: MessageId | None = None) -> AsyncIterator[ToolExecution]:
         if self._closing or (self._owner is not None and not self._owner.is_active):
             raise RuntimeError("tool registry is closing")
         task = asyncio.current_task()
@@ -233,6 +234,7 @@ class ToolsService(ToolsPort):
             async for result in execute_tools(
                 tool_calls, self._registry, events=self.events, guards=self.guards(),
                 runtime_log=self._log, approval_layer_active=self.approval_layer_active(),
+                assistant_message_id=assistant_message_id,
             ):
                 yield result
         finally:

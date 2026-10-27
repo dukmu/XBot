@@ -275,6 +275,7 @@ class ToolsPort(Protocol):
     def execute_each(
         self,
         tool_calls: list[ToolCall],
+        *, assistant_message_id: MessageId | None = None,
     ) -> AsyncIterator[ToolExecution]: ...
 
 
