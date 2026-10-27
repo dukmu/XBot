@@ -230,3 +230,9 @@
 - [x] 最终安装CLI通过：`/tmp/xbot-scopes-wheel-cli/report.json`，进程603231/603268、4次provider HTTP请求、历史4→8、附件30B；安装版活跃SSE退出通过：`/tmp/xbot-scopes-wheel-sse/report.json`，确认读取仍挂起后SIGTERM，约0.136秒退出、锁可重取，实际日志含root destroyed。此产物与验收仅对应b8b4974，不冒充真实供应商互操作或后续存储工况。
 - [x] 第2批已完成并具备独立安装证据，插件最后3owner已迁移。
 - [ ] 总体layout/契约仍保留3处core.filesystem共享实现导入待存储/安全边界收口。主代理最终审计均退出1且如实报告3项（`/tmp/xbot-root-scopes-architecture.txt`、`/tmp/xbot-root-scopes-contracts.txt`），未隐藏规则。继续第3批SQLite/JSONL、工作集与流式artifact；512轮/4096步/20次压缩/64个child生命周期及200MB工况、统一wait/team、媒体预算、真实MiniMax和最终TUI改造仍未完成，goal保持active。
+
+### 迭代 4：SQLite、规范日志与工作集（实施中）
+
+- [x] 第2批代码和安装产物验收完成后，已让同一Sol接具体存储实施；两个Terra均结束，无混跑。新段以b8b4974为已验收代码基线，前一批green不替代本段新实现的验证；主代理继续只负责边界审查、TODO、整合和独立验收。
+- [ ] 第一段落地真实生产SQLite/rollout与索引：唯一根DB worker、异步短事务和队列背压，session/thread权威元数据、规范正文与可重建投影、输入幂等和损坏/提交恢复、归档/工作集分离、fork/delete及独立rename事实。退出XBot的持久state.json和完整归档缓存，不引入旧格式自动双读写或同步阻塞桥。
+- [ ] 后续存储段继续流式artifact、从启动即spool的shell、固定范围引用与pin，以及指定预算下的驻留/写入/大结果实测；不以第一段局部验证提前勾选整个第3批。
