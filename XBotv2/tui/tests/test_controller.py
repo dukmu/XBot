@@ -34,7 +34,6 @@ from XBotv2.tui.impl.events import (
     TurnStarted,
     UserMessagePublished,
 )
-from XBotv2.tui.impl.state import HistoryAvailable, HistoryFailed
 from XBotv2.tui.impl.status import Connection, ServerTurn, Status, derive
 from XBotv2.tui.impl.transport import TransportConfig
 
@@ -639,119 +638,143 @@ async def test_the_controller_runs_a_server_command(backend: ScriptedBackend) ->
 # --- older history --------------------------------------------------------
 
 
-async def test_paging_up_at_the_oldest_entry_asks_the_server_for_more(
-    backend: ScriptedBackend,
-) -> None:
-    backend.session = snapshot(history_cursor="c1")
-    control, view = controller(backend, history_window=10)
-    view.can_move_older = False
-    await control.connect()
-
-    requested = await control.page_older()
-
-    assert requested is True
-    assert backend.page_reads == [{
-        "session_id": SESSION, "thread_id": THREAD, "cursor": "c1", "limit": 10,
-    }]
-
-
-async def test_paging_up_inside_the_window_asks_the_server_for_nothing(
-    backend: ScriptedBackend,
-) -> None:
-    backend.session = snapshot(history_cursor="c1")
+async def test_paging_up_inside_the_window_asks_the_server_for_nothing(backend: ScriptedBackend) -> None:
     control, view = controller(backend)
     await control.connect()
-
-    requested = await control.page_older()
-
-    assert requested is True
+    assert await control.page_older()
     assert backend.page_reads == []
 
 
-async def test_a_page_that_arrived_is_not_asked_for_again(
-    backend: ScriptedBackend,
-) -> None:
-    """Once the client holds the beginning there is no page left to ask for."""
-    backend.session = snapshot(history_cursor="c1")
-    backend.pages = [history_page(human_record("u1", "older"))]
-    control, view = controller(backend)
-    view.can_move_older = False
-    await control.connect()
-    await control.page_older()
-
-    assert await control.page_older() is False
-    assert len(backend.page_reads) == 1
-
-
-async def test_a_failed_page_is_retried_on_the_next_ask(
-    backend: ScriptedBackend,
-) -> None:
-    backend.session = snapshot(history_cursor="c1")
+async def test_history_failure_keeps_view_and_allows_retry(backend: ScriptedBackend) -> None:
+    backend.session = snapshot(history=[human_record("u9", "live")], history_cursor="c1")
     backend.page_error = RuntimeError("server is unreachable")
-    control, view = controller(backend)
-    view.can_move_older = False
+    view = RecordingView(can_move_older=False)
+    control, _ = controller(backend, view=view)
     await control.connect()
-    await control.page_older()
-    assert isinstance(control.state.older, HistoryFailed)
-
+    assert not await control.page_older()
+    assert control._history_state is None
     backend.page_error = None
-    retried = await control.page_older()
+    backend.pages = [history_page(human_record("u1", "older"))]
+    assert await control.page_older()
+    assert control._history_state.timeline.ids() == ("u1",)
 
-    assert retried is True
-    assert len(backend.page_reads) == 2
 
-
-async def test_nothing_is_asked_when_the_client_holds_the_beginning(
-    backend: ScriptedBackend,
-) -> None:
-    control, view = controller(backend)
-    view.can_move_older = False
+async def test_paging_up_at_the_beginning_does_not_request_history(backend: ScriptedBackend) -> None:
+    backend.session = snapshot(history=[human_record("u1", "first")])
+    view = RecordingView(can_move_older=False)
+    control, _ = controller(backend, view=view)
     await control.connect()
-
-    assert await control.page_older() is False
+    assert not await control.page_older()
     assert backend.page_reads == []
 
 
-async def test_residency_lets_a_loaded_page_go_when_the_reader_returns_to_the_tail(
-    backend: ScriptedBackend,
-) -> None:
-    """A reader who paged back and then returned to the tail is not served by
-    holding every page they walked past; the cursor chain makes them reachable
-    again, so the client can let them go."""
-    backend.session = snapshot(
-        history=[human_record("a9", "tail")],
-        history_cursor="c1",
-    )
-    backend.pages = [history_page(human_record("u1", "older"))]
-    control, view = controller(backend, history_retention=1)
-    view.can_move_older = False
-    view.at_end = False
-    await control.connect()
-    await control.page_older()
-    assert control.state.timeline.ids() == ("u1", "a9")
-
-    view.at_end = True
+async def test_live_history_is_bounded_without_loading_older_pages(backend: ScriptedBackend) -> None:
+    from XBotv2.tui.impl.timeline import UserEntry, Delivery
+    control, _ = controller(backend, history_retention=3)
+    for index in range(10):
+        control.state.timeline.upsert(UserEntry(id=f"u{index}", content="old", delivery=Delivery.ACCEPTED))
     await control.flush()
-
-    assert control.state.timeline.ids() == ("a9",)
-    # ...and the page the reader gave up residency for can be fetched again.
-    assert control.state.older == HistoryAvailable(cursor="c1")
-
-
-async def test_a_page_the_reader_is_looking_at_is_never_released(
-    backend: ScriptedBackend,
-) -> None:
-    backend.session = snapshot(
-        history=[human_record("a9", "tail")],
-        history_cursor="c1",
-    )
-    backend.pages = [history_page(human_record("u1", "older"))]
-    control, view = controller(backend, history_retention=1)
-    view.can_move_older = False
-    view.at_end = False
-    await control.connect()
-    await control.page_older()
-
+    assert control.state.timeline.ids() == ("u7", "u8", "u9")
+    control.state.timeline.upsert(UserEntry(id="big", content="x" * (3 * 1024 * 1024), delivery=Delivery.ACCEPTED))
     await control.flush()
+    assert control.state.timeline.ids() == ("big",)
 
-    assert control.state.timeline.ids() == ("u1", "a9")
+
+async def test_history_pages_replace_old_view_while_live_events_continue(backend: ScriptedBackend) -> None:
+    from XBotv2.core.api.history import HistoryPage
+    backend.session = snapshot(history=[human_record("u9", "live")], history_cursor="older")
+    backend.pages = [
+        HistoryPage((human_record("u5", "five"),), "older", "newer"),
+        HistoryPage((human_record("u3", "three"),), None, "back"),
+        HistoryPage((human_record("u5", "five"),), "older", "newer"),
+        HistoryPage((human_record("u8", "eight"),), "older", None),
+    ]
+    view = RecordingView(can_move_older=False, can_move_newer=False)
+    control, _ = controller(backend, view=view, history_retention=2)
+    await control.connect()
+    assert await control.page_older()
+    assert backend.page_reads[-1]["before_id"] == "u9"
+    assert control._history_state.timeline.ids() == ("u5",)
+    assert await control.page_older()
+    assert control._history_state.timeline.ids() == ("u3",)
+    control.dispatch(UserMessagePublished(payload=human_record("u10", "new live")))
+    await control.flush()
+    assert control._history_state.timeline.ids() == ("u3",)
+    assert control.state.timeline.ids() == ("u9", "u10")
+    assert await control.page_newer()
+    assert control._history_state.timeline.ids() == ("u5",)
+    assert await control.page_newer()
+    assert control._history_state.timeline.ids() == ("u8",)
+    assert await control.page_newer()
+    assert control._history_state is None
+    assert control.state.timeline.ids() == ("u9", "u10")
+
+async def test_large_history_page_releases_older_bodies_and_can_read_them_again(backend: ScriptedBackend) -> None:
+    from XBotv2.core.api.history import HistoryPage
+    backend.session = snapshot(history=[human_record("live", "latest")], history_cursor="older")
+    backend.pages = [
+        HistoryPage((human_record("old", "a" * (2 * 1024 * 1024)), human_record("new", "b" * (2 * 1024 * 1024))), None, "newer"),
+        HistoryPage((human_record("old", "a" * (2 * 1024 * 1024)),), None, "newer"),
+    ]
+    view = RecordingView(can_move_older=False, can_move_newer=False)
+    control, _ = controller(backend, view=view)
+    await control.connect()
+    assert await control.page_older()
+    assert control._history_state.timeline.ids() == ("new",)
+    assert await control.page_older()
+    assert backend.page_reads[-1]["before_id"] == "new"
+    assert control._history_state.timeline.ids() == ("old",)
+
+async def test_large_newer_page_does_not_skip_trimmed_records(backend: ScriptedBackend) -> None:
+    from XBotv2.core.api.history import HistoryPage
+    backend.session = snapshot(history=[human_record("live", "latest")], history_cursor="older")
+    large = "x" * (2 * 1024 * 1024)
+    backend.pages = [
+        HistoryPage((human_record("old", "old"),), None, "forward"),
+        HistoryPage((human_record("next", large), human_record("last", large)), "back", None),
+        HistoryPage((human_record("last", large),), "back", None),
+    ]
+    view = RecordingView(can_move_older=False, can_move_newer=False)
+    control, _ = controller(backend, view=view)
+    await control.connect()
+    assert await control.page_older()
+    assert await control.page_newer()
+    assert control._history_state.timeline.ids() == ("next",)
+    assert await control.page_newer()
+    assert backend.page_reads[-1]["after_id"] == "next"
+    assert control._history_state.timeline.ids() == ("last",)
+    assert await control.page_newer()
+    assert control._history_state is None
+
+@pytest.mark.parametrize("reset", ["session", "live"])
+async def test_late_history_page_does_not_reverse_navigation(backend: ScriptedBackend, reset: str) -> None:
+    import asyncio
+    from XBotv2.core.api.history import HistoryPage
+    from XBotv2.tui.impl.events import SnapshotAdopted
+
+    backend.session = snapshot(history=[human_record("current", "current")], history_cursor="older")
+    control, view = controller(backend, view=RecordingView(can_move_older=False))
+    await control.connect()
+    requested = asyncio.Event()
+    release = asyncio.Event()
+
+    async def gated_page(*args, **kwargs):
+        requested.set()
+        await release.wait()
+        return HistoryPage((human_record("old", "stale"),), None)
+
+    backend.list_messages = gated_page
+    task = asyncio.create_task(control.page_older())
+    try:
+        await asyncio.wait_for(requested.wait(), 5)
+        if reset == "session":
+            control.dispatch(SnapshotAdopted(snapshot(session_id="other", history=[human_record("other", "new session")])))
+        else:
+            await control.go_to_tail()
+        release.set()
+        assert not await asyncio.wait_for(task, 5)
+        assert control._history_state is None
+        assert control.state.timeline.ids() == (("other",) if reset == "session" else ("current",))
+    finally:
+        release.set()
+        await asyncio.gather(task, return_exceptions=True)

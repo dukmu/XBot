@@ -32,6 +32,8 @@ def build_router(*, sessions, archive):
         thread_id: str,
         cursor: str | None = None,
         limit: int | None = Query(default=None, ge=1, le=500),
+        before_id: str | None = None,
+        after_id: str | None = None,
     ) -> HistoryPage[ConversationRecord]:
         await sessions.thread_summary(session_id, thread_id)
         page = await archive.message_page(
@@ -39,10 +41,13 @@ def build_router(*, sessions, archive):
             thread_id,
             cursor=Cursor(cursor) if cursor is not None else None,
             limit=limit,
+            before_id=before_id,
+            after_id=after_id,
         )
         return HistoryPage(
             items=conversation_replay(page.items),
             older_cursor=page.older_cursor,
+            newer_cursor=page.newer_cursor,
         )
 
     @router.get(

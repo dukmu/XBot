@@ -22,7 +22,6 @@ from XBotv2.core.api.domain import CompletedStop, ModelTiming
 from XBotv2.session.api.records import AssistantRecord, HumanInputRecord
 from XBotv2.tui.tests.factories import (
     assistant_record,
-    history_page,
     human_record,
     tool_record,
     SESSION,
@@ -34,7 +33,6 @@ from XBotv2.tui.impl.events import (
     AssistantCompleted,
     AssistantDelta,
     ConnectionChanged,
-    OlderHistoryLoaded,
     SnapshotAdopted,
 )
 from XBotv2.tui.impl.protocol import FrameTranslator
@@ -855,15 +853,11 @@ def test_the_notice_says_what_the_client_knows_and_nothing_when_it_knows_all():
     from XBotv2.tui.impl.state import (
         HistoryAvailable,
         HistoryComplete,
-        HistoryFailed,
-        HistoryLoading,
     )
     from XBotv2.tui.impl.view.transcript import older_history_label
 
     assert older_history_label(HistoryComplete()) is None
     assert "PageUp" in older_history_label(HistoryAvailable(cursor="c1"))
-    assert "Loading" in older_history_label(HistoryLoading(cursor="c1"))
-    assert "boom" in older_history_label(HistoryFailed(cursor="c1", message="boom"))
 
 
 def attached(*items: HumanInputRecord, cursor: str | None = None) -> SessionState:
@@ -897,82 +891,11 @@ async def test_the_notice_is_above_the_window_and_gone_when_nothing_is_missing()
         assert not app.query("#older-history")
 
 
-async def test_the_notice_stays_first_when_an_older_page_is_prepended():
-    state = attached(history_user("m2", "two"), cursor="c1")
+async def test_history_page_shows_navigation_notice():
+    state = attached(history_user("m1", "one"), cursor="c1")
+    state.viewing_history = True
     async with harness(limit=5) as (app, pilot):
         await app.view.render(state)
-        reduce(state, OlderHistoryLoaded(
-            cursor="c1",
-            payload=history_page(human_record("m1", "one"), older_cursor="c0"),
-        ))
-        await app.view.render(state)
         await pilot.pause()
-
-        order = list(app.query("#transcript > *"))
-        assert order.index(app.view.older_notice) < order.index(
-            app.view.widget_for("m1")
-        )
-        assert app.view.mounted_ids == ("m1", "m2")
-
-
-async def test_a_prepended_older_page_does_not_move_the_readers_window():
-    """Prepending is the one insert that lands *above* the reader.
-
-    A page the reader asked for arrives behind them: the entry their window ends
-    at must stay exactly where it was, and the page must be reachable by paging
-    older once more.
-    """
-    state = attached(
-        history_user("m2", "two"),
-        history_user("m3", "three"),
-        cursor="c1",
-    )
-    async with harness(limit=1) as (app, pilot):
-        await app.view.render(state)
-        assert app.view.mounted_ids == ("m3",)
-
-        await app.view.page_older(state)
-        assert app.view.mounted_ids == ("m2",)
-        anchor = app.view.anchor
-        assert anchor == "m2"
-
-        reduce(state, OlderHistoryLoaded(
-            cursor="c1",
-            payload=history_page(human_record("m1", "one")),
-        ))
-        await app.view.render(state)
-        await pilot.pause()
-
-        assert app.view.mounted_ids == ("m2",), "the page landed behind the reader"
-        assert app.view.anchor == anchor
-
-        # ...and it is reachable, one window older.
-        await app.view.page_older(state)
-        assert app.view.mounted_ids == ("m1",)
-
-
-async def test_releasing_the_front_keeps_the_tail_window_on_screen():
-    """Retention is residency, not navigation: the reader stays at the tail and
-    the newest entries stay mounted."""
-    state = attached(
-        history_user("m2", "two"),
-        history_user("m3", "three"),
-        cursor="c1",
-    )
-    async with harness(limit=2) as (app, pilot):
-        reduce(state, OlderHistoryLoaded(
-            cursor="c1",
-            payload=history_page(human_record("m1", "one")),
-        ))
-        await app.view.render(state)
-        assert app.view.mounted_ids == ("m2", "m3")
-
-        from XBotv2.tui.impl.state import release_oldest_loaded_page
-
-        release_oldest_loaded_page(state)
-        await app.view.render(state)
-        await pilot.pause()
-
-        assert app.view.mounted_ids == ("m2", "m3")
-        assert app.view.anchor is None, "the reader is still following the tail"
-        assert state.older.__class__.__name__ == "HistoryAvailable"
+        assert "History" in str(app.view.older_notice.content)
+        assert "Ctrl+End" in str(app.view.older_notice.content)

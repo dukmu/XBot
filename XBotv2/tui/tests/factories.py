@@ -502,12 +502,16 @@ class ScriptedBackend:
         *,
         cursor: str | None = None,
         limit: int | None = None,
+        before_id: str | None = None,
+        after_id: str | None = None,
     ) -> Any:
         self.page_reads.append({
             "session_id": session_id,
             "thread_id": thread_id,
             "cursor": cursor,
             "limit": limit,
+            "before_id": before_id,
+            "after_id": after_id,
         })
         if self.page_error is not None:
             raise self.page_error
@@ -699,6 +703,7 @@ class RecordingView:
     #: Whether moving the window is possible; False means the window is already
     #: at the oldest entry the client holds.
     can_move_older: bool = True
+    can_move_newer: bool = True
 
     @property
     def reader_at_end(self) -> bool:
@@ -730,7 +735,7 @@ class RecordingView:
 
     async def page_newer(self, state: Any) -> bool:
         self.pages.append("newer")
-        return True
+        return self.can_move_newer
 
     def reveal_loaded_older(self, state: Any, boundary_id: str) -> None:
         self.pages.append("loaded-older")

@@ -437,3 +437,22 @@ async def test_managed_cas_read_uses_standard_tool_and_readonly_sandbox(tmp_path
         if approval is not None:
             approval.cancel();await asyncio.gather(approval,return_exceptions=True)
         await scope.root.close()
+
+async def test_transcript_pages_move_both_directions_from_record_anchor(opened):
+    _, scope, _ = opened
+    from XBotv2.core.api.messages import HumanInputMessage
+    from XBotv2.core.api.parts import TextPart
+    history = scope.require(LOOP_STATE).history
+    await history.extend(HumanInputMessage(id=f"page-{i}", parts=(TextPart(text=str(i)),)) for i in range(8))
+    archive = scope.root.require(ARCHIVE)
+    middle = await archive.message_page("session", "main", limit=2, before_id="page-6")
+    assert [item.id for item in middle.items] == ["page-4", "page-5"]
+    older = await archive.message_page("session", "main", limit=2, cursor=middle.older_cursor)
+    assert [item.id for item in older.items] == ["page-2", "page-3"]
+    back = await archive.message_page("session", "main", limit=2, cursor=older.newer_cursor)
+    assert [item.id for item in back.items] == ["page-4", "page-5"]
+    newer = await archive.message_page("session", "main", limit=2, cursor=back.newer_cursor)
+    assert [item.id for item in newer.items] == ["page-6", "page-7"]
+    assert newer.newer_cursor is None
+    anchored = await archive.message_page("session", "main", limit=2, after_id="page-3")
+    assert [item.id for item in anchored.items] == ["page-4", "page-5"]

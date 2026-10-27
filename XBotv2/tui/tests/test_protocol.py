@@ -182,6 +182,13 @@ def test_cancelled_turn_uses_the_typed_terminal_outcome() -> None:
     assert event.payload.outcome.reason == "client_interrupt"
 
 
+def test_execution_completion_is_validated_without_changing_turn_state() -> None:
+    payload = {"execution": {"turn_id": "turn-1", "input_ids": ["input-1"], "status": "completed", "final_message_id": "answer"}}
+    assert translator().translate(frame("execution_ended", payload)) == ()
+    with pytest.raises(FrameRejected):
+        translator().translate(frame("execution_ended", {"execution": {"status": "completed"}}))
+
+
 # --- assistant content ----------------------------------------------------
 
 

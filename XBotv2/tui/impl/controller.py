@@ -13,6 +13,8 @@ from __future__ import annotations
 
 import asyncio
 import time
+from dataclasses import replace
+from pydantic import BaseModel
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, Sequence
 
 from XBotv2.jobs.api.contracts import JobView
@@ -25,18 +27,20 @@ from XBotv2.tui.impl.events import (
     InteractionRequest,
     JobsReplaced,
     LocalNotice,
-    OlderHistoryRequested,
     TranscriptCleared,
+    SnapshotAdopted,
+    HistoryReplaced,
     UiEvent,
 )
 from XBotv2.tui.impl.state import (
     HistoryKnown,
     SessionState,
     reduce,
-    release_oldest_loaded_page,
+    _rebuild_from_items,
+    _older_from_cursor,
 )
 from XBotv2.tui.impl.status import ServerTurn, Status, derive
-from XBotv2.tui.impl.timeline import ToolEntry, UserEntry
+from XBotv2.tui.impl.timeline import AssistantEntry, Delivery, ToolEntry, UserEntry
 from XBotv2.tui.impl.transport import TransportConfig, TransportSession
 from XBotv2.tui.impl.view.composer import ComposerModel
 from XBotv2.tui.impl.view.status_bar import StatusLine, status_line_for
@@ -97,6 +101,12 @@ class TuiController:
         config = config or TransportConfig()
         self._config = config
         self.state = SessionState()
+        self._history_state: SessionState | None = None
+        self._history_generation = 0
+        self._history_newer = None
+        self._history_before_id: str | None = None
+        self._history_after_id: str | None = None
+        self._live_trimmed = False
         self._view = view
         self._clock = clock
         self._sleep = sleep
@@ -122,6 +132,13 @@ class TuiController:
 
     def dispatch(self, event: UiEvent) -> None:
         """Apply one event and mark the views stale. Never renders."""
+        if isinstance(event, (SnapshotAdopted, HistoryReplaced, TranscriptCleared)):
+            self._history_generation += 1
+            self._history_state = None
+            self._history_newer = None
+            self._history_before_id = None
+            self._history_after_id = None
+            self._live_trimmed = False
         reduce(self.state, event, now=self._clock())
         self._dirty = True
 
@@ -143,7 +160,8 @@ class TuiController:
             return False
         self._dirty = False
         await self._view.render_transcript(
-            self.state, thinking=self.thinking_activity_visible()
+            self._history_state or self.state,
+            thinking=self._history_state is None and self.thinking_activity_visible()
         )
         self._view.render_status(self.status_model())
         self._view.render_jobs(tuple(self.state.jobs.values()))
@@ -154,24 +172,27 @@ class TuiController:
         return True
 
     def _release_held_pages(self) -> bool:
-        """Bound residency by letting the reader's own oldest pages go.
-
-        Only while the reader is following the tail: a page they are looking at
-        must not be released under them. Nothing becomes unreachable -- each
-        release puts back the cursor that preceded the page, so it can be loaded
-        again -- and the window the attach returned is never released, so a
-        client that never paged back never shrinks.
-        """
-        released = False
-        while (
-            len(self.state.timeline) > self._config.history_retention
-            and self.state.loaded_pages
-        ):
-            if not self._view.reader_at_end:
-                return released
-            release_oldest_loaded_page(self.state)
-            released = True
-        return released
+        """Release completed live entries outside the recent count and byte budget."""
+        changed = False
+        entries = list(self.state.timeline)
+        total = sum(_entry_bytes(entry) for entry in entries)
+        for entry in entries:
+            if len(self.state.timeline) <= 1:
+                break
+            if len(self.state.timeline) <= self._config.history_retention and total <= 8 * 1024 * 1024:
+                break
+            if entry.id == self.state.stream_entry_id:
+                continue
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+                continue
+            if isinstance(entry, ToolEntry) and entry.status in {"pending", "running"}:
+                continue
+            self.state.timeline.remove(entry.id)
+            total -= _entry_bytes(entry)
+            changed = True
+        if changed:
+            self._live_trimmed = True
+        return changed
 
     async def flush_loop(self, interval: float = 0.1) -> None:
         """Redraw on a fixed cadence while events keep arriving.
@@ -199,6 +220,7 @@ class TuiController:
             facts=self.state.facts,
             submission_in_flight=self.state.submission_in_flight,
             read_only=self.state.read_only,
+            viewing_history=self._history_state is not None,
             pending_images=len(self._attachments),
         )
 
@@ -268,7 +290,7 @@ class TuiController:
 
     async def submit(self, text: str, *, delivery: Literal["queue", "steer"]) -> str:
         """Send a composer submission with its explicit keyboard delivery mode."""
-        following_tail = self._view.reader_at_end
+        following_tail = self._history_state is None and self._view.reader_at_end
         media = list(self._attachments)
         input_id = await self.transport.submit(
             text,
@@ -401,65 +423,113 @@ class TuiController:
             raise ValueError("User-input answer must be non-empty")
         await self.transport.respond_user_input(request_id, answer)
 
-    async def page_older(self) -> bool:
-        """Move the window back, or load the page before it.
-
-        Returns whether the reader's view of the conversation got older: moving
-        within what the client holds, or asking the server for the page before
-        the oldest entry it holds.
-        """
-        if await self._view.page_older(self.state):
+    async def _show_history_page(self, *, cursor=None, before_id=None, after_id=None, newer=False) -> bool:
+        self._history_generation += 1
+        generation = self._history_generation
+        try:
+            page = await self.transport.history_page(cursor=cursor, before_id=before_id, after_id=after_id)
+        except Exception as exc:  # noqa: BLE001 — keep the current page visible
+            if generation != self._history_generation:
+                return False
+            self.dispatch(LocalNotice(notice_kind="history", text=f"Could not load history: {exc}", level="warning"))
             await self.flush()
-            return True
-        ids = self.state.timeline.ids()
-        previous_oldest = ids[0] if ids else ""
-        loaded = await self.load_older()
-        reveal_boundary = ""
-        if loaded:
-            # The first attempt established that the mounted window was already
-            # at the oldest entry held locally. Once the server prepends a page,
-            # apply the same navigation intent to that new state; requiring a
-            # second PageUp leaves the new rows invisible and makes the notice
-            # appear to flash without doing anything.
-            moved = await self._view.page_older(self.state)
-            if not moved and previous_oldest:
-                reveal_boundary = previous_oldest
-        await self.flush()
-        if reveal_boundary:
-            self._view.reveal_loaded_older(self.state, reveal_boundary)
-        return loaded
-
-    async def load_older(self) -> bool:
-        """Ask the server for the page before the oldest entry held.
-
-        One page at a time: while a page is in flight the reader's further asks
-        are already answered by it, and a failed page is retried on the next ask.
-        Nothing is requested when the client holds the beginning.
-        """
-        older = self.state.older
-        if not isinstance(older, HistoryKnown):
             return False
-        self.dispatch(OlderHistoryRequested())
-        await self.transport.load_older(older.cursor)
+        if generation != self._history_generation or not page.items:
+            return False
+        kept = []
+        size = 0
+        for item in (page.items if newer else reversed(page.items)):
+            item_size = _value_bytes(item)
+            if kept and size + item_size > 8 * 1024 * 1024:
+                break
+            kept.append(item)
+            size += item_size
+        if not newer:
+            kept.reverse()
+        truncated = len(kept) < len(page.items)
+        self._history_before_id = kept[0].id if truncated and not newer else None
+        self._history_after_id = kept[-1].id if truncated and newer else None
+        view = replace(self.state, viewing_history=True)
+        _rebuild_from_items(view, tuple(kept))
+        view.older = _older_from_cursor(page.older_cursor)
+        self._history_state = view
+        self._history_newer = page.newer_cursor
+        self._dirty = True
+        await self.flush()
+        if generation != self._history_generation:
+            return False
+        await self._view.go_to_tail(view)
         return True
 
-    async def page_newer(self) -> bool:
-        moved = await self._view.page_newer(self.state)
-        if not moved:
+    async def page_older(self) -> bool:
+        view = self._history_state or self.state
+        if await self._view.page_older(view):
             await self.flush()
-            await self._view.go_to_tail(self.state)
             return True
-        await self.flush()
+        if self._history_state is not None:
+            if self._history_before_id is not None:
+                return await self._show_history_page(before_id=self._history_before_id)
+            if not isinstance(view.older, HistoryKnown):
+                return False
+            return await self._show_history_page(cursor=view.older.cursor)
+        if not self._live_trimmed and not isinstance(view.older, HistoryKnown):
+            return False
+        # Live-only notices and in-flight entries do not name archive records.
+        for entry in self.state.timeline:
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.ACCEPTED:
+                return await self._show_history_page(before_id=entry.id)
+            if isinstance(entry, AssistantEntry) and not entry.streaming and not entry.id.startswith("local:"):
+                return await self._show_history_page(before_id=entry.id)
+            if isinstance(entry, ToolEntry) and entry.status not in {"pending", "running"}:
+                return await self._show_history_page(before_id=entry.id)
+        return False
+
+    async def load_older(self) -> bool:
+        return await self.page_older()
+
+    async def page_newer(self) -> bool:
+        view = self._history_state or self.state
+        if await self._view.page_newer(view):
+            await self.flush()
+            return True
+        if self._history_state is not None:
+            if self._history_after_id is not None:
+                return await self._show_history_page(after_id=self._history_after_id, newer=True)
+            if self._history_newer is not None:
+                return await self._show_history_page(cursor=self._history_newer, newer=True)
+        await self.go_to_tail()
         return True
 
     async def go_to_tail(self) -> None:
-        await self._view.go_to_tail(self.state)
+        self._history_generation += 1
+        self._history_state = None
+        self._history_newer = None
+        self._history_before_id = None
+        self._history_after_id = None
+        self._dirty = True
         await self.flush()
+        await self._view.go_to_tail(self.state)
 
     async def clear_transcript(self) -> None:
         """Forget the rendered conversation; the next snapshot restores it."""
         self.dispatch(TranscriptCleared())
         await self.flush()
+
+
+def _value_bytes(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value) * 4
+    if isinstance(value, dict):
+        return sum(_value_bytes(key) + _value_bytes(item) for key, item in value.items())
+    if isinstance(value, (list, tuple)):
+        return sum(_value_bytes(item) for item in value)
+    if isinstance(value, BaseModel):
+        return sum(_value_bytes(getattr(value, name)) for name in type(value).model_fields)
+    return 0
+
+
+def _entry_bytes(entry: Any) -> int:
+    return sum(_value_bytes(value) for value in vars(entry).values())
 
 
 __all__ = ["TuiController", "ViewPort"]

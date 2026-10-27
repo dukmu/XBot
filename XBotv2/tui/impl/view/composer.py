@@ -61,6 +61,7 @@ class ComposerModel:
     facts: StatusFacts
     submission_in_flight: bool = False
     read_only: bool = False
+    viewing_history: bool = False
     # Images waiting to be sent with the next message. They make an otherwise
     # empty composer submittable.
     pending_images: int = 0

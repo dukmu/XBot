@@ -34,7 +34,6 @@ from XBotv2.core.api.domain import (
     ToolTiming,
     AgentExecutionLimits,
     CompletedStop,
-    Cursor,
     GenerationSettings,
     ModelRoute,
     ModelTiming,
@@ -70,7 +69,7 @@ from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermis
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.agentloop.api.models import HistoryMutation, PendingInputData
 from XBotv2.session.api.contracts import ThreadSummary
-from XBotv2.session.api.records import AssistantRecord, ConversationRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
 from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.session.api.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
 from XBotv2.session.api.protocol import OpenSessionResponse
@@ -89,9 +88,6 @@ from XBotv2.tui.impl.events import (
     InterruptSettled,
     JobUpdated,
     JobsReplaced,
-    OlderHistoryFailed,
-    OlderHistoryLoaded,
-    OlderHistoryRequested,
     QueueReplaced,
     RuntimeNoticePublished,
     SessionConfigured,
@@ -112,11 +108,8 @@ from XBotv2.tui.impl.events import (
 from XBotv2.tui.impl.state import (
     HistoryAvailable,
     HistoryComplete,
-    HistoryFailed,
-    HistoryLoading,
     SessionState,
     reduce,
-    release_oldest_loaded_page,
 )
 from XBotv2.tui.impl.status import Connection, Interaction, Interrupt, ServerTurn, Status, derive
 from XBotv2.tui.impl.timeline import (
@@ -1443,213 +1436,27 @@ def test_a_thread_read_that_says_running_leaves_open_work_alone() -> None:
     assert state.timeline.get("c1").status == "running"
 
 
-# --- older history --------------------------------------------------------
-#
-# The client holds a window, not the conversation. These tests pin what it knows
-# about the part it does not hold: whether there is more, whether a page is in
-# flight, and why the last one failed -- all of it derived from frames and page
-# results, never guessed.
-
-
-def page(
-    *items: ConversationRecord,
-    cursor: str | None = None,
-    requested: str = "c1",
-) -> OlderHistoryLoaded:
-    return OlderHistoryLoaded(
-        cursor=Cursor(requested),
-        payload=HistoryPage(
-            items=items,
-            older_cursor=Cursor(cursor) if cursor is not None else None,
-        ),
-    )
+# --- history cursors ------------------------------------------------------
 
 
 def test_attach_records_that_older_history_exists() -> None:
     state = session(connected(), SnapshotAdopted(snapshot(history_cursor="c1")))
-
     assert state.older == HistoryAvailable(cursor="c1")
 
 
 def test_attach_without_a_cursor_means_the_beginning_is_held() -> None:
     state = session(connected(), SnapshotAdopted(snapshot()))
-
     assert state.older == HistoryComplete()
 
 
-def test_asking_for_older_history_reports_it_is_loading() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(history_cursor="c1")),
-        OlderHistoryRequested(),
-    )
-
-    assert state.older == HistoryLoading(cursor="c1")
-
-
-def test_an_older_page_is_prepended_keeping_server_order() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(
-            history=[history_assistant("last", id="a2")], history_cursor="c1",
-        )),
-        page(
-            history_user("first", id="u1"),
-            history_assistant("reply", id="a1"),
-        ),
-    )
-
-    assert contents(state) == ["first", "reply", "last"]
-    assert state.timeline.ids() == ("u1", "a1", "a2")
-    assert state.older == HistoryComplete()
-
-
-def test_an_older_page_advances_the_cursor_to_the_page_before_it() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(history_cursor="c1")),
-        page(history_user("first", id="u1"), cursor="c0"),
-    )
-
-    assert state.older == HistoryAvailable(cursor="c0")
-
-
-def test_an_older_page_that_repeats_held_entries_does_not_duplicate_them() -> None:
-    """A page boundary is not a promise: a message that arrived live can also
-    appear in the page that overlaps it."""
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(
-            history=[history_assistant("last", id="a2")], history_cursor="c1",
-        )),
-        page(
-            history_user("first", id="u1"),
-            history_assistant("last", id="a2"),
-        ),
-    )
-
-    assert state.timeline.ids() == ("u1", "a2")
-
-
-def test_loading_the_assistant_page_backfills_a_split_tool_calls_arguments() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(
-            history=[history_tool("call-1", "done", id="tool-1")],
-            history_cursor="c1",
-        )),
-    )
-    tool = state.timeline.get("tool-1")
-    assert isinstance(tool, ToolEntry)
-    assert tool.call_id == "call-1"
-    assert tool.args == {}
-
-    reduce(state, page(history_assistant(
-        "",
-        id="assistant-1",
-        tool_calls=(ToolCall(
-            id="call-1", name="read", args={"path": "/repo/README.md"}
-        ),),
-    )))
-
-    tool = state.timeline.get("tool-1")
-    assert isinstance(tool, ToolEntry)
-    assert tool.args == {"path": "/repo/README.md"}
-
-
-def test_a_failed_older_page_is_visible_and_retryable() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(history_cursor="c1")),
-        OlderHistoryRequested(),
-        OlderHistoryFailed("older history is unavailable"),
-    )
-
-    assert state.older == HistoryFailed(
-        cursor="c1", message="older history is unavailable",
-    )
-
-    reduce(state, OlderHistoryRequested())
-    assert state.older == HistoryLoading(cursor="c1")
-
-
-def test_a_history_rewrite_puts_the_cursor_where_the_server_says() -> None:
-    """``/clear`` and ``/undo`` send a fresh page: what the client held is gone,
-    and so is the cursor the older pages were relative to."""
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(history_cursor="c1")),
-        page(history_user("first", id="u1")),
-    )
-    assert state.older == HistoryComplete()
-
+def test_history_rewrite_replaces_the_cursor_and_window() -> None:
+    state = session(connected(), SnapshotAdopted(snapshot(history_cursor="c1")))
     reduce(state, history(
-        history_user("kept", id="u2"),
-        operation="undo",
-        removed_turns=1,
-        turns=1,
-        older_cursor="c9",
+        history_user("kept", id="u2"), operation="undo", removed_turns=1,
+        turns=1, older_cursor="c9",
     ))
-
     assert contents(state) == ["kept"]
     assert state.older == HistoryAvailable(cursor="c9")
-
-
-def test_releasing_the_front_page_restores_the_cursor_that_preceded_it() -> None:
-    """Residency is bounded by letting a whole loaded page go, not by trimming.
-
-    A loaded page is exactly the span between two cursors, so releasing it puts
-    the client back where it stood before the load: the cursor in effect then is
-    the cursor for the page before the new front. Nothing becomes unreachable --
-    the reader can load the same page again.
-    """
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(history=[history_assistant("tail", id="a9")], history_cursor="c1")),
-        page(history_user("second", id="u2"), requested="c1", cursor="c0"),
-        page(history_user("first", id="u1"), requested="c0", cursor=None),
-    )
-    assert state.older == HistoryComplete()
-
-    release_oldest_loaded_page(state)
-
-    assert state.timeline.ids() == ("u2", "a9")
-    # Back to the cursor the second page was read with, so the first page can be
-    # fetched again.
-    assert state.older == HistoryAvailable(cursor="c0")
-
-
-def test_releasing_never_touches_the_window_the_attach_returned() -> None:
-    """The attach window is what the client always holds; only pages the reader
-    asked for can be released, so a client that never paged never shrinks."""
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(
-            history=[history_user("only", id="u1")], history_cursor="c1",
-        )),
-    )
-
-    assert state.loaded_pages == []
-    assert state.timeline.ids() == ("u1",)
-
-
-def test_releasing_a_page_that_repeated_held_entries_removes_only_what_it_added() -> None:
-    state = session(
-        connected(),
-        SnapshotAdopted(snapshot(
-            history=[history_user("tail", id="u3")], history_cursor="c1",
-        )),
-        page(
-            history_user("old", id="u1"),
-            history_user("tail", id="u3"),
-            requested="c1",
-            cursor=None,
-        ),
-    )
-
-    release_oldest_loaded_page(state)
-
-    assert state.timeline.ids() == ("u3",)
 
 
 def test_task_notice_counts_completed_history_with_active_tasks() -> None:

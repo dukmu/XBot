@@ -42,8 +42,6 @@ from XBotv2.tui.impl.events import (
     InteractionOpened,
     InterruptAsked,
     InterruptSettled,
-    OlderHistoryFailed,
-    OlderHistoryLoaded,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
@@ -868,36 +866,19 @@ async def test_a_baseline_rebuild_keeps_the_window_bounded(
     assert [opened["history_limit"] for opened in backend.opened] == [40, 40]
 
 
-async def test_load_older_reads_the_page_before_the_cursor(
-    backend: ScriptedBackend,
-) -> None:
+async def test_history_page_passes_cursor_and_reports_failures(backend: ScriptedBackend) -> None:
     recorder = Recorder()
     backend.pages = [history_page(human_record("u1", "first"))]
     transport = await connected(backend, recorder, history_window=25)
-
-    await transport.load_older("cursor-1")
-
-    assert backend.page_reads == [{
-        "session_id": SESSION,
-        "thread_id": THREAD,
-        "cursor": "cursor-1",
-        "limit": 25,
-    }]
-    loaded = recorder.only(OlderHistoryLoaded)
-    assert [item.id for item in loaded.payload.items] == ["u1"]
-
-
-async def test_a_failed_older_page_is_reported_not_raised(
-    backend: ScriptedBackend,
-) -> None:
-    recorder = Recorder()
+    page = await transport.history_page(cursor="cursor-1")
+    assert [item.id for item in page.items] == ["u1"]
+    assert backend.page_reads[-1] == {
+        "session_id": SESSION, "thread_id": THREAD, "cursor": "cursor-1",
+        "limit": 25, "before_id": None, "after_id": None,
+    }
     backend.page_error = RuntimeError("server is unreachable")
-    transport = await connected(backend, recorder)
-
-    await transport.load_older("cursor-1")
-
-    assert "unreachable" in recorder.only(OlderHistoryFailed).message
-    assert not recorder.of(OlderHistoryLoaded)
+    with pytest.raises(RuntimeError, match="unreachable"):
+        await transport.history_page(before_id="u1")
 
 async def test_target_beyond_first_thread_page_is_opened_and_watched(backend: ScriptedBackend) -> None:
     backend.threads = (thread(), *(thread(thread_id=f"child-{index:03}", kind="subagent", parent_thread_id=THREAD, turn_status="running") for index in range(101)))

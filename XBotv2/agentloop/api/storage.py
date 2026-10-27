@@ -51,6 +51,8 @@ class ConversationArchive(Protocol):
         *,
         cursor: Cursor | None = None,
         limit: int = 160,
+        before_id: str | None = None,
+        after_id: str | None = None,
     ) -> HistoryPage[ConversationMessage]: ...
     async def trajectory_page(
         self,

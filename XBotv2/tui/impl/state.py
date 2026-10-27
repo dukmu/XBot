@@ -69,9 +69,6 @@ from XBotv2.tui.impl.events import (
     TaskChangedReceived,
     JobUpdated,
     LocalNotice,
-    OlderHistoryFailed,
-    OlderHistoryLoaded,
-    OlderHistoryRequested,
     TranscriptCleared,
     QueueReplaced,
     RuntimeNoticePublished,
@@ -116,19 +113,6 @@ _RUNNING_JOB_STATUSES: frozenset[str] = frozenset({"queued", "running"})
 MAIN_THREAD_KIND = "main"
 SUBAGENT_THREAD_KIND = "subagent"
 
-@dataclass
-class HeldPage:
-    """One page the reader loaded, and the cursor that preceded it.
-
-    The pair is what makes releasing safe: a page is exactly the span between
-    those two cursors, so putting the first one back names the page before the
-    new front, and the reader can load the same page again.
-    """
-
-    cursor: Cursor
-    ids: tuple[str, ...]
-
-
 @dataclass(frozen=True)
 class HistoryComplete:
     """The client holds the beginning of the conversation."""
@@ -136,12 +120,7 @@ class HistoryComplete:
 
 @dataclass(frozen=True)
 class HistoryKnown:
-    """The states that name the page before the oldest entry held.
-
-    ``cursor`` is the server's own cursor for that page. The three subclasses are
-    the only states in which a page can be asked for, retried, or awaited, so a
-    request never has to ask whether a cursor exists.
-    """
+    """The server cursor for the page before the current window."""
 
     cursor: Cursor
 
@@ -151,22 +130,8 @@ class HistoryAvailable(HistoryKnown):
     """Older messages exist and can be loaded."""
 
 
-@dataclass(frozen=True)
-class HistoryLoading(HistoryKnown):
-    """That page is being read right now."""
-
-
-@dataclass(frozen=True)
-class HistoryFailed(HistoryKnown):
-    """The page could not be read; the cursor is kept so the reader can retry."""
-
-    message: str
-
-
-#: What the client knows about the conversation before its oldest entry, as one
-#: value. The cursor exists only in the variants that can fetch a page, so there
-#: is no state in which a missing cursor has to be interpreted.
-OlderHistory = HistoryComplete | HistoryAvailable | HistoryLoading | HistoryFailed
+#: The archive page before the current window, if one exists.
+OlderHistory = HistoryComplete | HistoryAvailable
 
 
 @dataclass
@@ -209,9 +174,7 @@ class SessionState:
     # its oldest entry starts, whether one is in flight, and why the last one
     # failed. There is no cursor field to fall back to and none to contradict it.
     older: OlderHistory = field(default_factory=HistoryComplete)
-    # Pages the reader asked for, oldest last: the front-most page is the one
-    # most recently loaded, and therefore the one released first.
-    loaded_pages: list[HeldPage] = field(default_factory=list)
+    viewing_history: bool = False
     _local_counter: int = 0
 
 
@@ -492,24 +455,6 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         _rebuild_from_items(state, mutation.history.items)
         state.older = _older_from_cursor(mutation.history.older_cursor)
         state.turn = mutation.stats.turns
-        state.loaded_pages.clear()
-
-    elif isinstance(event, OlderHistoryRequested):
-        # An ask while a page is already in flight changes nothing: that page is
-        # the answer to this one too. An ask after a failure is a retry.
-        if isinstance(state.older, HistoryKnown):
-            state.older = HistoryLoading(cursor=state.older.cursor)
-
-    elif isinstance(event, OlderHistoryLoaded):
-        added = _prepend_from_items(state, event.payload.items)
-        state.loaded_pages.append(HeldPage(cursor=event.cursor, ids=added))
-        state.older = _older_from_cursor(event.payload.older_cursor)
-
-    elif isinstance(event, OlderHistoryFailed):
-        if isinstance(state.older, HistoryLoading):
-            state.older = HistoryFailed(
-                cursor=state.older.cursor, message=event.message,
-            )
 
     elif isinstance(event, ToolCallsStarted):
         _start_tool_calls(
@@ -793,7 +738,6 @@ def _adopt_snapshot(state: SessionState, snapshot: OpenSessionResponse) -> None:
     # client rebuilds the dialog through the same path as a live one.
     _rebuild_from_items(state, opened.history.items)
     state.older = _older_from_cursor(opened.history.older_cursor)
-    state.loaded_pages.clear()
 
 
 def _rebuild_from_items(
@@ -815,35 +759,6 @@ def _rebuild_from_items(
             state.timeline.upsert(entry)
 
 
-def _prepend_from_items(
-    state: SessionState,
-    items: tuple[ConversationRecord, ...],
-) -> tuple[str, ...]:
-    """Add one older page ahead of what the client holds; return the new ids.
-
-    A page is older than the window it extends, so nothing the client already
-    holds moves; an id that appears in both is refreshed where it stands and is
-    not part of what this page added.
-    """
-    tool_args = _tool_args_in(items)
-    entries = (
-        _entry_from_history_item(state, item, tool_args=tool_args)
-        for item in items
-    )
-    added = state.timeline.prepend([entry for entry in entries if entry is not None])
-    if tool_args:
-        for entry in tuple(state.timeline):
-            if (
-                isinstance(entry, ToolEntry)
-                and not entry.args
-                and entry.call_id in tool_args
-            ):
-                state.timeline.upsert(replace(
-                    entry, args=dict(tool_args[entry.call_id])
-                ))
-    return added
-
-
 def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
     """What a server cursor means about the conversation before the window.
 
@@ -853,20 +768,6 @@ def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
     if cursor is None:
         return HistoryComplete()
     return HistoryAvailable(cursor=cursor)
-
-
-def release_oldest_loaded_page(state: SessionState) -> None:
-    """Let the front-most loaded page go and page back to where it started.
-
-    The caller must have checked that a page is held; asking to release nothing
-    is a bug in the caller, not a state the conversation can be in. Only pages
-    the *reader* loaded are ever released -- the window the attach returned is
-    what the client is for.
-    """
-    released = state.loaded_pages.pop()
-    for entry_id in released.ids:
-        state.timeline.remove(entry_id)
-    state.older = HistoryAvailable(cursor=released.cursor)
 
 
 def _context_notice(item: RuntimeNoticeRecord) -> NoticeEntry:

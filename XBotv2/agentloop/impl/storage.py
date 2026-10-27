@@ -232,18 +232,19 @@ class MessageHistoryStore:
     async def page(self, *, limit, cursor=None):
         return await self._page("surface", limit, cursor)
 
-    async def page_transcript(self, *, limit, cursor=None):
-        return await self._page("transcript", limit, cursor)
+    async def page_transcript(self, *, limit, cursor=None, before_id=None, after_id=None):
+        return await self._page("transcript", limit, cursor, before_id, after_id)
 
-    async def _page(self, table, limit, cursor):
+    async def _page(self, table, limit, cursor, before_id=None, after_id=None):
         if limit < 1 or limit > 500:
             raise ValueError("History page limit must be between 1 and 500")
+        if sum(value is not None for value in (cursor, before_id, after_id)) > 1:
+            raise HistoryCursorInvalid("Pass only one history cursor or record anchor")
         if not await self.store.has_history():
-            if cursor is not None:
+            if cursor is not None or before_id is not None or after_id is not None:
                 raise HistoryCursorInvalid("Empty history has no cursor")
             return HistoryPage((), None)
         async with self.store.operation():
-
             def query(c):
                 generation = _one(
                     c,
@@ -253,39 +254,54 @@ class MessageHistoryStore:
                 revision = HistoryRevision(
                     f"{self.store.session_id}/{self.store.thread_id}:{table}:{generation}"
                 )
-                end = (
-                    _one(
+                anchor = before_id if before_id is not None else after_id
+                if anchor is not None:
+                    row = _one(
+                        c,
+                        f"SELECT order_key FROM {table} WHERE thread_id=? AND record_id=?",
+                        (self.store.thread_id, anchor),
+                    )
+                    if row is None:
+                        raise HistoryCursorInvalid("History anchor is not in the transcript")
+                    boundary = -row[0] if after_id is not None else row[0]
+                elif cursor is not None:
+                    boundary = decode_history_cursor(cursor, revision)
+                else:
+                    boundary = _one(
                         c,
                         f"SELECT COALESCE(MAX(order_key),0)+1 FROM {table} WHERE thread_id=?",
                         (self.store.thread_id,),
                     )[0]
-                    if cursor is None
-                    else decode_history_cursor(cursor, revision)
-                )
-                if end < 1:
+                newer = boundary < 0
+                key = -boundary if newer else boundary
+                if key < 1:
                     raise HistoryCursorInvalid("Invalid history cursor range")
+                direction, order = (">", "ASC") if newer else ("<", "DESC")
                 rows = _all(
                     c,
-                    f"SELECT order_key,record_id FROM {table} WHERE thread_id=? AND order_key<? ORDER BY order_key DESC LIMIT ?",
-                    (self.store.thread_id, end, limit),
+                    f"SELECT order_key,record_id FROM {table} WHERE thread_id=? "
+                    f"AND order_key{direction}? ORDER BY order_key {order} LIMIT ?",
+                    (self.store.thread_id, key, limit),
                 )
-                older = (
-                    _one(
-                        c,
-                        f"SELECT 1 FROM {table} WHERE thread_id=? AND order_key<? LIMIT 1",
-                        (self.store.thread_id, rows[-1][0]),
-                    )
-                    is not None
-                    if rows
-                    else False
-                )
-                return revision, [tuple(row) for row in rows], older
+                rows = [tuple(row) for row in rows]
+                if not newer:
+                    rows.reverse()
+                older = bool(rows and _one(
+                    c, f"SELECT 1 FROM {table} WHERE thread_id=? AND order_key<? LIMIT 1",
+                    (self.store.thread_id, rows[0][0]),
+                ))
+                later = bool(rows and _one(
+                    c, f"SELECT 1 FROM {table} WHERE thread_id=? AND order_key>? LIMIT 1",
+                    (self.store.thread_id, rows[-1][0]),
+                ))
+                return revision, rows, older, later
 
-            revision, rows, more = await self.store.sql(query)
-            rows = list(reversed(rows))
+            revision, rows, older, later = await self.store.sql(query)
             messages = tuple([await self.store.message(row[1]) for row in rows])
             return HistoryPage(
-                messages, encode_history_cursor(revision, rows[0][0]) if more else None
+                messages,
+                encode_history_cursor(revision, rows[0][0]) if older else None,
+                encode_history_cursor(revision, -rows[-1][0]) if later else None,
             )
 
     async def page_trajectory(self, *, limit, cursor=None, before=None):

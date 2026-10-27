@@ -49,8 +49,6 @@ from XBotv2.tui.impl.events import (
     ErrorFrame,
     InterruptAsked,
     InterruptSettled,
-    OlderHistoryFailed,
-    OlderHistoryLoaded,
     SnapshotAdopted,
     StatusSlotsUpdated,
     StreamGapDetected,
@@ -146,6 +144,8 @@ class SessionBackend(Protocol):
         *,
         cursor: Cursor | None = None,
         limit: int | None = None,
+        before_id: str | None = None,
+        after_id: str | None = None,
     ) -> HistoryPage[ConversationRecord]: ...
 
     async def list_providers(self) -> ProviderCatalog: ...
@@ -629,26 +629,11 @@ class TransportSession:
             history_limit=self._config.history_window,
         )
 
-    async def load_older(self, cursor: Cursor) -> None:
-        """Read the page before ``cursor`` and hand it to the reducer.
-
-        A page that cannot be read is a visible, retryable state rather than an
-        exception: the reader asked for history, and the client must tell them it
-        could not fetch it instead of swallowing the request.
-        """
-        try:
-            page = await self._backend.list_messages(
-                self._session_id,
-                self._thread_id,
-                cursor=cursor,
-                limit=self._config.history_window,
-            )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            self._emit(OlderHistoryFailed(message=str(exc) or exc.__class__.__name__))
-            return
-        self._emit(OlderHistoryLoaded(payload=page, cursor=cursor))
+    async def history_page(self, *, cursor: Cursor | None = None, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[ConversationRecord]:
+        return await self._backend.list_messages(
+            self._session_id, self._thread_id, cursor=cursor,
+            before_id=before_id, after_id=after_id, limit=min(self._config.history_window, self._config.history_retention),
+        )
 
     def _fail(self, exc: BaseException) -> None:
         self._emit(ErrorFrame(payload=LoopError(code="stream_failed", message=str(exc))))

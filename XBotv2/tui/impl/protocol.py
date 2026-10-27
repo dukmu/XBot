@@ -29,6 +29,7 @@ from pydantic import BaseModel, ValidationError
 from XBotv2.agentloop.api.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
+    ExecutionEnded,
     LoopError,
     LoopTurnEnded,
     LoopTurnStarted,
@@ -154,6 +155,9 @@ _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
     ),
     "tool_completed": (ToolRecord, _carries(ToolRecordReceived)),
     "error": (LoopError, _carries(ErrorFrame)),
+    # The turn's UI state is already settled by turn_ended; this is the
+    # archive completion fact published after the execution lock is released.
+    "execution_ended": (ExecutionEnded, lambda _payload: ()),
     "message": (InputRecordPayload, _published_input),
     "input_consumed": (InputConsumedEvent, _carries(InputsConsumed)),
     "agent_configured": (AgentConfiguredEvent, _carries(SessionConfigured)),

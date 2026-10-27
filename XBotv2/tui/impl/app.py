@@ -170,6 +170,7 @@ class TuiApp(App[None]):
         Binding("escape", "interrupt", "Interrupt the turn"),
         Binding("pageup", "older", "Older", show=False, priority=True),
         Binding("pagedown", "newer", "Newer", show=False, priority=True),
+        Binding("ctrl+end", "live", "Return to live", show=False, priority=True),
         Binding("ctrl+p", "palette", "Commands"),
         Binding("ctrl+t", "agents", "Agent threads"),
         Binding("f2", "settings", "Settings", priority=True),
@@ -1230,6 +1231,10 @@ class TuiApp(App[None]):
     async def action_newer(self) -> None:
         if self.controller is not None:
             await self.controller.page_newer()
+
+    async def action_live(self) -> None:
+        if self.controller is not None:
+            await self.controller.go_to_tail()
 
     async def action_expand_blocks(self) -> None:
         """Fold content open (or closed again) without leaving the composer.

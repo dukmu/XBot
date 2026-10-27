@@ -26,8 +26,6 @@ from textual.widgets import Static
 
 from XBotv2.tui.impl.state import (
     HistoryAvailable,
-    HistoryFailed,
-    HistoryLoading,
     OlderHistory,
     SessionState,
 )
@@ -182,19 +180,10 @@ class ThinkingActivity(Static):
 def older_history_label(older: OlderHistory) -> str | None:
     """What the transcript says above its oldest entry, or nothing to say.
 
-    The reader can only act on the part of the conversation the client does not
-    hold if it is on screen: that there is more, that a page is loading, or that
-    the last one failed and asking again is worthwhile.
+    Tell the reader when earlier archived messages are available.
     """
-    if isinstance(older, HistoryLoading):
-        return "Loading earlier messages…"
     if isinstance(older, HistoryAvailable):
         return "Earlier messages are available — press PageUp to load them"
-    if isinstance(older, HistoryFailed):
-        return (
-            "Earlier messages unavailable — press PageUp to retry: "
-            f"{older.message}"
-        )
     return None
 
 
@@ -332,6 +321,8 @@ class TranscriptView:
     async def _render_older_notice(self, state: SessionState) -> bool:
         """Show, above the window, what the client knows about older messages."""
         label = older_history_label(state.older)
+        if state.viewing_history:
+            label = "History · PageUp older · PageDown newer · Ctrl+End live" + (f" · {label}" if label else "")
         if label is None:
             if self._notice_mounted:
                 await self.older_notice.remove()

@@ -22,6 +22,8 @@ FooterBar {
 def footer_hint_text(model: ComposerModel) -> str:
     """Name the actions available in the current interaction state."""
     facts = model.facts
+    if model.viewing_history:
+        return "History · PageUp older · PageDown newer · Ctrl+End live"
     if model.read_only:
         return "Esc main · Ctrl+T agents · PageUp/PageDown history · Ctrl+C copy/quit"
     if facts.interaction is not Interaction.NONE:
@@ -32,7 +34,7 @@ def footer_hint_text(model: ComposerModel) -> str:
         return (
             "Esc interrupt · Enter/Alt+S steer · ? shortcuts"
         )
-    return "? for shortcuts · Ctrl+P commands · Ctrl+T agents · F2 settings"
+    return "PageUp/PageDown history · Ctrl+P commands · Ctrl+T agents · F2 settings"
 
 
 def render_footer_hints(model: ComposerModel, *, width: int) -> Text:

@@ -402,6 +402,8 @@ class XBotClient:
         *,
         cursor: Cursor | None = None,
         limit: int | None = None,
+        before_id: str | None = None,
+        after_id: str | None = None,
     ) -> HistoryPage[ConversationRecord]:
         return await self._request(
             "GET",
@@ -409,7 +411,7 @@ class XBotClient:
             HistoryPage[ConversationRecord],
             params={
                 key: value
-                for key, value in {"cursor": cursor, "limit": limit}.items()
+                for key, value in {"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id}.items()
                 if value is not None
             },
         )

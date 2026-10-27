@@ -155,11 +155,11 @@ class ArchiveService:
         async with self.backend.use(session_id):
             return await self._store(session_id, thread_id).history.count_turns()
 
-    async def message_page(self, session_id, thread_id, *, cursor=None, limit=160):
+    async def message_page(self, session_id, thread_id, *, cursor=None, limit=160, before_id=None, after_id=None):
         async with self.backend.use(session_id):
             try:
                 return await self._store(session_id, thread_id).history.page_transcript(
-                    limit=limit or 160, cursor=cursor
+                    limit=limit or 160, cursor=cursor, before_id=before_id, after_id=after_id
                 )
             except HistoryCursorInvalid as error:
                 raise OperationError("invalid_cursor", str(error)) from error

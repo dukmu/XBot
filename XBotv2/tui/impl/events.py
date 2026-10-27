@@ -36,8 +36,6 @@ from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.session.api.contracts import ThreadSummary
-from XBotv2.core.api.domain import Cursor
-from XBotv2.core.api.history import HistoryPage
 from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.session.api.events import (
@@ -52,7 +50,6 @@ from XBotv2.session.api.records import (
     HumanInputRecord,
     RuntimeNoticeRecord,
     ToolRecord,
-    ConversationRecord,
 )
 from XBotv2.tui.impl.status import Connection, ServerTurn
 
@@ -305,40 +302,6 @@ class RuntimeNoticePublished:
     payload: RuntimeNoticeRecord
 
 
-# --- older history --------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class OlderHistoryRequested:
-    """The reader asked for the page before the oldest entries held.
-
-    The client asks exactly once per page: it stays pending until the page
-    arrives or fails, so holding the key down is one request, not a stream.
-    """
-
-
-@dataclass(frozen=True)
-class OlderHistoryLoaded:
-    """One older page arrived.
-
-    ``cursor`` is the request cursor that produced it: the page spans exactly the
-    entries between that cursor and the one in the payload, which is what lets
-    the client release the page again and stand where it stood before.
-    ``payload.older_cursor`` is the cursor for the page before this one, or None
-    when the client now holds the beginning of the conversation.
-    """
-
-    payload: HistoryPage[ConversationRecord]
-    cursor: Cursor
-
-
-@dataclass(frozen=True)
-class OlderHistoryFailed:
-    """The page could not be read. Kept visible so the reader can retry."""
-
-    message: str
-
-
 # --- background work ------------------------------------------------------
 
 
@@ -372,9 +335,6 @@ UiEvent = Union[
     GoalChangedReceived,
     TaskChangedReceived,
     LocalNotice,
-    OlderHistoryFailed,
-    OlderHistoryLoaded,
-    OlderHistoryRequested,
     TranscriptCleared,
     UsageSnapshotReceived,
     CompactionChanged,

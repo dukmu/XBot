@@ -34,6 +34,7 @@ T = TypeVar("T")
 class HistoryPage(Generic[T]):
     items: tuple[T, ...]
     older_cursor: Cursor | None
+    newer_cursor: Cursor | None = None
 
 
 class MessageAppended(BaseModel):

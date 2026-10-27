@@ -766,7 +766,7 @@ async def test_one_pageup_loads_and_displays_the_previous_server_page() -> None:
         await pilot.press("pageup")
         await settle(pilot)
 
-        assert backend.page_reads[-1]["cursor"] == "older-cursor"
+        assert backend.page_reads[-1]["before_id"] == "tail-0"
         assert app.view.transcript.mounted_ids == tuple(
             f"old-{index}" for index in range(10)
         )
@@ -796,8 +796,8 @@ async def test_pageup_reveals_loaded_history_when_both_pages_fit_the_window() ->
         await pilot.press("pageup")
         await settle(pilot)
 
-        assert backend.page_reads[-1]["cursor"] == "older-cursor"
-        old = app.view.transcript.widget_for("old-0")
+        assert backend.page_reads[-1]["before_id"] == "tail-0"
+        old = app.view.transcript.widget_for("old-24")
         viewport = app.view.transcript.container.region
         assert old is not None
         assert old.region.y < viewport.bottom and old.region.bottom > viewport.y, (

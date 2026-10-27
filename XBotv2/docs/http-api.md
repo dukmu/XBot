@@ -98,10 +98,11 @@ A client that does not want the whole conversation asks for a bounded window:
   `history_limit` (1-500). The response's `history` is a `HistoryPage` with the
   newest that many records and `older_cursor` naming the page before them; the
   cursor is `null` when the window already holds the beginning.
-- `GET .../messages?limit=N` reads the newest `N` records, and
-  `GET .../messages?limit=N&cursor=C` reads the page before `C`. The response's
-  `older_cursor` is the cursor for the page before it, or `null` at the beginning.
-  Appending records leaves a cursor valid; a rewrite (`/history/undo`,
+- `GET .../messages?limit=N` reads the newest `N` records. `cursor` accepts
+  either `older_cursor` or `newer_cursor` from a previous page. The respective
+  cursor is `null` at the beginning or end of the transcript. `before_id` and
+  `after_id` read a page adjacent to a canonical message ID; pass at most one
+  of these anchors or `cursor`. Appending records leaves a cursor valid; a rewrite (`/history/undo`,
   `/history/clear`, compaction) invalidates it, and the read then answers
   `invalid_cursor` rather than a page from a different history.
 - History clear/undo responses return `HistoryMutation(removed_turns, history,
