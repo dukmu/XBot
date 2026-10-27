@@ -30,6 +30,7 @@ from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_runtime import execute_tools
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.core.api.domain import MessageId
+from XBotv2.core.api.provider import ToolSchema
 from XBotv2.core.api.tools import Tool, ToolCall, ToolExecution
 from xcore.api.plugins import bound_effect, current_plugin_name
 from xcore.api.context import Context
@@ -171,6 +172,9 @@ class ToolsService(ToolsPort):
 
     def enabled(self) -> tuple[Tool, ...]:
         return tuple(self._registry.get_all())
+
+    def schemas(self) -> tuple[ToolSchema, ...]:
+        return self._registry.schemas()
 
     def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None:
         entry = (

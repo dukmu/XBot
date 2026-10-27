@@ -104,7 +104,6 @@ from XBotv2.core.api.provider import (
     ModelRequest,
     ProviderMessage,
     ProviderSystem,
-    ToolSchema,
 )
 from XBotv2.core.api.providers import ProviderFailure
 from XBotv2.core.api.stream import (
@@ -1008,18 +1007,9 @@ class Engine:
         *,
         finalizing: bool,
     ) -> _ModelRequestResult:
-        tools = tuple(self.tools.enabled())
-        schemas = tuple(
-            ToolSchema(
-                name=tool.name,
-                description=tool.description,
-                parameters=tool.parameters,
-            )
-            for tool in tools
-        )
         model_request = ModelRequest(
             messages=tuple(context_messages),
-            tools=schemas,
+            tools=self.tools.schemas(),
             selection=self.state.metadata.value.runtime_selection.model,
         )
         history_revision = self.state.history.surface_revision

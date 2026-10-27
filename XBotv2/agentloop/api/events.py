@@ -179,6 +179,8 @@ AfterContextBuildResult = KeepContext | ReplaceContext | CompleteTurn
 
 @dataclass(frozen=True, slots=True)
 class BeforeModelRequest:
+    """Request schemas are read-only; use ReplaceRequest with new schemas to change them."""
+
     request: ModelRequest
 
 

@@ -37,6 +37,11 @@ pass an owner. No slash command is transformed into a synthetic ToolCall.
 Synchronous tool workers run outside the event loop and remain awaited through
 cancellation until their actual I/O finishes, including timeout paths.
 
+Registered tool parameters and model-request schemas are read-only. The
+registry reuses schemas until registration or selection changes; dynamic tool
+changes use register/unregister. Request hooks that change a schema return a
+`ReplaceRequest` containing a new `ToolSchema`, rather than mutating one.
+
 A tool may declare a keyword-only `ToolInvocation` parameter to receive the
 canonical assistant message ID and original tool call ID for its invocation.
 This parameter is omitted from the model-facing schema. A tool requiring it

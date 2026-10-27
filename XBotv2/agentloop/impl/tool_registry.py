@@ -18,12 +18,15 @@ import re
 from collections.abc import Iterator
 from XBotv2.agentloop.api.contracts import AllTools, ToolRegistration, ToolSelection
 from XBotv2.core.api.tools import Tool
+from XBotv2.core.api.provider import ToolSchema
 
 
 class ToolRegistry:
     def __init__(self) -> None:
         self._entries: dict[str, ToolRegistration] = {}
         self._selection: ToolSelection = AllTools()
+        self._schemas: dict[str, ToolSchema] = {}
+        self._enabled_schemas: tuple[ToolSchema, ...] | None = None
 
     def register(
         self,
@@ -50,6 +53,11 @@ class ToolRegistry:
             raise ValueError(
                 f"Tool name {name!r} is already registered as {duplicate!r}"
             )
+        schema = ToolSchema(
+            name=tool.name,
+            description=tool.description,
+            parameters=tool.parameters,
+        )
         self._entries[full_name] = ToolRegistration(
             tool=tool,
             registered_name=full_name,
@@ -57,12 +65,16 @@ class ToolRegistry:
             model_visible=model_visible,
             timeout_seconds=timeout_seconds,
         )
+        self._schemas[full_name] = schema
+        self._enabled_schemas = None
         return full_name
 
     def unregister(self, name: str) -> bool:
         if name not in self._entries:
             return False
         del self._entries[name]
+        del self._schemas[name]
+        self._enabled_schemas = None
         if not isinstance(self._selection, AllTools):
             self._selection = tuple(
                 selected for selected in self._selection if selected != name
@@ -93,6 +105,15 @@ class ToolRegistry:
             if entry.model_visible and self._is_enabled(name)
         ]
 
+    def schemas(self) -> tuple[ToolSchema, ...]:
+        if self._enabled_schemas is None:
+            self._enabled_schemas = tuple(
+                self._schemas[name]
+                for name, entry in self._entries.items()
+                if entry.model_visible and self._is_enabled(name)
+            )
+        return self._enabled_schemas
+
     def names(self) -> list[str]:
         return [name for name in self._entries if self._is_enabled(name)]
 
@@ -105,6 +126,8 @@ class ToolRegistry:
 
     def restrict(self, selection: ToolSelection) -> list[str]:
         if isinstance(selection, AllTools):
+            if not isinstance(self._selection, AllTools):
+                self._enabled_schemas = None
             self._selection = selection
             return self.names()
 
@@ -112,7 +135,10 @@ class ToolRegistry:
         for selector in selection:
             matches = self._expand_selector(selector)
             expanded.update(matches)
-        self._selection = tuple(sorted(expanded))
+        selected = tuple(sorted(expanded))
+        if selected != self._selection:
+            self._enabled_schemas = None
+        self._selection = selected
         return self.names()
 
     def exclude(self, tool_names: list[str]) -> list[str]:
@@ -122,7 +148,10 @@ class ToolRegistry:
             for selector in tool_names
             for name in self._expand_selector(selector)
         }
-        self._selection = tuple(name for name in self.names() if name not in disabled)
+        selected = tuple(name for name in self.names() if name not in disabled)
+        if selected != self._selection:
+            self._enabled_schemas = None
+        self._selection = selected
         return self.names()
 
     def __len__(self) -> int:

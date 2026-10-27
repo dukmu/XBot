@@ -24,6 +24,7 @@ from pydantic import BaseModel, ConfigDict, Field, JsonValue
 from xcore.api.context import Context
 from xcore.api.services import ServiceKey
 from XBotv2.core.api.artifacts import ArtifactRef
+from XBotv2.core.api.provider import ToolSchema
 from XBotv2.core.api.tools import GuardDecision, Tool, ToolCall, ToolExecution
 
 if TYPE_CHECKING:
@@ -242,6 +243,8 @@ ToolGuard = Callable[
 
 
 class ToolsPort(Protocol):
+    """Registered tool parameters are read-only; change tools by registration."""
+
     def register(
         self,
         tool: Tool,
@@ -262,6 +265,9 @@ class ToolsPort(Protocol):
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> bool: ...
     def enabled(self) -> tuple[Tool, ...]: ...
+    def schemas(self) -> tuple[ToolSchema, ...]:
+        """Return read-only model-facing schemas for enabled tools."""
+        ...
     def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None: ...
     def names(self) -> tuple[str, ...]: ...
     def registered_names(self) -> tuple[str, ...]: ...
