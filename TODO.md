@@ -208,3 +208,6 @@
 - [x] 主代理核验中间10项scope用例源码与原始日志`/tmp/xbot-runtime-scopes-tests.log`；已覆盖pre-stop失败保留scope/锁并可重试、旧jobs绑定在关闭/同ID重开后失效等。另读取`/tmp/xbot-scopes-cli-acceptance-v2/report.json`（4次生产adapter HTTP请求、历史4→8、附件30B）。代码随后仍在修改，以上不作为最终工作树全绿声明。
 - [x] 主代理读取真实active-SSE退出中间产物`/tmp/xbot-active-sse-shutdown/report.json`及其data/logs：客户端保持200事件流时SIGTERM，约0.209秒退出(-15)，日志含thread关闭和root destroyed，随后锁可重取。当前继续去除listener直接调用SessionManager的耦合，最终版本需复跑；进程退出码/锁释放不能单独证明业务排空。
 - [ ] 继续收口的具体边界：按当前Agent引用重解析恢复并只保留明确用户选择；ACP与HTTP/TUI共用进程入口；nested provide不能扩大outer facet提供名单；disabled本层facet仍须隔离其私有服务，不能退回同名process服务（例如COMMANDS）。完成后再跑必要组合并提交实现。
+- [x] 真实SSE退出验收加强前提后已由主代理读取v3报告：`/tmp/xbot-active-sse-shutdown-v3/report.json`含stream_live_before_signal=true，约0.161秒退出、锁可重取。当前已直接核对`/tmp/xbot-scopes-rebind-acp.log`20 passed及`/tmp/xbot-scopes-session-final.log`27 passed；两者是迁移中的不同组合，不能相加或替代最终全量。
+- [ ] HTTP测试迁移范围纠正：主代理对比基线AST发现原108个test函数变为78，31个被删函数中大量涉及原文、身份、SSE中断、pending编辑/FIFO、附件/再生成、子thread跨重启、todo/usage恢复及关闭竞态。要求恢复这些有用行为并走新公共API，给出逐项映射；只有memory-only、旧receipt具体包装、关闭丢弃已接受输入等与目标冲突项可删除/替换。少量scope绿测不能补足缺失的HTTP行为证据。
+- [x] 归档接口取舍已明确：HTTP消息读取统一canonical transcript，active/closed/resume同源；compact验证归档原文仍可读、模型surface使用summary，不恢复旧活跃/关闭读不同内容的分支。clear/undo/regenerate仍须分别验证其规范可见投影。
