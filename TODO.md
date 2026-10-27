@@ -234,7 +234,7 @@
 ### 迭代 4：SQLite、规范日志与工作集（实施中）
 
 - [x] 第2批代码和安装产物验收完成后，已让同一Sol接具体存储实施；两个Terra均结束，无混跑。新段以b8b4974为已验收代码基线，前一批green不替代本段新实现的验证；主代理继续只负责边界审查、TODO、整合和独立验收。
-- [ ] 第一段落地真实生产SQLite/rollout与索引：唯一根DB worker、异步短事务和队列背压，session/thread权威元数据、规范正文与可重建投影、输入幂等和损坏/提交恢复、归档/工作集分离、fork/delete及独立rename事实。退出XBot的持久state.json和完整归档缓存，不引入旧格式自动双读写或同步阻塞桥。
+- [x] 第一段落地真实生产SQLite/rollout与索引：唯一根DB worker、异步短事务和队列背压，session/thread权威元数据、规范正文与可重建投影、输入幂等和损坏/提交恢复、归档/工作集分离、fork/delete及独立rename事实。退出XBot的持久state.json和完整归档缓存，不引入旧格式自动双读写或同步阻塞桥。
 - [ ] 后续存储段继续流式artifact、从启动即spool的shell、固定范围引用与pin，以及指定预算下的驻留/写入/大结果实测；不以第一段局部验证提前勾选整个第3批。
 - [x] 已确认进程插件的workspace membership/archive/显示顺序由同一DB worker管理的根plugin-state.sqlite3保存，不复制session title/workspace或建立第二份可写会话目录；每session仍独立state.sqlite3。此选择落实物理存储归属，不把业务规则交给backend。
 - [x] 主代理以b8b4974独立安装wheel完成真实loader/thread的存储组件基线：W恒为1条23B摘要，H为4/16/64MiB时tracemalloc current为4,780,449 /19,059,506 /76,164,905B，RSS为139,554,816 /155,471,872 /219,537,408B，首条消息weakref均存活；报告`/tmp/xbot-storage-baseline-b8b4974/report.json`、脚本`/tmp/xbot-storage-baseline.py`。此实验直接操作history，没有模型请求，不算4096次模型步或真实模型compact验收。
@@ -265,3 +265,6 @@
 - [x] 4096条组件对照已实际退出0，`/tmp/xbot-storage-sqlite-4096/report.json`及日志同前缀.log；每条16KiB、每64条以1条23B摘要替换W，H=4/16/64MiB时tracemalloc current为1,939,826 /1,942,232 /1,950,042B，RSS为115,740,672 /115,806,208 /115,929,088B，首条旧消息weakref均释放。原b8b4974同规格H增长时分别保留4.78/19.06/76.16MB traced且旧对象均存活；此处只证明历史组件驻留，不能冒充4096模型步/64子线程/慢客户端或200MB输出验收。
 - [ ] 同组件写入实测留给下一存储段优化/验证：64MiB逻辑正文对应rollout 68,011,346B、SQLite共2,179,072B、采样时WAL为0；Linux进程write_bytes=1,720,791,040B、cancelled_write_bytes=973,606,912B。逐批计数约25.6倍正文且线性，没有全H重写迹象；这些是进程I/O记账，不冒称设备实际写入量或已经满足延迟/磨损目标。需在保留单worker和有界连接/资源前提下评估短事务/连接/WAL开销，不能换成无界连接缓存。
 - [x] 最终主代理architecture/contracts均实际退出1且各保留原3项workspace文件实现越界（`/tmp/xbot-storage-root-architecture-final.txt`、`/tmp/xbot-storage-root-contracts-final.txt`）；98个改动Python编译和git diff --check通过。主代理复核572条V2生产指纹未变，并读取源码CLI/SSE的真实日志尾均为application.destroyed，非只依据摘要推断资源收尾。
+- [x] 验收脚本单独提交`d8cb056`；本段精确最终实现提交`70fb6ded9925910b5daab3deb28de09d7459d74b`，提交前后572条生产/资源/脚本指纹未变（`/tmp/xbot-storage-root-evaluated.json`）。用户设计稿和.worktrees未加入；此后仅本日志可追加，下一段代码变更须重新验证其影响。
+- [x] 从70fb6de干净git archive构建两wheel，独立新uv环境`/tmp/xbot-storage-installed`离线安装；清单`/tmp/xbot-storage-wheel-manifest.json`核对XBot520/XCore20项，新backend及session/agentloop repository API、默认YAML、py.typed、owner文档、skill实际入包；旧persistence/store/archive/client_http及application/factory、tests/Web/生成bundle未入包。仓库外移除PYTHONPATH后实际导入来自该env的site-packages，旧模块find_spec为None；没有新增项目依赖。
+- [x] 最终安装CLI实跑退出0：`/tmp/xbot-storage-wheel-cli/report.json`，进程732076/732155、4次本地provider HTTP请求、重启4条/续跑8条、30B附件；安装版活跃SSE验收退出0：`/tmp/xbot-storage-wheel-sse/report.json`，确认流仍活后SIGTERM约0.160s、exit=-15、锁可重取，两份运行日志末尾均application.destroyed。此产物仅对应70fb6de，不冒充外部provider或后续存储切片验收。第3批整体及goal继续active。
