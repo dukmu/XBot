@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pydantic import JsonValue
 from xcore.api.context import Context
+from XBotv2.session.api.replay import REPLAY_POOL
 from XBotv2.session.api.contracts import SESSION_RESOURCE_CHANGED, SESSION_RESOURCE_REMOVED, SessionResourceChanged, SessionResourceRemoved
 from XBotv2.workspaces.impl.service import WorkspaceRegistry
 from XBotv2.workspaces.api.contracts import (
@@ -57,12 +58,13 @@ class WorkspaceCatalogHandlers:
 
 class WorkspacesPlugin:
     name = "xbot.workspaces"
-    inject = ["runtime_log", "sessions", "state", "workspace_root"]
+    inject = ["runtime_log", "sessions", "state", "workspace_root", REPLAY_POOL]
 
     async def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        stream = WorkspaceEventStream()
+        stream = WorkspaceEventStream(pool=ctx.require(REPLAY_POOL))
+        ctx.dispose(stream.close)
         registry = WorkspaceRegistry(
             ctx.state.namespace("workspaces"),
             ctx.sessions,

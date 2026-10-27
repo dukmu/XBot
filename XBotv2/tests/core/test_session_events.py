@@ -15,6 +15,7 @@ from XBotv2.agentloop.impl.metadata import ThreadMetadataState
 from XBotv2.session.api.contracts import SessionKey
 from XBotv2.agentloop.impl.state import SessionRuntimeState
 from XBotv2.session.impl.event_stream import SessionEventCursorExpired, SessionEventStream
+from XBotv2.session.impl.replay import ReplayPool
 
 
 @dataclass(frozen=True)
@@ -42,7 +43,7 @@ async def _stream(capacity=512, max_bytes=8 * 1024 * 1024):
     )
     await metadata_state.initialize(ThreadMetadata(runtime_selection=selection))
     state = SessionRuntimeState(SessionKey("s", "t"), metadata_state)
-    return SessionEventStream(state, capacity=capacity, max_bytes=max_bytes)
+    return SessionEventStream(state, pool=ReplayPool(32 * 1024 * 1024), capacity=capacity, max_bytes=max_bytes)
 
 
 @pytest.mark.asyncio

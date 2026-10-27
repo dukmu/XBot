@@ -25,6 +25,8 @@ from XBotv2.session.api.contracts import (
     THREAD_EVENTS,
 )
 from XBotv2.session.impl.event_stream import SessionEventStream
+from XBotv2.session.impl.replay import ReplayPool
+from XBotv2.session.api.replay import REPLAY_POOL
 from XBotv2.loader.api.service import LOADER
 from XBotv2.persistence.api.contracts import PERSISTENCE
 from XBotv2.agentloop.api.storage import ARCHIVE
@@ -44,7 +46,9 @@ from XBotv2.server.api.contracts import QUERY_STATUS, ServerStatus, contribute_r
 
 
 def bind_thread_events(ctx: Context) -> None:
-    ctx.provide(THREAD_EVENTS, SessionEventStream(ctx.require(LOOP_STATE).session))
+    stream = SessionEventStream(ctx.require(LOOP_STATE).session, pool=ctx.require(REPLAY_POOL))
+    ctx.provide(THREAD_EVENTS, stream)
+    ctx.dispose(stream.close)
     for command in build_session_commands(
         ctx.require(SESSIONS), ctx.require(THREAD_INFO)
     ):
@@ -52,6 +56,8 @@ def bind_thread_events(ctx: Context) -> None:
 
 
 def mount_thread(ctx: Context, config: SessionConfig) -> None:
+    if "replay_process_bytes" in config.model_fields_set and config.replay_process_bytes != ctx.require(REPLAY_POOL).stats["budget_bytes"]:
+        raise ValueError("session.replay_process_bytes is process-scoped and cannot be overridden per thread")
     info = ctx.require(THREAD_INFO)
     paths = ctx.runtime_paths
     thread_paths = paths.session(info.session_id).thread(info.thread_id)
@@ -84,10 +90,10 @@ def mount_thread(ctx: Context, config: SessionConfig) -> None:
         RuntimeVariables.for_thread(paths, info.workspace_root, thread_paths),
     )
     ctx.set("thread_paths", thread_paths)
-    ctx.inject([LOOP_STATE, INBOX, COMMANDS, SESSIONS, THREAD_INFO], bind_thread_events)
+    ctx.inject([LOOP_STATE, INBOX, COMMANDS, SESSIONS, THREAD_INFO, REPLAY_POOL], bind_thread_events)
 
 
-mount_thread.inject = (THREAD_INFO, "runtime_paths", PERSISTENCE, SESSIONS)
+mount_thread.inject = (THREAD_INFO, "runtime_paths", PERSISTENCE, SESSIONS, REPLAY_POOL)
 mount_thread.provide = (
     THREAD_REPOSITORY,
     "state",
@@ -101,6 +107,9 @@ mount_thread.Config = SessionConfig
 
 
 def mount_process(ctx: Context, config: SessionConfig) -> None:
+    pool = ReplayPool(config.replay_process_bytes)
+    ctx.provide(REPLAY_POOL, pool)
+    ctx.dispose(pool.close)
     manager = SessionManager(ctx.runtime_paths, ctx, runtime_log=ctx.runtime_log)
     ctx.provide(SESSIONS, manager)
     ctx.set("workspace_root", config.workspace_root)
@@ -116,7 +125,7 @@ def mount_process(ctx: Context, config: SessionConfig) -> None:
 
 
 mount_process.inject = ("runtime_paths", "runtime_log", LOADER, PERSISTENCE)
-mount_process.provide = (SESSIONS, "workspace_root")
+mount_process.provide = (SESSIONS, REPLAY_POOL, "workspace_root")
 mount_process.Config = SessionConfig
 
 

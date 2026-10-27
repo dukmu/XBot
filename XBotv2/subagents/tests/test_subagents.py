@@ -219,10 +219,11 @@ async def test_expired_event_window_uses_frozen_execution():
     from XBotv2.core.api.domain import TurnScope
     from XBotv2.session.api.contracts import THREAD_EVENTS
     from XBotv2.session.impl.event_stream import SessionEventStream
+    from XBotv2.session.impl.replay import ReplayPool
     from XBotv2.subagents.impl.service import _Turn
 
     launcher, sessions = _launcher(_definition())
-    stream = SessionEventStream(SimpleNamespace(event_cursor=0), capacity=1)
+    stream = SessionEventStream(SimpleNamespace(event_cursor=0), pool=ReplayPool(1024), capacity=1)
     subscription = stream.subscribe()
     stream.publish(LoopTurnStarted(turn=1), scope=TurnScope("first-turn"))
     stream.publish(LoopTurnStarted(turn=2), scope=TurnScope("next-turn"))

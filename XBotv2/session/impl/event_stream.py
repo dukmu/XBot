@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pydantic_core import to_json
 from XBotv2.core.api.domain import EventScope, SessionScope
 from XBotv2.session.api.contracts import SessionEventCursorExpired, SessionEventFrame, SessionEventSubscription as SessionEventSubscriptionPort, SessionEvent
 from XBotv2.agentloop.api.state import ThreadExecution
+from XBotv2.session.api.replay import ReplayPoolPort
 
 
 @dataclass(slots=True, eq=False)
@@ -63,15 +63,13 @@ class SessionEventStream:
         self,
         state: ThreadExecution,
         *,
+        pool: ReplayPoolPort,
         capacity: int = 512,
         max_bytes: int = 8 * 1024 * 1024,
     ) -> None:
         if capacity < 1 or max_bytes < 1:
             raise ValueError("Session event capacity and byte budget must be positive")
-        self._capacity = capacity
-        self._max_bytes = max_bytes
-        self._bytes = 0
-        self._frames: deque[tuple[SessionEventFrame, int]] = deque()
+        self._window = pool.window(capacity=capacity, max_bytes=max_bytes)
         self._subscribers: set[_SessionSubscriber] = set()
         self._state = state
         self._closed = False
@@ -86,9 +84,8 @@ class SessionEventStream:
 
     @property
     def oldest_sequence(self) -> int:
-        if not self._frames:
-            return self.sequence + 1
-        return self._frames[0][0].sequence
+        frame = self._window.oldest
+        return frame.sequence if frame is not None else self.sequence + 1
 
     def publish(
         self,
@@ -101,20 +98,7 @@ class SessionEventStream:
         frame = SessionEventFrame(self.sequence + 1, scope, event)
         size = len(to_json(frame))
         self._state.event_cursor = frame.sequence
-        while self._frames and (len(self._frames) >= self._capacity or self._bytes + size > self._max_bytes):
-            _, removed_size = self._frames.popleft()
-            self._bytes -= removed_size
-        if size <= self._max_bytes:
-            self._frames.append((frame, size))
-            self._bytes += size
-        # Subscribers retain only a cursor. A single coalesced wakeup tells
-        # them to pull all available frames from the central bounded window.
-        # This keeps both producer and subscriber memory bounded without
-        # silently dropping a reliable frame into a full per-client queue.
-        for subscriber in tuple(self._subscribers):
-            if subscriber.closed or subscriber.wakeups.full():
-                continue
-            subscriber.wakeups.put_nowait(None)
+        self._window.append(frame, size)
         return frame
 
     def subscribe(self, after: int | None = None) -> SessionEventSubscriptionPort:
@@ -128,6 +112,7 @@ class SessionEventStream:
             raise SessionEventCursorExpired(cursor, oldest)
         subscriber = _SessionSubscriber(asyncio.Queue(maxsize=1))
         self._subscribers.add(subscriber)
+        self._window.watch(subscriber.wakeups)
         return _SessionEventSubscription(self, subscriber, cursor)
 
     def frame_after(self, cursor: int) -> SessionEventFrame | None:
@@ -140,9 +125,9 @@ class SessionEventStream:
         # the global sequence modulo capacity here is incorrect after the
         # first eviction because sequence zero is not the deque's origin.
         index = next_sequence - self.oldest_sequence
-        if index < 0 or index >= len(self._frames):
+        frame = self._window.get(index)
+        if frame is None:
             raise SessionEventCursorExpired(cursor, self.oldest_sequence)
-        frame = self._frames[index][0]
         if frame.sequence != next_sequence:
             raise SessionEventCursorExpired(cursor, self.oldest_sequence)
         return frame
@@ -150,6 +135,7 @@ class SessionEventStream:
     def detach(self, subscriber: _SessionSubscriber) -> None:
         subscriber.closed = True
         self._subscribers.discard(subscriber)
+        self._window.unwatch(subscriber.wakeups)
         if subscriber.wakeups.empty():
             subscriber.wakeups.put_nowait(None)
 
@@ -160,5 +146,6 @@ class SessionEventStream:
         for subscriber in tuple(self._subscribers):
             self.detach(subscriber)
         self._subscribers.clear()
+        self._window.close()
 
 

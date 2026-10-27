@@ -11,11 +11,12 @@ from XBotv2.session.impl.protocol import build_session_router
 from XBotv2.session.api.contracts import SessionSummary
 from XBotv2.workspaces.api.events import WorkspaceCursorExpired
 from XBotv2.workspaces.impl.events import WorkspaceEventStream
+from XBotv2.session.impl.replay import ReplayPool
 
 
 @pytest.mark.asyncio
 async def test_workspace_event_stream_replays_then_fans_out_to_every_client():
-    stream = WorkspaceEventStream(capacity=4)
+    stream = WorkspaceEventStream(pool=ReplayPool(32 * 1024 * 1024), capacity=4)
     first = stream.publish(SessionResourceChanged(SessionSummary(
         session_id="s1", status="inactive"
     )))
@@ -35,7 +36,7 @@ async def test_workspace_event_stream_replays_then_fans_out_to_every_client():
 
 @pytest.mark.asyncio
 async def test_workspace_event_stream_rejects_an_expired_cursor():
-    stream = WorkspaceEventStream(capacity=2)
+    stream = WorkspaceEventStream(pool=ReplayPool(32 * 1024 * 1024), capacity=2)
     for number in range(3):
         stream.publish(SessionResourceChanged(SessionSummary(
             session_id=f"s{number}",
@@ -74,8 +75,8 @@ async def test_session_baseline_cursor_precedes_the_snapshot_read():
 
 @pytest.mark.asyncio
 async def test_workspace_byte_budget_expires_slow_cursor_and_keeps_other_stream_live():
-    stream = WorkspaceEventStream(max_bytes=200)
-    other = WorkspaceEventStream(max_bytes=200)
+    stream = WorkspaceEventStream(pool=ReplayPool(32 * 1024 * 1024), max_bytes=200)
+    other = WorkspaceEventStream(pool=ReplayPool(32 * 1024 * 1024), max_bytes=200)
     slow = stream.subscribe(0)
     first = stream.publish(SessionResourceRemoved("small"))
     stream.publish(SessionResourceRemoved("界" * 200))
@@ -93,7 +94,7 @@ async def test_workspace_byte_budget_expires_slow_cursor_and_keeps_other_stream_
 
 @pytest.mark.asyncio
 async def test_workspace_byte_budget_evicts_retained_frames():
-    stream = WorkspaceEventStream(max_bytes=240)
+    stream = WorkspaceEventStream(pool=ReplayPool(32 * 1024 * 1024), max_bytes=240)
     slow = stream.subscribe(0)
     stream.publish(SessionResourceRemoved("x" * 100))
     latest = stream.publish(SessionResourceRemoved("y" * 100))

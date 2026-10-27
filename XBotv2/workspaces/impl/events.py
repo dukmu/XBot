@@ -1,25 +1,23 @@
 """Bounded workspace event replay and fan-out."""
 
 import asyncio
-from collections import deque
 from pydantic_core import to_json
 
 from XBotv2.workspaces.api.events import WorkspaceCatalogChange, WorkspaceCursorExpired, WorkspaceEventFrame
 from XBotv2.workspaces.impl.replay import ReplaySubscriber, ReplaySubscription
+from XBotv2.session.api.replay import ReplayPoolPort
 
 
 class WorkspaceEventStream:
     """Bounded replay and live fan-out for committed catalog changes."""
 
-    def __init__(self, *, capacity: int = 512, max_bytes: int = 8 * 1024 * 1024) -> None:
+    def __init__(self, *, pool: ReplayPoolPort, capacity: int = 512, max_bytes: int = 8 * 1024 * 1024) -> None:
         if capacity < 1 or max_bytes < 1:
             raise ValueError("Workspace event capacity and byte budget must be positive")
-        self._capacity = capacity
-        self._max_bytes = max_bytes
-        self._bytes = 0
-        self._frames: deque[tuple[WorkspaceEventFrame, int]] = deque()
+        self._window = pool.window(capacity=capacity, max_bytes=max_bytes)
         self._subscribers: set[ReplaySubscriber] = set()
         self._sequence = 0
+        self._closed = False
 
     @property
     def sequence(self) -> int:
@@ -27,24 +25,21 @@ class WorkspaceEventStream:
 
     @property
     def oldest_sequence(self) -> int:
-        return self._frames[0][0].sequence if self._frames else self._sequence + 1
+        frame = self._window.oldest
+        return frame.sequence if frame is not None else self._sequence + 1
 
     def publish(self, change: WorkspaceCatalogChange) -> WorkspaceEventFrame:
+        if self._closed:
+            raise RuntimeError("Workspace event stream is closed")
         frame = WorkspaceEventFrame(self._sequence + 1, change)
         size = len(to_json(frame))
         self._sequence = frame.sequence
-        while self._frames and (len(self._frames) >= self._capacity or self._bytes + size > self._max_bytes):
-            _, removed_size = self._frames.popleft()
-            self._bytes -= removed_size
-        if size <= self._max_bytes:
-            self._frames.append((frame, size))
-            self._bytes += size
-        for subscriber in tuple(self._subscribers):
-            if not subscriber.closed and subscriber.wakeups.empty():
-                subscriber.wakeups.put_nowait(None)
+        self._window.append(frame, size)
         return frame
 
     def subscribe(self, after: int) -> ReplaySubscription:
+        if self._closed:
+            raise RuntimeError("Workspace event stream is closed")
         if after < 0 or after > self._sequence:
             raise ValueError("Workspace event cursor is outside the current sequence")
         oldest = self.oldest_sequence
@@ -52,6 +47,7 @@ class WorkspaceEventStream:
             raise WorkspaceCursorExpired(after, oldest)
         subscriber = ReplaySubscriber(asyncio.Queue(maxsize=1))
         self._subscribers.add(subscriber)
+        self._window.watch(subscriber.wakeups)
         return ReplaySubscription(self, subscriber, after)
 
     def frame_after(self, cursor: int) -> WorkspaceEventFrame | None:
@@ -59,9 +55,9 @@ class WorkspaceEventStream:
         if cursor < oldest - 1:
             raise WorkspaceCursorExpired(cursor, oldest)
         index = cursor + 1 - oldest
-        if index >= len(self._frames):
+        frame = self._window.get(index)
+        if frame is None:
             return None
-        frame = self._frames[index][0]
         if frame.sequence != cursor + 1:
             raise WorkspaceCursorExpired(cursor, oldest)
         return frame
@@ -69,5 +65,14 @@ class WorkspaceEventStream:
     def detach(self, subscriber: ReplaySubscriber) -> None:
         subscriber.closed = True
         self._subscribers.discard(subscriber)
+        self._window.unwatch(subscriber.wakeups)
         if subscriber.wakeups.empty():
             subscriber.wakeups.put_nowait(None)
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        for subscriber in tuple(self._subscribers):
+            self.detach(subscriber)
+        self._window.close()
