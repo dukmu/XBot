@@ -22,7 +22,7 @@ from typing import Any, Callable, TypeVar, overload
 from xcore.api.events import Disposer, EventKey
 from xcore.api.services import ServiceKey, service_name
 from xcore.api.errors import InactiveEffectError, ServiceNotFoundError
-from xcore.events import EventBus, _UNSET
+from xcore.events import EventBus, _UNSET, _ReadyDispatch, _ready_dispatch
 from xcore.plugin import (
     Fiber,
     FiberState,
@@ -75,6 +75,7 @@ class Context:
         self._closing = False
         self._scope = self if parent is None else parent._scope
         self._is_active = False
+        self._ready_complete = False
         if parent is None:
             self._root = self
             self._services = ServiceStore()
@@ -118,16 +119,27 @@ class Context:
         def handle(
             ctx: Any, name: str, listener: Any, options: dict[str, Any]
         ) -> Any:
-            if name == "ready" and self._is_active and ctx._scope is self:
+            if name == "ready" and ctx._scope._ready_complete and ctx.is_active:
                 async def run() -> None:
-                    result = listener()
-                    if inspect.isawaitable(result):
-                        await result
-
+                    try:
+                        result = listener()
+                        if inspect.isawaitable(result):
+                            await result
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as error:
+                        fail = getattr(ctx.fiber, "_fail_ready", None)
+                        if fail is None:
+                            logger.exception("ready listener failed")
+                        else:
+                            await fail(error)
                 task = asyncio.ensure_future(run())
+                ctx.fiber._ready_tasks.add(task)
+                task.add_done_callback(ctx.fiber._ready_tasks.discard)
 
                 def cancel() -> bool:
-                    task.cancel()
+                    if task is not asyncio.current_task():
+                        task.cancel()
                     return True
 
                 return cancel
@@ -227,8 +239,20 @@ class Context:
         """
         name = service_name(name)
         self._assert_open()
+        if self._scope is not self.root and name not in self._scope._scope_provides:
+            raise ValueError(f"scope {self._scope.name!r} published undeclared service {name!r}")
         label = self._isolate_label(name)
         owner = self.fiber
+        declaration = owner
+        while hasattr(declaration, "definition"):
+            if declaration.ctx._scope is declaration.ctx:
+                break
+            if hasattr(declaration.definition.key, "provide"):
+                if name not in declaration.definition.provided:
+                    raise ValueError(
+                        f"plugin {declaration.name!r} published undeclared service {name!r}"
+                    )
+            declaration = declaration.parent.fiber
         self._services.set(label, name, value, owner=owner)
         logger.debug(
             "service.provided name=%s owner=%s type=%s",
@@ -481,6 +505,7 @@ class Context:
         child._closing = False
         child._scope = self._scope
         child._is_active = False
+        child._ready_complete = False
         child._root = self._root
         child._services = self._services
         child._bus = self._bus
@@ -528,6 +553,7 @@ class Context:
         child = handle._fiber.ctx
         child._name = name
         child._scope = child
+        child._scope_provides = frozenset(names)
         for service in names:
             child._isolate[service] = object()
         return child
@@ -633,6 +659,8 @@ class Context:
                     raise RuntimeError("start the runtime root before activating a scope")
                 await self.fiber.await_fiber()
                 await self._load_fixpoint()
+                if not self._ready_complete:
+                    await self._run_ready()
                 return
             return await self._root.start()
         async with self._lifecycle_lock:
@@ -648,15 +676,38 @@ class Context:
             )
             self._is_active = True
             await self._load_fixpoint()
-            try:
-                await self._bus.emit("ready")
-            except BaseException:  # noqa: BLE001 - ready failures must not wedge start
-                logger.exception("ready listeners failed; app continues")
+            await self._run_ready()
             running = sum(
                 fiber.state is FiberState.RUNNING
                 for fiber in self._registry._all_fibers()
             )
             logger.info("application.ready plugins_running=%d", running)
+
+    async def _run_ready(self) -> None:
+        boundary = _ReadyDispatch(self)
+        token = _ready_dispatch.set(boundary)
+        seen = set()
+        try:
+            while True:
+                hooks = [hook for hook in self._bus._match("ready", (), scope=self, local_only=True) if hook.seq not in seen]
+                if not hooks:
+                    break
+                for hook in hooks:
+                    seen.add(hook.seq)
+                    if hook.owner.fiber.state is not FiberState.RUNNING:
+                        continue
+                    try:
+                        await self._bus._invoke(hook, ())
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        # Bare root callbacks have no plugin activation to fail.
+                        logger.exception("ready listener failed")
+                await self._load_fixpoint()
+            self._ready_complete = True
+        finally:
+            boundary.active = False
+            _ready_dispatch.reset(token)
 
     async def _load_fixpoint(self) -> None:
         """Settle pending fibers and changed bindings before startup returns."""
@@ -746,6 +797,7 @@ class Context:
 
     def _reset_closing(self) -> None:
         self._closing = False
+        self._ready_complete = False
         for child in self._children:
             child._reset_closing()
 

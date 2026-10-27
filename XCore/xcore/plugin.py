@@ -109,6 +109,7 @@ class EffectOwner:
         self._disposers: list[Callable[[], Any]] = []
         self._pre_stop: list[Callable[[], Any]] = []
         self._pending_cleanup: set[asyncio.Task] = set()
+        self._ready_tasks: set[asyncio.Task] = set()
 
     def assert_active(self) -> None:
         raise NotImplementedError
@@ -126,6 +127,11 @@ class EffectOwner:
         return remove
 
     async def _run_pre_stop(self) -> None:
+        ready = [task for task in self._ready_tasks if task is not asyncio.current_task() and not task.done()]
+        for task in ready:
+            task.cancel()
+        if ready:
+            await asyncio.gather(*ready, return_exceptions=True)
         errors: list[Exception] = []
         for callback in reversed(list(self._pre_stop)):
             try:
@@ -743,24 +749,31 @@ class Fiber(EffectOwner):
             self._set_state(FiberState.RUNNING)
             self.ctx.registry._notify_provided(self)
         except BaseException as exc:  # noqa: BLE001 - plugin failure is isolated
-            self._error = exc
-            logger.error(
-                "plugin %r failed error_type=%s",
-                self.name,
-                type(exc).__name__,
-                exc_info=exc,
-            )
-            self.ctx._bus._emit_sync("internal/error", self, exc)
-            # Drain partial work while its service references are still valid.
-            try:
-                await self._run_pre_stop()
-            except BaseException as drain_error:
-                self._error = BaseExceptionGroup("activation and pre-stop failed", [exc, drain_error])
-                self._set_state(FiberState.FAILED)
-                return
-            await self._run_disposers(list(self._disposers))
-            self._disposers.clear()
+            await self._fail_activation(exc)
+
+    async def _fail_ready(self, error: Exception) -> None:
+        async with self._settle_lock:
+            await self._fail_activation(error)
+
+    async def _fail_activation(self, exc: BaseException) -> None:
+        self._error = exc
+        logger.error(
+            "plugin %r failed error_type=%s",
+            self.name,
+            type(exc).__name__,
+            exc_info=exc,
+        )
+        self.ctx._bus._emit_sync("internal/error", self, exc)
+        # Drain partial work while its service references are still valid.
+        try:
+            await self._run_pre_stop()
+        except BaseException as drain_error:
+            self._error = BaseExceptionGroup("activation and pre-stop failed", [exc, drain_error])
             self._set_state(FiberState.FAILED)
+            return
+        await self._run_disposers(list(self._disposers))
+        self._disposers.clear()
+        self._set_state(FiberState.FAILED)
 
     def _execute_callback(self) -> Any:
         callback = self.runtime.definition.callback
@@ -874,13 +887,32 @@ class PluginHandle:
         return self._fiber._error
 
     @property
+    def activation_errors(self) -> tuple[tuple[str, BaseException], ...]:
+        """Failures in this owner and its independently activated children."""
+        errors = []
+        for fiber in self._fiber.ctx.registry._all_fibers():
+            ancestor = fiber
+            while isinstance(ancestor, Fiber):
+                if ancestor is self._fiber:
+                    if fiber._error is not None:
+                        errors.append((fiber.name, fiber._error))
+                    break
+                ancestor = ancestor.parent.fiber
+        return tuple(errors)
+
+    @property
     def missing_dependencies(self) -> tuple[str, ...]:
         """Required services currently unavailable to this plugin."""
-        return tuple(
-            name
-            for name, required in self._fiber.inject.items()
-            if required and self._fiber.ctx.get(name, strict=True) is None
-        )
+        missing = set()
+        for fiber in self._fiber.ctx.registry._all_fibers():
+            ancestor = fiber
+            while isinstance(ancestor, Fiber):
+                if ancestor is self._fiber:
+                    missing.update(name for name, required in fiber.inject.items()
+                                   if required and fiber.ctx.get(name, strict=True) is None)
+                    break
+                ancestor = ancestor.parent.fiber
+        return tuple(sorted(missing))
 
     async def dispose(self) -> None:
         """Permanently unload this plugin instance."""

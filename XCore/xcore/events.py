@@ -28,6 +28,7 @@ import inspect
 import logging
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 from typing import Any, Callable
 
 from xcore.api.events import Disposer, EventKey
@@ -37,6 +38,15 @@ from xcore.api.events import Disposer, EventKey
 logger = logging.getLogger("xcore.events")
 
 _UNSET = object()
+
+
+@dataclass
+class _ReadyDispatch:
+    scope: Any
+    active: bool = True
+
+
+_ready_dispatch: ContextVar[_ReadyDispatch | None] = ContextVar("xcore_ready_dispatch", default=None)
 
 
 def is_bailed(value: Any) -> bool:
@@ -221,7 +231,7 @@ class EventBus:
 
     # -- matching -----------------------------------------------------------
 
-    def _match(self, event: EventKey | str, args: tuple[Any, ...], scope: Any = None) -> list[Hook]:
+    def _match(self, event: EventKey | str, args: tuple[Any, ...], scope: Any = None, *, local_only: bool = False) -> list[Hook]:
         """Collect live hooks for a dispatch, in registration order.
 
         Marks ``once`` hooks as consumed *synchronously* (no awaits here), so a
@@ -253,6 +263,8 @@ class EventBus:
             if not hook.global_ and session is not None:
                 if not all(predicate(session) for predicate in hook.filters):
                     continue
+            if local_only and hook.owner._scope is not scope:
+                continue
             if hook.once:
                 self._remove_hook(hook)
             result.append(hook)
@@ -295,6 +307,11 @@ class EventBus:
                 type(exc).__name__,
                 exc_info=exc,
             )
+            boundary = _ready_dispatch.get()
+            fail = getattr(hook.owner.fiber, "_fail_ready", None)
+            if boundary is not None and boundary.active and hook.owner._scope is boundary.scope and fail is not None:
+                await fail(exc)
+                return None
             raise
         finally:
             logger.debug(

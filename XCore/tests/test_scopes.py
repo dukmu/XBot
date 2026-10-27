@@ -294,3 +294,91 @@ async def test_concurrent_close_drains_owner_once_and_waits_for_released_async_e
     assert calls.count("cleanup") == 1
     assert len(root.registry) == 0
     await root.close()
+
+
+async def test_ready_waits_for_complete_graph_and_stays_in_its_scope():
+    root = Context()
+    calls = []
+    root.on("ready", lambda: calls.append("root"), global_=True, descendants=True)
+    def first(ctx, config):
+        ctx.on("ready", lambda: calls.append(ctx.require("later")))
+    first.inject = ()
+    first.provide = ()
+    def later(ctx, config):
+        ctx.set("later", "graph complete")
+    later.inject = ()
+    later.provide = ("later",)
+    root.plugin(first)
+    root.plugin(later)
+    try:
+        await root.start()
+        assert calls == ["root", "graph complete"]
+        child = root.scope("child", provides=("later",))
+        child.plugin(first)
+        child.plugin(later)
+        await child.start()
+        assert calls == ["root", "graph complete", "graph complete"]
+    finally:
+        await root.close()
+
+
+async def test_ready_dispatch_boundary_expires_in_inherited_background_tasks():
+    from xcore.api.plugins import FiberState
+    root = Context()
+    await root.start()
+    scope = root.scope("child")
+    release = asyncio.Event()
+    tasks = []
+    def plugin(ctx, config):
+        def fail():
+            raise ValueError("ordinary event failure")
+        ctx.on("ordinary", fail)
+        async def background():
+            await release.wait()
+            await ctx.emit("ordinary")
+        def ready():
+            tasks.append(asyncio.create_task(background()))
+        ctx.on("ready", ready)
+    plugin.inject = ()
+    plugin.provide = ()
+    handle = scope.plugin(plugin)
+    try:
+        await scope.start()
+        release.set()
+        with pytest.raises(ValueError, match="ordinary event failure"):
+            await tasks[0]
+        assert handle.state is FiberState.RUNNING
+        assert not handle.activation_errors
+    finally:
+        await root.close()
+
+
+async def test_late_ready_callback_is_cancelled_and_awaited_before_disposal():
+    root = Context()
+    await root.start()
+    entered, stopping, release, finished = (asyncio.Event() for _ in range(4))
+    def plugin(ctx, config):
+        async def ready():
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                stopping.set()
+                await release.wait()
+                finished.set()
+        ctx.on("ready", ready)
+    plugin.inject = ()
+    plugin.provide = ()
+    await root.plugin(plugin)
+    await asyncio.wait_for(entered.wait(), 5)
+    closing = asyncio.create_task(root.close())
+    try:
+        await asyncio.wait_for(stopping.wait(), 5)
+        assert not closing.done()
+        assert not finished.is_set()
+        release.set()
+        await asyncio.wait_for(closing, 5)
+        assert finished.is_set()
+    finally:
+        release.set()
+        await root.close()
