@@ -62,39 +62,46 @@ class SessionRepository:
         rows = await domain.transaction(lambda sql: sql.execute("SELECT count(*) FROM threads"), write=False)
         return rows[0][0]
 
-    async def thread_page(self, session_id, after=""):
+    async def thread_page(
+        self, session_id, after="", *, limit=100, backwards=False,
+        inclusive=False, parent_thread_id=None, kind=None,
+    ):
         if not await self.backend.database_exists(session_id):
             return ()
         domain = self.domain(session_id)
         if not await domain.exists():
             raise StreamCorrupt("Authoritative thread table is missing")
-        return await domain.transaction(lambda sql: sql.execute("SELECT thread_id FROM threads WHERE thread_id>? ORDER BY thread_id LIMIT 100", (after,)), write=False)
+        op = "<" if backwards else ">"
+        if inclusive:
+            op += "="
+        where = [f"thread_id{op}?"]
+        args = [after]
+        if parent_thread_id is not None:
+            where.append("parent_thread_id=?")
+            args.append(parent_thread_id)
+        if kind == "main":
+            where.append("parent_thread_id=''")
+        elif kind == "subagent":
+            where.append("parent_thread_id!=''")
+        order = "DESC" if backwards else "ASC"
+        return await domain.transaction(
+            lambda sql: sql.execute(
+                f"SELECT thread_id FROM threads WHERE {' AND '.join(where)} "
+                f"ORDER BY thread_id {order} LIMIT ?", (*args, limit),
+            ),
+            write=False,
+        )
 
     async def has_thread(self, session_id, thread_id):
         if not await self.backend.database_exists(session_id):
             return False
-        return bool(await self.domain(session_id).transaction(lambda sql: sql.execute("SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)), write=False))
-
-    async def thread_ids(self, session_id):
-        if not await self.backend.database_exists(session_id):
-            return []
         domain = self.domain(session_id)
         if not await domain.exists():
             raise StreamCorrupt("Authoritative thread table is missing")
-        result = []
-        after = ""
-        while True:
-            page = await domain.transaction(
-                lambda sql: sql.execute(
-                    "SELECT thread_id FROM threads WHERE thread_id>? ORDER BY thread_id LIMIT 256",
-                    (after,),
-                ),
-                write=False,
-            )
-            if not page:
-                return result
-            result.extend(row[0] for row in page)
-            after = page[-1][0]
+        return bool(await domain.transaction(
+            lambda sql: sql.execute("SELECT 1 FROM threads WHERE thread_id=?", (thread_id,)),
+            write=False,
+        ))
 
     async def rename(self, session_id, title):
         claim = (
@@ -157,7 +164,7 @@ class ThreadRepository:
         )
 
     async def persisted(self):
-        return self.thread_id in await self.session.thread_ids(self.session_id)
+        return await self.session.has_thread(self.session_id, self.thread_id)
 
     async def session_title(self):
         row = await self.session.row(self.session_id)
@@ -167,7 +174,7 @@ class ThreadRepository:
         self._ensured = False
         self.pending = facts
         if await self.session.backend.database_exists(self.session_id):
-            if self.thread_id in await self.session.thread_ids(self.session_id):
+            if await self.session.has_thread(self.session_id, self.thread_id):
                 await self._save(facts)
                 self._ensured = True
 

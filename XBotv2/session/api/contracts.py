@@ -183,6 +183,13 @@ class ThreadSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
+class ThreadPage(BaseModel):
+    items: tuple[ThreadSummary, ...] = ()
+    previous_cursor: str | None = None
+    next_cursor: str | None = None
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
 
@@ -252,7 +259,10 @@ class SessionsPort(Protocol):
     async def rename_session(self, session_id: str, title: str) -> SessionSummary: ...
     async def fork_session(self, session_id: str) -> str: ...
     async def delete_session(self, session_id: str) -> None: ...
-    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]: ...
+    async def list_threads(
+        self, session_id: str, *, limit: int = 100, cursor: str | None = None,
+        parent_thread_id: str | None = None, kind: Literal["main", "subagent"] | None = None,
+    ) -> ThreadPage: ...
     def set_child_limit(self, session_id: str, limit: int | None) -> None:
         """Set or clear the live child thread limit for this session owner."""
         ...

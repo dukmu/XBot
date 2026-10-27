@@ -27,7 +27,7 @@ protocol handshake is `POST /hello`.
 | PATCH | `/sessions/{session_id}` | `rename_session` | `SessionSummary` |
 | POST | `/sessions/{session_id}/fork` | `fork_session` | `ForkResponse` |
 | DELETE | `/sessions/{session_id}` | `delete_session` | `DeleteSessionResponse` |
-| GET | `/sessions/{session_id}/threads` | `list_threads` | `ThreadListResponse` |
+| GET | `/sessions/{session_id}/threads` | `list_threads` | paginated `ThreadListResponse` |
 | POST | `/sessions/{session_id}/threads` | `open_thread` | `OpenSessionResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}` | `get_thread` | `ThreadSummary` |
 | POST | `/sessions/{session_id}/close` | `close_session` | `CloseResponse` |
@@ -58,7 +58,15 @@ before anchor. Archive events contain one `session_id` and `archived` flag.
 Session summaries remain authoritative in the session store. Startup repairs
 workspace membership in bounded batches; listing does not rescan the catalog.
 The session change deduplication cache holds at most 256 summaries, an internal
-budget rather than a measured optimum. Thread lists remain unpaginated.
+budget rather than a measured optimum.
+
+`GET /sessions/{session_id}/threads` returns `threads`, `previous_cursor`, and
+`next_cursor`. It accepts `limit` (1–100), an opaque `cursor`, and optional
+`parent_thread_id` and `kind` (`main` or `subagent`) filters. Filtering precedes
+pagination; active threads that have not yet persisted are included. Threads
+are ordered by ID, and cursor boundaries are positions rather than snapshots.
+Use `kind=main&limit=1` to locate a session's main thread, or
+`GET /sessions/{session_id}/threads/{thread_id}` for an exact thread.
 
 ## Messages, history, queue, and stream
 

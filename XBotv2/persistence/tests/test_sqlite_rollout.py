@@ -151,7 +151,7 @@ async def test_fork_all_threads_retires_pending_even_after_rebuild(opened):
     await child.require(AGENT_LOOP).submit_input(InboxItem(id='child-pending',target=InboxTarget.NEXT_TURN,input=HumanInput(content='child pending')),wake=False)
     target=await manager.fork_session('session')
     persistence=scope.root.require(ARCHIVE)
-    assert [value.thread_id for value in await manager.list_threads(target)]==['child-1','main']
+    assert [value.thread_id for value in (await manager.list_threads(target)).items]==['child-1','main']
     assert rows(paths.session(target).database_file,'SELECT COUNT(*) FROM inbox')==[(0,)]
     assert rows(paths.session('session').database_file,'SELECT COUNT(*) FROM inbox')==[(2,)]
     assert paths.session(target).thread('main').rollout_file.stat().st_ino!=paths.session('session').thread('main').rollout_file.stat().st_ino

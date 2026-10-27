@@ -72,6 +72,7 @@ from XBotv2.session.api.contracts import (
     SessionNotFound,
     SessionSummary,
     SessionPage,
+    ThreadPage,
     ThreadNotActive,
     ThreadSummary,
     new_session_id,
@@ -180,7 +181,6 @@ class SessionManager(SessionsPort):
 
     async def new_thread_id(self, session_id: str, agent_ref: str) -> str:
         self._require_session(session_id)
-        persisted = set(await self._repository.thread_ids(session_id))
         while True:
             number = self._thread_numbers.get(session_id, 0) + 1
             self._thread_numbers[session_id] = number
@@ -189,7 +189,7 @@ class SessionManager(SessionsPort):
             if (
                 (session_id, thread_id) not in self._sessions
                 and (session_id, thread_id) not in self._opening
-                and thread_id not in persisted
+                and not await self._repository.has_thread(session_id, thread_id)
             ):
                 return thread_id
 
@@ -225,7 +225,7 @@ class SessionManager(SessionsPort):
     async def locate(self, session_id: str, thread_id: str) -> Context:
         scope = self._sessions.get((session_id, thread_id))
         if scope is None:
-            if thread_id in await self._repository.thread_ids(session_id):
+            if await self._repository.has_thread(session_id, thread_id):
                 raise ThreadNotActive(f"{session_id}/{thread_id}")
             raise SessionNotFound(f"{session_id}/{thread_id}")
         return scope
@@ -448,7 +448,7 @@ class SessionManager(SessionsPort):
                 workspace = requested_workspace or self._root.require("workspace_root")
                 if mode == "resume":
                     session_paths = self.paths.session(session_id)
-                    if thread_id not in await self._repository.thread_ids(session_id):
+                    if not await self._repository.has_thread(session_id, thread_id):
                         raise SessionNotFound(f"{session_id}/{thread_id}")
                     persistence = self._thread_repository(
                         session_paths,
@@ -541,21 +541,11 @@ class SessionManager(SessionsPort):
         try:
             session_paths = self.paths.session(session_id)
             session_preexisting = session_paths.root.is_dir()
-            if mode == "resume" and thread_id not in await self._repository.thread_ids(
-                session_id
-            ):
+            persisted_thread = await self._repository.has_thread(session_id, thread_id)
+            if mode == "resume" and not persisted_thread:
                 raise SessionNotFound(f"{session_id}/{thread_id}")
-            had_persisted_session = (
-                mode == "resume"
-                and thread_id in await self._repository.thread_ids(session_id)
-            )
-            if mode == "resume" and not had_persisted_session:
-                raise SessionNotFound(
-                    f"{session_id}/{thread_id} has no persisted session"
-                )
-            if mode == "new" and thread_id in await self._repository.thread_ids(
-                session_id
-            ):
+            had_persisted_session = mode == "resume" and persisted_thread
+            if mode == "new" and persisted_thread:
                 raise SessionExists(f"{session_id}/{thread_id}")
             extra_plugins = [
                 {"id": name, "config": config}
@@ -862,7 +852,7 @@ class SessionManager(SessionsPort):
     ) -> object:
         """The on-disk reader for one thread, or a clear not-found error."""
         session = self.paths.session(session_id)
-        if thread_id not in await self._repository.thread_ids(session_id):
+        if not await self._repository.has_thread(session_id, thread_id):
             raise SessionNotFound(f"{session_id}/{thread_id}")
         return self._thread_repository(session, thread_id=thread_id)
 
@@ -1087,9 +1077,16 @@ class SessionManager(SessionsPort):
                 finally:
                     reset_log_context(log_token)
             backend = self._root.require(PERSISTENCE)
-            thread_ids = await self._repository.thread_ids(session_id)
-            for thread_id in thread_ids:
-                await self._root.require(ARCHIVE).flush(session_id, thread_id)
+            thread_ids = []
+            after = ""
+            while True:
+                page = await self._repository.thread_page(session_id, after)
+                if not page:
+                    break
+                for (thread_id,) in page:
+                    await self._root.require(ARCHIVE).flush(session_id, thread_id)
+                    thread_ids.append(thread_id)
+                after = page[-1][0]
             required = await backend.owners(session_id)
             forked_id = new_session_id()
             async with backend.copy_session(session_id, forked_id) as prepared:
@@ -1175,37 +1172,98 @@ class SessionManager(SessionsPort):
             SessionResourceRemoved(session_id),
         )
 
-    async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]:
+    async def list_threads(
+        self, session_id: str, *, limit: int = 100, cursor: str | None = None,
+        parent_thread_id: str | None = None, kind: str | None = None,
+    ) -> ThreadPage:
         self._require_session(session_id)
+        if not 1 <= limit <= 100:
+            raise ValueError("limit must be between 1 and 100")
+        if kind not in (None, "main", "subagent"):
+            raise ValueError("Invalid thread kind")
+        try:
+            boundary, direction = (
+                json.loads(base64.urlsafe_b64decode(cursor.encode()))
+                if cursor else ("", "next")
+            )
+            if not isinstance(boundary, str) or direction not in (
+                "next", "previous", "next_inclusive", "previous_inclusive",
+            ):
+                raise ValueError
+        except (ValueError, TypeError, UnicodeError) as exc:
+            raise ValueError("Invalid page cursor") from exc
+        backwards = direction.startswith("previous")
+        inclusive = direction.endswith("_inclusive")
+        persisted = await self._repository.thread_page(
+            session_id, boundary, limit=limit + 1, backwards=backwards,
+            inclusive=inclusive, parent_thread_id=parent_thread_id, kind=kind,
+        )
         active = await self.active_threads()
-        thread_ids = {
-            *(await self._repository.thread_ids(session_id)),
-            *(
-                thread_id
-                for (active_session_id, thread_id), _runtime in active.items()
-                if active_session_id == session_id
-            ),
-        }
-        return tuple(
-            [
-                await _thread_summary(
-                    self,
-                    session_id,
-                    thread_id,
-                    active.get((session_id, thread_id)),
-                )
-                for thread_id in sorted(thread_ids)
-            ]
+        live = []
+        for (sid, identity), scope in active.items():
+            if sid != session_id:
+                continue
+            parent = scope.require(THREAD_INFO).parent_thread_id
+            if parent_thread_id is not None and parent != parent_thread_id:
+                continue
+            if (kind == "main" and parent) or (kind == "subagent" and not parent):
+                continue
+            if identity == boundary:
+                if not inclusive:
+                    continue
+            elif backwards and identity > boundary:
+                continue
+            elif not backwards and identity < boundary:
+                continue
+            live.append(identity)
+        live.sort(reverse=backwards)
+        ids = []
+        for identity in heapq.merge(
+            (row[0] for row in persisted), live, reverse=backwards,
+        ):
+            if ids and identity == ids[-1]:
+                continue
+            ids.append(identity)
+            if len(ids) > limit:
+                break
+        more = len(ids) > limit
+        ids = ids[:limit]
+        if backwards:
+            ids.reverse()
+
+        def encode(identity, direction):
+            return base64.urlsafe_b64encode(
+                json.dumps([identity, direction]).encode()
+            ).decode()
+
+        previous = None
+        next_cursor = None
+        if ids:
+            if more if backwards else cursor is not None:
+                previous = encode(ids[0], "previous")
+            if cursor is not None if backwards else more:
+                next_cursor = encode(ids[-1], "next")
+        elif cursor:
+            if backwards:
+                next_cursor = encode(boundary, "next_inclusive")
+            else:
+                previous = encode(boundary, "previous_inclusive")
+        summaries = tuple([
+            await _thread_summary(
+                self, session_id, identity, active.get((session_id, identity)),
+            )
+            for identity in ids
+        ])
+        return ThreadPage(
+            items=summaries, previous_cursor=previous, next_cursor=next_cursor,
         )
 
     async def open_thread(self, request: OpenThread) -> Context:
-        await self.session_summary(request.session_id)
+        self._require_session(request.session_id)
         parent_thread_id = request.parent_thread_id
         if request.mode == "resume":
             session = self.paths.session(request.session_id)
-            if request.thread_id not in await self._repository.thread_ids(
-                request.session_id
-            ):
+            if not await self._repository.has_thread(request.session_id, request.thread_id):
                 raise SessionNotFound(f"{request.session_id}/{request.thread_id}")
             persistence = self._thread_repository(
                 session,

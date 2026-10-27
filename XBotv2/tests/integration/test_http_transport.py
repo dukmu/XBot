@@ -6683,7 +6683,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
         )
         assert (await skills_app.state.manager.locate(session_id, llm.target)).require(AGENT_LOOP).pending_inputs() == ()
         children = [
-            item for item in await skills_app.state.manager.list_threads(session_id)
+            item for item in (await skills_app.state.manager.list_threads(session_id)).items
             if item.kind == "subagent"
         ]
         assert [item.thread_id for item in children] == [llm.target]

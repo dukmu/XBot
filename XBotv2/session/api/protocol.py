@@ -18,6 +18,8 @@ class OpenSessionRequest(WireModel):
 class ThreadListResponse(WireModel):
     session_id: str = Field(min_length=1)
     threads: list[ThreadSummary] = Field(default_factory=list)
+    previous_cursor: str | None = None
+    next_cursor: str | None = None
 
 
 class SessionListResponse(WireModel):

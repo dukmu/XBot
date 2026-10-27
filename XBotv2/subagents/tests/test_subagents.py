@@ -39,9 +39,12 @@ class _Sessions:
         assert session_id == "parent-session"
         return f"child-{name}"
 
-    async def list_threads(self, session_id):
+    async def list_threads(self, session_id, *, limit=100, cursor=None, parent_thread_id=None, kind=None):
+        from XBotv2.session.api.contracts import ThreadPage
         assert session_id == "parent-session"
-        return self.threads
+        threads = [t for t in self.threads if (parent_thread_id is None or t.parent_thread_id == parent_thread_id) and (kind is None or t.kind == kind)]
+        start = int(cursor) if cursor else 0
+        return ThreadPage(items=tuple(threads[start:start + limit]), next_cursor=str(start + limit) if start + limit < len(threads) else None)
 
     async def thread_summary(self, session_id, thread_id):
         from XBotv2.session.api.contracts import SessionNotFound
@@ -247,3 +250,33 @@ async def test_expired_event_window_uses_frozen_execution():
     assert turn.done.is_set() and turn.status == "completed"
     assert notices == [("parent-thread", "subagent/completed", False)]
     assert stream.subscriber_count == 0
+
+
+@pytest.mark.asyncio
+async def test_list_subagents_pages_direct_children():
+    import json
+    from XBotv2.subagents.impl.service import SubagentTools
+
+    threads = tuple(
+        ThreadSummary(
+            session_id="parent-session", thread_id=f"child-{i:04}",
+            status="inactive", kind="subagent", parent_thread_id="parent-thread",
+            agent="explorer",
+        )
+        for i in range(205)
+    )
+    sibling = ThreadSummary(
+        session_id="parent-session", thread_id="other", status="inactive",
+        kind="subagent", parent_thread_id="other-parent",
+    )
+    launcher, _ = _launcher(_definition(), threads=(*threads, sibling))
+    tools = SubagentTools(launcher=launcher)
+    cursor = None
+    seen = []
+    while True:
+        page = json.loads((await tools.list_subagents(limit=100, cursor=cursor)).output.parts[0].text)
+        seen.extend(item["thread_id"] for item in page["items"])
+        cursor = page["next_cursor"]
+        if cursor is None:
+            break
+    assert seen == [thread.thread_id for thread in threads]

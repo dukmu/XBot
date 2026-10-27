@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import json
 import uuid
 from dataclasses import dataclass, field
 from weakref import WeakValueDictionary
@@ -335,15 +336,26 @@ class SubagentTools:
             return failed_text("subagent_start_failed", str(exc))
         return succeeded_text(f"Subagent thread {target}: {turn.status}")
 
-    async def list_subagents(self) -> ToolOutcome:
-        """List direct child threads and their current state."""
-        threads = await self._launcher._sessions.list_threads(self._launcher._session.session_id)
-        lines = []
-        for thread in threads:
-            if thread.kind == "subagent" and thread.parent_thread_id == self._launcher.parent_thread_id:
-                turn = self._launcher._coordinator.turns.get(thread.thread_id)
-                lines.append(f"{thread.thread_id}: {turn.status if turn else thread.turn_status if thread.status == 'active' else thread.status} ({thread.agent})")
-        return succeeded_text("\n".join(lines) or "No child threads")
+    async def list_subagents(self, limit: int = 100, cursor: str | None = None) -> ToolOutcome:
+        """List one page of direct child threads; pass a returned cursor for another page."""
+        try:
+            page = await self._launcher._sessions.list_threads(
+                self._launcher._session.session_id, limit=limit, cursor=cursor,
+                parent_thread_id=self._launcher.parent_thread_id, kind="subagent",
+            )
+        except ValueError as exc:
+            return failed_text("invalid_page", str(exc))
+        items = []
+        for thread in page.items:
+            turn = self._launcher._coordinator.turns.get(thread.thread_id)
+            status = turn.status if turn else (
+                thread.turn_status if thread.status == "active" else thread.status
+            )
+            items.append({"thread_id": thread.thread_id, "status": status, "agent": thread.agent})
+        return succeeded_text(json.dumps({
+            "items": items, "previous_cursor": page.previous_cursor,
+            "next_cursor": page.next_cursor,
+        }, ensure_ascii=False))
 
     async def wait_subagent(self, ids: list[str] | None = None, mode: str = "any", timeout_ms: int | None = None) -> ToolOutcome:
         """Wait for the current task of direct child threads."""

@@ -48,18 +48,9 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIR
     router = APIRouter()
 
     async def _main_thread_id(session_id: str) -> str:
-        """Resolve the session's main thread deterministically.
-
-        ``dispatch_all`` returns every active thread (sorted by id), so
-        taking its first element silently depended on thread-id ordering
-        (e.g. a subagent thread could win). The session-scoped policy route
-        addresses the main thread explicitly.
-        """
-        threads = await sessions.list_threads(session_id)
-        main = next(
-            (thread.thread_id for thread in threads if thread.kind == "main"),
-            "",
-        )
+        """Find the main thread without scanning child-thread pages."""
+        page = await sessions.list_threads(session_id, limit=1, kind="main")
+        main = page.items[0].thread_id if page.items else ""
         if not main:
             raise OperationError(
                 "thread_not_active",

@@ -12,7 +12,7 @@ from XBotv2.session.api.contracts import THREAD_EVENTS
 import logging
 from pathlib import Path
 from traceback import format_exception_only
-from typing import AsyncIterator
+from typing import AsyncIterator, Literal
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, JsonValue
@@ -288,10 +288,21 @@ def build_session_router(
         "/sessions/{session_id}/threads",
         operation_id="list_threads",
     )
-    async def list_threads_endpoint(session_id: str) -> ThreadListResponse:
+    async def list_threads_endpoint(
+        session_id: str, limit: int = Query(default=100, ge=1, le=100),
+        cursor: str | None = None, parent_thread_id: str | None = None,
+        kind: Literal["main", "subagent"] | None = None,
+    ) -> ThreadListResponse:
+        try:
+            page = await sessions.list_threads(
+                session_id, limit=limit, cursor=cursor,
+                parent_thread_id=parent_thread_id, kind=kind,
+            )
+        except ValueError as exc:
+            raise HttpServerError("invalid_catalog_cursor", str(exc), status=400) from exc
         return ThreadListResponse(
-            session_id=session_id,
-            threads=list(await sessions.list_threads(session_id)),
+            session_id=session_id, threads=list(page.items),
+            previous_cursor=page.previous_cursor, next_cursor=page.next_cursor,
         )
 
     @router.post(
