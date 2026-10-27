@@ -20,6 +20,8 @@ XCore 是一个 Python 的、类似 Cordis 的、以插件为核心的运行时�
 
 ## 特性文档
 
+- [业务作用域与所有权](features/scopes.md) — 类型化服务/事件、独立 owner、隔离和可等待关闭。
+
 - [事件系统](features/events.md) — 事件名/通配符、emit/parallel/bail/serial/chain、
   过滤器与选择器。
 - [服务系统](features/services.md) — `ctx.set/get/unset`、Service 基类、属性访问、

@@ -77,19 +77,19 @@ class ServiceStore:
         del self._impls[key]
         return True
 
-    def unset_by_owner(self, owner: Any) -> list[str]:
-        """Release every service owned by a fiber; returns the released names."""
-        removed: list[str] = []
+    def unset_by_owner(self, owner: Any) -> list[tuple[object, str]]:
+        """Release every service owned by a fiber; returns the released bindings."""
+        removed: list[tuple[object, str]] = []
         for key, impl in list(self._impls.items()):
             if impl.owner is owner:
                 del self._impls[key]
-                removed.append(impl.name)
+                removed.append(key)
         return removed
 
-    def names_provided_by(self, owner: Any) -> list[str]:
-        """Names currently provided by a fiber (for state-transition notify)."""
+    def bindings_provided_by(self, owner: Any) -> list[tuple[object, str]]:
+        """Bindings currently provided by a fiber (for state-transition notify)."""
         return [
-            impl.name for impl in self._impls.values() if impl.owner is owner
+            key for key, impl in self._impls.items() if impl.owner is owner
         ]
 
 

@@ -27,7 +27,8 @@ await ctx.destroy()          # 永久拆除（不可再 start）
 | 保证 | 说明 |
 | --- | --- |
 | 重复 start/stop | no-op（记 warning）；root 级生命周期锁串行化并发调用 |
-| `stop()` 永不抛出 | disposer 失败逐条记日志 + `internal/error`，清理全部完成 |
+| pre-stop 失败 | 抛出异常、保留服务和 owner，允许重试排空 |
+| effect disposer 失败 | 逐条记日志 + `internal/error`，继续执行其他 disposer |
 | ready/dispose 监听器失败 | 记日志不阻断流程 |
 | `dispose` 事件时机 | 在卸载 fiber **之前**发出（监听器仍注册着，可做最后清理） |
 | 卸载顺序 | 按加载逆序（逆拓扑） |
@@ -53,3 +54,5 @@ def plugin(ctx, config):
   → B 自动加载。无需手工编排顺序。
 - `stop()` 期间在途的 async apply：先等 apply 完成再卸载（fiber 级串行化），其迟到
   的注册不会泄漏。
+
+独立 scope 的活跃根挂载、pre-stop 与等待关闭契约见 [作用域](scopes.md)。

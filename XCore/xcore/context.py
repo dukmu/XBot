@@ -17,8 +17,10 @@ import inspect
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, TypeVar, overload
 
+from xcore.api.events import EventKey
+from xcore.api.services import ServiceKey, service_name
 from xcore.errors import InactiveEffectError, ServiceNotFoundError
 from xcore.events import Disposer, EventBus, _UNSET
 from xcore.plugin import (
@@ -33,6 +35,8 @@ from xcore.plugin import (
 )
 from xcore.service import ServiceStore
 from xcore.state import StateService
+
+T = TypeVar("T")
 
 logger = logging.getLogger("xcore.context")
 
@@ -68,11 +72,13 @@ class Context:
         self._data_dir = Path(data_dir) if data_dir is not None else Path(".")
         self._children: list[Context] = []
         self._destroyed = False
+        self._closing = False
+        self._scope = self if parent is None else parent._scope
         self._is_active = False
         if parent is None:
             self._root = self
             self._services = ServiceStore()
-            self._bus = EventBus()
+            self._bus = EventBus(scope=self)
             self._registry = Registry(self)
             self._lifecycle_lock = asyncio.Lock()
             self._default_labels: dict[str, object] = {}
@@ -112,7 +118,7 @@ class Context:
         def handle(
             ctx: Any, name: str, listener: Any, options: dict[str, Any]
         ) -> Any:
-            if name == "ready" and self._is_active:
+            if name == "ready" and self._is_active and ctx._scope is self:
                 async def run() -> None:
                     result = listener()
                     if inspect.isawaitable(result):
@@ -168,7 +174,7 @@ class Context:
     def is_active(self) -> bool:
         if self._parent is None:
             return self._is_active
-        return self._root._is_active
+        return not self._destroyed and not self._closing and self._root._is_active
 
     # -- service resolution -------------------------------------------------
 
@@ -178,30 +184,40 @@ class Context:
             return label
         return self._default_labels.setdefault(name, object())
 
-    def get(self, name: str, *, strict: bool = True) -> Any:
+    @overload
+    def get(self, name: ServiceKey[T], *, strict: bool = True) -> T | None: ...
+
+    @overload
+    def get(self, name: str, *, strict: bool = True) -> Any: ...
+
+    def get(self, name: ServiceKey[T] | str, *, strict: bool = True) -> T | Any:
         """Resolve a service by name (``None`` when absent/inactive)."""
-        if not isinstance(name, str) or not name:
-            raise ValueError("service name must be a non-empty string")
+        name = service_name(name)
         if name.startswith("_"):
             return None
         return self._services.get(self._isolate_label(name), name, strict=strict)
 
-    def require(self, name: str) -> Any:
+    @overload
+    def require(self, name: ServiceKey[T]) -> T: ...
+
+    @overload
+    def require(self, name: str) -> Any: ...
+
+    def require(self, name: ServiceKey[T] | str) -> T | Any:
         """Resolve a service; raises :class:`ServiceNotFoundError` when absent."""
         value = self.get(name, strict=True)
         if value is None:
             raise ServiceNotFoundError(name)
         return value
 
-    def has(self, name: str) -> bool:
+    def has(self, name: ServiceKey | str) -> bool:
         """Whether the service exists in this scope (regardless of strictness)."""
-        if not isinstance(name, str) or not name:
-            return False
+        name = service_name(name)
         if name.startswith("_"):
             return False
         return self._services.has(self._isolate_label(name), name)
 
-    def set(self, name: str, value: Any) -> Disposer:
+    def set(self, name: ServiceKey[T] | str, value: T) -> Disposer:
         """Provide a service (owned by the current fiber).
 
         Cordis v3 semantics: a service may be provided only once per scope;
@@ -209,8 +225,8 @@ class Context:
         :class:`ServiceConflictError`.  Returns a disposer that releases the
         service; the fiber unload also releases it automatically.
         """
-        if not isinstance(name, str) or not name:
-            raise ValueError("service name must be a non-empty string")
+        name = service_name(name)
+        self._assert_open()
         label = self._isolate_label(name)
         owner = self.fiber
         self._services.set(label, name, value, owner=owner)
@@ -224,22 +240,28 @@ class Context:
         # fresh (not-yet-started) context there is nothing to refresh and no
         # event loop to schedule on.
         if self.is_active and owner.is_running:
-            asyncio.ensure_future(self._registry._refresh_dependents([name]))
+            asyncio.ensure_future(self._registry._refresh_dependents([(label, name)]))
 
         def release() -> bool:
-            return self._services.unset(label, name, value)
+            removed = self._services.unset(label, name, value)
+            if removed and self.is_active:
+                asyncio.ensure_future(self._registry._refresh_dependents([(label, name)]))
+            return removed
 
         return self.fiber.effect(lambda: release, label=f"ctx.set({name!r})")
 
-    def unset(self, name: str, value: Any = None) -> bool:
+    def provide(self, key: ServiceKey[T], value: T) -> Disposer:
+        """Provide a value using the same typed identity consumers require."""
+        return self.set(key, value)
+
+    def unset(self, name: ServiceKey | str, value: Any = None) -> bool:
         """Release a service; pass ``value`` to verify the current value's identity."""
-        if not isinstance(name, str) or not name:
-            return False
+        name = service_name(name)
         label = self._isolate_label(name)
         removed = self._services.unset(label, name, value)
         if removed:
             logger.debug("service.released name=%s", name)
-            asyncio.ensure_future(self._registry._refresh_dependents([name]))
+            asyncio.ensure_future(self._registry._refresh_dependents([(label, name)]))
         return removed
 
     # -- attribute access ---------------------------------------------------
@@ -264,15 +286,31 @@ class Context:
 
     # -- events -------------------------------------------------------------
 
+    @overload
+    def on(
+        self, event: EventKey[T], listener: Callable[[T], Any], *,
+        prepend: bool = False, global_: bool = False, descendants: bool = False,
+    ) -> Disposer: ...
+
+    @overload
+    def on(
+        self, event: str, listener: Callable[..., Any], *,
+        prepend: bool = False, global_: bool = False, descendants: bool = False,
+    ) -> Disposer: ...
+
     def on(
         self,
-        event: str,
+        event: EventKey | str,
         listener: Callable[..., Any],
         *,
         prepend: bool = False,
         global_: bool = False,
+        descendants: bool = False,
     ) -> Disposer:
         """Register a listener; returns a disposer (also removed on unload)."""
+        self._assert_open()
+        if isinstance(event, str) and event.startswith("internal/") and self._scope is not self.root:
+            raise ValueError("internal events belong to the runtime root")
         options = {"prepend": prepend, "global_": global_}
         intercepted = self._bus._bail_sync(
             "internal/listener", self, event, listener, options
@@ -280,7 +318,7 @@ class Context:
         if intercepted is not None:
             return intercepted
         filters = tuple(self._filters)
-        return self.fiber.effect(
+        release = self.fiber.effect(
             lambda: self._bus.register(
                 event,
                 listener,
@@ -288,19 +326,36 @@ class Context:
                 filters=filters,
                 global_=global_,
                 prepend=prepend,
+                descendants=descendants,
+                on_remove=lambda: release(),
             ),
             label=f"ctx.on({event!r})",
         )
+        return release
+
+    @overload
+    def once(
+        self, event: EventKey[T], listener: Callable[[T], Any], *,
+        prepend: bool = False, global_: bool = False, descendants: bool = False,
+    ) -> Disposer: ...
+
+    @overload
+    def once(
+        self, event: str, listener: Callable[..., Any], *,
+        prepend: bool = False, global_: bool = False, descendants: bool = False,
+    ) -> Disposer: ...
 
     def once(
         self,
-        event: str,
+        event: EventKey | str,
         listener: Callable[..., Any],
         *,
         prepend: bool = False,
         global_: bool = False,
+        descendants: bool = False,
     ) -> Disposer:
         """Register a listener that fires at most once (concurrency-safe)."""
+        release: Disposer
         fired = False
 
         def wrapper(*args: Any) -> Any:
@@ -308,14 +363,15 @@ class Context:
             if fired:
                 return None
             fired = True
-            self.off(event, wrapper)
+            release()
             return listener(*args)
 
-        return self.on(event, wrapper, prepend=prepend, global_=global_)
+        release = self.on(event, wrapper, prepend=prepend, global_=global_, descendants=descendants)
+        return release
 
-    def off(self, event: str, listener: Callable[..., Any]) -> bool:
+    def off(self, event: EventKey | str, listener: Callable[..., Any]) -> bool:
         """Remove a listener by identity; returns whether it was removed."""
-        return self._bus.unregister(event, listener)
+        return self._bus.unregister(event, listener, owner=self)
 
     def before(
         self,
@@ -327,25 +383,37 @@ class Context:
         """Sugar: ``on("before-" + event, ..., prepend=not append)`` (koishi)."""
         return self.on(f"before-{event}", listener, prepend=not append)
 
-    async def emit(self, event: str, *args: Any) -> None:
-        await self._bus.emit(event, *args)
+    @overload
+    async def emit(self, event: EventKey[T], payload: T) -> None: ...
 
-    async def parallel(self, event: str, *args: Any) -> None:
-        await self._bus.parallel(event, *args)
+    @overload
+    async def emit(self, event: str, *args: Any) -> None: ...
 
-    async def serial(self, event: str, *args: Any) -> Any:
-        return await self._bus.serial(event, *args)
+    async def emit(self, event: EventKey | str, *args: Any) -> None:
+        await self._bus.emit(event, *args, scope=self._scope)
 
-    async def bail(self, event: str, *args: Any) -> Any:
-        return await self._bus.bail(event, *args)
+    @overload
+    async def parallel(self, event: EventKey[T], payload: T) -> None: ...
 
-    async def chain(self, event: str, value: Any, *args: Any) -> Any:
-        return await self._bus.chain(event, value, *args)
+    @overload
+    async def parallel(self, event: str, *args: Any) -> None: ...
 
-    async def waterfall(self, event: str, *args: Any, next: Any = _UNSET) -> Any:
+    async def parallel(self, event: EventKey | str, *args: Any) -> None:
+        await self._bus.parallel(event, *args, scope=self._scope)
+
+    async def serial(self, event: EventKey | str, *args: Any) -> Any:
+        return await self._bus.serial(event, *args, scope=self._scope)
+
+    async def bail(self, event: EventKey | str, *args: Any) -> Any:
+        return await self._bus.bail(event, *args, scope=self._scope)
+
+    async def chain(self, event: EventKey | str, value: Any, *args: Any) -> Any:
+        return await self._bus.chain(event, value, *args, scope=self._scope)
+
+    async def waterfall(self, event: EventKey | str, *args: Any, next: Any = _UNSET) -> Any:
         if next is _UNSET:
             raise TypeError("waterfall() requires the keyword argument next=")
-        return await self._bus.waterfall(event, *args, next=next)
+        return await self._bus.waterfall(event, *args, next=next, scope=self._scope)
 
     # -- filters and scoping ------------------------------------------------
 
@@ -358,6 +426,7 @@ class Context:
         a filter only applies to the session (first dispatch argument) when
         one is present (design §3.3).
         """
+        self._assert_open()
         if not callable(predicate):
             raise TypeError("filter() requires a callable predicate")
         if prepend:
@@ -389,6 +458,7 @@ class Context:
 
     def extend(self, *, fiber: RootFiber | Fiber | None = None) -> "Context":
         """Return a child context inheriting this one's scope (prototypal)."""
+        self._assert_open()
         child = object.__new__(Context)
         child._name = f"{self._name}/child"
         child._config = self._config
@@ -396,6 +466,8 @@ class Context:
         child._data_dir = self._data_dir
         child._children = []
         child._destroyed = False
+        child._closing = False
+        child._scope = self._scope
         child._is_active = False
         child._root = self._root
         child._services = self._services
@@ -412,18 +484,52 @@ class Context:
         self._children.append(child)
         return child
 
-    def isolate(self, name: str, label: object | None = None) -> "Context":
+    def isolate(self, name: ServiceKey | str, label: object | None = None) -> "Context":
         """Return a child context with an independent scope for ``name``.
 
         The default label is a fresh object per call; pass the same ``label``
         to two ``isolate`` calls to join their scopes (Cordis fresh-Symbol
         semantics, design §5.3).
         """
-        if not isinstance(name, str) or not name:
-            raise ValueError("isolate() requires a service name")
+        name = service_name(name)
         child = self.extend()
         child._isolate[name] = label if label is not None else object()
         return child
+
+    def _assert_open(self) -> None:
+        if self._destroyed or self._closing or self._scope._closing:
+            raise InactiveEffectError("cannot register on a closing or closed context")
+        self.fiber.assert_active()
+
+    def scope(self, name: str, *, provides: tuple[ServiceKey | str, ...] = ()) -> "Context":
+        """Create an independently owned business scope under this context."""
+        self._assert_open()
+        if not isinstance(name, str) or not name:
+            raise ValueError("scope name must be a non-empty string")
+        names = tuple(service_name(key) for key in provides)
+
+        def owner(ctx: Context, config: Any) -> None:
+            pass
+
+        owner.name = name
+        handle = self.plugin(owner)
+        child = handle._fiber.ctx
+        child._name = name
+        child._scope = child
+        for service in names:
+            child._isolate[service] = object()
+        return child
+
+    def pre_stop(self, callback: Callable[[], Any]) -> Disposer:
+        """Stop entrances and drain work before any scope services are released."""
+        self._assert_open()
+        if not callable(callback):
+            raise TypeError("pre_stop() requires a callable")
+        return self.fiber.pre_stop(callback)
+
+    async def close(self) -> None:
+        """Wait until this owner and all its resources have been released."""
+        await self.destroy()
 
     # -- middleware ---------------------------------------------------------
 
@@ -431,6 +537,7 @@ class Context:
         self, callback: Callable[..., Any], *, prepend: bool = False
     ) -> Disposer:
         """Register a middleware ``(session, next)``; returns a disposer."""
+        self._assert_open()
         if not callable(callback):
             raise TypeError("middleware() requires a callable")
         filters = tuple(self._filters)
@@ -472,10 +579,12 @@ class Context:
 
     def plugin(self, plugin: Any, config: Any = None) -> PluginHandle:
         """Mount a plugin; returns an awaitable/disposable handle."""
+        self._assert_open()
         return self._registry.plugin(plugin, config, parent_ctx=self)
 
     def inject(self, deps: Any, callback: Callable[..., Any]) -> PluginHandle:
         """Mount a dependency-gated callback (Cordis ``ctx.inject``)."""
+        self._assert_open()
         return self._registry.inject(deps, callback, parent_ctx=self)
 
     # -- effects and cleanup ------------------------------------------------
@@ -484,6 +593,7 @@ class Context:
         self, execute: Callable[[], Any], *, label: str = "anonymous"
     ) -> Disposer:
         """Register an effect on the current fiber (design §3.4)."""
+        self._assert_open()
         return self.fiber.effect(execute, label=label)
 
     def dispose(self, callback: Callable[[], Any]) -> Disposer:
@@ -505,6 +615,13 @@ class Context:
     async def start(self) -> None:
         """Start the app: activate, load plugins (fixpoint), emit ``ready``."""
         if self._parent is not None:
+            self._assert_open()
+            if self._scope is self:
+                if not self.root.is_active:
+                    raise RuntimeError("start the runtime root before activating a scope")
+                await self.fiber.await_fiber()
+                await self._load_fixpoint()
+                return
             return await self._root.start()
         async with self._lifecycle_lock:
             if self._destroyed:
@@ -534,6 +651,11 @@ class Context:
         while True:
             progressed = False
             for fiber in list(self._registry._all_fibers()):
+                ancestor = fiber.ctx
+                while ancestor is not None and ancestor is not self:
+                    ancestor = ancestor.parent
+                if ancestor is None:
+                    continue
                 if fiber.state not in (FiberState.PENDING, FiberState.RUNNING):
                     continue
                 if fiber._next_action(_TARGET_CONVERGE) is None:
@@ -547,8 +669,8 @@ class Context:
     async def stop(self) -> None:
         """Stop the app: unload fibers in reverse load order, emit ``dispose``.
 
-        Never raises: disposer failures are logged (design §3.2, review B3).
-        The ``dispose`` event fires *before* fibers unload so listeners are
+        Pre-stop failures leave resources owned and propagate for retry.
+        Effect disposer failures are logged. The ``dispose`` event fires *before* fibers unload so listeners are
         still registered (Cordis semantics).
         """
         if self._parent is not None:
@@ -562,6 +684,7 @@ class Context:
             logger.warning("stop() called on an inactive root; no-op")
             return
         logger.info("application.stop plugins=%d", len(self._registry))
+        await self._prepare_close()
         self._is_active = False
         try:
             await self._bus.emit("dispose")
@@ -575,6 +698,7 @@ class Context:
         fibers.sort(key=lambda fiber: fiber._load_seq, reverse=True)
         for fiber in fibers:
             await fiber.settle_to(_TARGET_PENDING)
+        self._reset_closing()
         logger.info("application.stopped")
 
     async def destroy(self) -> None:
@@ -587,6 +711,7 @@ class Context:
                 return
             logger.info("application.destroy")
             await self._stop_locked()
+            await self._prepare_close()
             for fiber in list(self._registry._all_fibers()):
                 await fiber.settle_to(_TARGET_DISPOSED)
             errors = await self._fiber._run_disposers(list(self._fiber._disposers))
@@ -602,28 +727,55 @@ class Context:
                 )
             logger.info("application.destroyed")
 
-    async def _destroy_child(self) -> None:
-        if self._destroyed:
-            return
-        for fiber in list(self._registry._all_fibers()):
-            if fiber.parent is self:
-                await fiber.settle_to(_TARGET_DISPOSED)
+    def _mark_closing(self) -> None:
+        self._closing = True
+        for child in self._children:
+            child._mark_closing()
+
+    def _reset_closing(self) -> None:
+        self._closing = False
+        for child in self._children:
+            child._reset_closing()
+
+    async def _prepare_close(self) -> None:
+        self._mark_closing()
         for child in list(self._children):
-            await child._destroy_child()
+            await child._prepare_close()
+        if self.fiber.ctx is self:
+            await self.fiber._run_pre_stop()
+
+    def _detach(self) -> None:
+        for child in list(self._children):
+            child._detach()
+        self._children.clear()
         if self._parent is not None and self in self._parent._children:
             self._parent._children.remove(self)
         self._destroyed = True
+
+    async def _destroy_child(self) -> None:
+        if self._destroyed:
+            return
+        if self.fiber.ctx is self:
+            await self.fiber.settle_to(_TARGET_DISPOSED)
+        else:
+            await self._prepare_close()
+            for fiber in list(self._registry._all_fibers()):
+                if fiber.parent is self:
+                    await fiber.settle_to(_TARGET_DISPOSED)
+        self._detach()
 
     # -- state --------------------------------------------------------------
 
     @property
     def state(self) -> StateService:
-        """The app-level recoverable state service (root singleton, "state")."""
-        if self._parent is not None:
-            return self._root.state
+        """Resolve scoped state, or the shared root default when not isolated."""
         provided = self.get("state", strict=True)
         if provided is not None:
             return provided
+        if self._isolate_label("state") is not self.root._isolate_label("state"):
+            raise ServiceNotFoundError("state")
+        if self._parent is not None:
+            return self._root.state
         if self._state_service is None:
             self._state_service = StateService(
                 path=self._data_dir / "state.json"

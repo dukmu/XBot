@@ -22,6 +22,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from xcore.errors import InactiveEffectError
+from xcore.api.services import service_name
 
 logger = logging.getLogger("xcore.plugin")
 
@@ -106,9 +107,37 @@ class EffectOwner:
 
     def __init__(self) -> None:
         self._disposers: list[Callable[[], Any]] = []
+        self._pre_stop: list[Callable[[], Any]] = []
+        self._pending_cleanup: set[asyncio.Task] = set()
 
     def assert_active(self) -> None:
         raise NotImplementedError
+
+    def pre_stop(self, callback: Callable[[], Any]) -> Callable[[], bool]:
+        self.assert_active()
+        self._pre_stop.append(callback)
+
+        def remove() -> bool:
+            if callback not in self._pre_stop:
+                return False
+            self._pre_stop.remove(callback)
+            return True
+
+        return remove
+
+    async def _run_pre_stop(self) -> None:
+        errors: list[Exception] = []
+        for callback in reversed(list(self._pre_stop)):
+            try:
+                result = callback()
+                if inspect.isawaitable(result):
+                    await result
+            except Exception as exc:
+                errors.append(exc)
+            else:
+                self._pre_stop.remove(callback)
+        if errors:
+            raise ExceptionGroup("scope pre-stop failed; resources remain owned", errors)
 
     def _add_disposer(self, disposer: Callable[[], Any]) -> None:
         self._disposers.append(disposer)
@@ -159,7 +188,9 @@ class EffectOwner:
                 if inspect.isawaitable(result):
                     pending.append(result)
             if pending:
-                asyncio.ensure_future(_await_all(pending))
+                task = asyncio.ensure_future(_await_all(pending))
+                self._pending_cleanup.add(task)
+                task.add_done_callback(self._pending_cleanup.discard)
             return True
 
         return disposer
@@ -169,6 +200,8 @@ class EffectOwner:
     ) -> list[BaseException]:
         """Run disposers in reverse registration order; never raises."""
         errors: list[BaseException] = []
+        if self._pending_cleanup:
+            await asyncio.gather(*self._pending_cleanup)
         for disposer in reversed(disposers):
             try:
                 result = disposer()
@@ -196,11 +229,11 @@ class RootFiber(EffectOwner):
 
     @property
     def is_running(self) -> bool:
-        return True
+        return not self.ctx._destroyed
 
     def assert_active(self) -> None:
-        if getattr(self.ctx, "_destroyed", False):
-            raise InactiveEffectError("cannot create effect on a destroyed root context")
+        if self.ctx._destroyed or self.ctx._closing:
+            raise InactiveEffectError("cannot create effect on a closing or destroyed root context")
 
 
 # ---------------------------------------------------------------------------
@@ -232,17 +265,17 @@ def _resolve_inject(inject: Any) -> dict[str, bool]:
         return result
     if isinstance(inject, (list, tuple)):
         for name in inject:
-            result[str(name)] = True
+            result[service_name(name)] = True
         return result
     if isinstance(inject, dict):
         if "required" in inject or "optional" in inject:
             for name in inject.get("required") or []:
-                result[str(name)] = True
+                result[service_name(name)] = True
             for name in inject.get("optional") or []:
-                result.setdefault(str(name), False)
+                result.setdefault(service_name(name), False)
         else:
             for name in inject:
-                result[str(name)] = True
+                result[service_name(name)] = True
         return result
     raise TypeError("inject must be a list or a dict")
 
@@ -257,7 +290,7 @@ def _as_name_list(value: Any) -> list[str]:
     if isinstance(value, str):
         return [value]
     if isinstance(value, (list, tuple)):
-        return [str(name) for name in value]
+        return [service_name(name) for name in value]
     raise TypeError("provide must be a string or a list of strings")
 
 
@@ -371,6 +404,7 @@ class Registry:
         self._runtimes: dict[Any, _Runtime] = {}
         self._counter = 0
         self._load_counter = 0
+        self._dependents: dict[tuple[object, str], set[Fiber]] = {}
 
     # -- plugin mounting ----------------------------------------------------
 
@@ -399,6 +433,9 @@ class Registry:
             uid=self._counter,
         )
         runtime.fibers.append(fiber)
+        for name in fiber.inject:
+            binding = (fiber.ctx._isolate_label(name), name)
+            self._dependents.setdefault(binding, set()).add(fiber)
         logger.debug(
             "plugin.mounted name=%s uid=%s required=%s optional=%s provides=%s",
             definition.name,
@@ -409,7 +446,8 @@ class Registry:
         )
         # Child fiber cleanup is an effect of the parent fiber: unloading the
         # parent recursively unloads plugins it mounted (Cordis §10.3).
-        parent.fiber._add_disposer(_child_fiber_disposer(fiber))
+        fiber._parent_cleanup = _child_fiber_disposer(fiber)
+        parent.fiber._add_disposer(fiber._parent_cleanup)
         if parent.root.is_active:
             asyncio.ensure_future(fiber.settle_to(_TARGET_CONVERGE))
         return PluginHandle(fiber)
@@ -469,31 +507,33 @@ class Registry:
             for fiber in runtime.fibers
         ]
 
-    async def _refresh_dependents(
-        self, names: list[str], *, await_settle: bool = False
-    ) -> None:
-        """Re-evaluate every fiber that injects one of ``names``.
+    def _remove_dependencies(self, fiber: "Fiber") -> None:
+        for name in fiber.inject:
+            binding = (fiber.ctx._isolate_label(name), name)
+            dependents = self._dependents.get(binding)
+            if dependents is not None:
+                dependents.discard(fiber)
+                if not dependents:
+                    del self._dependents[binding]
 
-        Wakes pending/failed fibers whose required services appeared and
-        rebinds running fibers whose dependencies changed (A1 fix:
-        also called from state transitions, not only set/unset).
-        """
-        affected = [
-            fiber
-            for fiber in self._all_fibers()
-            if any(name in fiber.inject for name in names)
-        ]
+    async def _refresh_dependents(
+        self, bindings: list[tuple[object, str]], *, await_settle: bool = False
+    ) -> None:
+        """Refresh only fibers bound to the changed service label and name."""
+        affected = set().union(*(self._dependents.get(binding, set()) for binding in bindings))
         if not affected:
             return
         logger.debug(
             "dependency.refresh services=%s plugins=%s await_settle=%s",
-            sorted(names),
+            sorted(name for _, name in bindings),
             sorted(fiber.name for fiber in affected),
             await_settle,
         )
         tasks = [
             asyncio.ensure_future(fiber.settle_to(_TARGET_CONVERGE))
-            for fiber in affected
+            for fiber in sorted(affected, key=lambda item: item.uid or 0)
+            if fiber._settle_task is not asyncio.current_task()
+            and fiber.state is not FiberState.UNLOADING
         ]
         if not await_settle:
             return
@@ -508,14 +548,14 @@ class Registry:
 
     def _notify_provided(self, fiber: "Fiber") -> None:
         """Wake dependents when a fiber becomes RUNNING (A1 fix)."""
-        names = self.ctx._services.names_provided_by(fiber)
-        if names:
+        bindings = self.ctx._services.bindings_provided_by(fiber)
+        if bindings:
             logger.debug(
                 "service.available plugin=%s services=%s",
                 fiber.name,
-                sorted(names),
+                sorted(name for _, name in bindings),
             )
-            asyncio.ensure_future(self._refresh_dependents(names))
+            asyncio.ensure_future(self._refresh_dependents(bindings))
 
 
 # ---------------------------------------------------------------------------
@@ -558,6 +598,7 @@ class Fiber(EffectOwner):
         self._instance: Any = None
         self._load_seq: int | None = None
         self._bound_dependencies: dict[str, Any] = {}
+        self._parent_cleanup: Callable[[], Any] | None = None
         self._settle_lock = asyncio.Lock()
         self._settle_task: asyncio.Task | None = None
         self.ctx = parent.extend(fiber=self)
@@ -574,7 +615,7 @@ class Fiber(EffectOwner):
 
     def assert_active(self) -> None:
         """Raise :class:`InactiveEffectError` once the fiber is disposed."""
-        if self.uid is None:
+        if self.uid is None or self.ctx._closing or self.ctx._scope._closing or self.ctx._destroyed:
             raise InactiveEffectError(
                 f"cannot create effect on inactive fiber {self.name!r}"
             )
@@ -590,7 +631,7 @@ class Fiber(EffectOwner):
         return True
 
     def _app_active(self) -> bool:
-        return bool(getattr(self.ctx.root, "is_active", True))
+        return bool(self.ctx.root.is_active and not self.ctx._closing and not self.ctx._scope._closing)
 
     # -- state machine ------------------------------------------------------
 
@@ -710,7 +751,13 @@ class Fiber(EffectOwner):
                 exc_info=exc,
             )
             self.ctx._bus._emit_sync("internal/error", self, exc)
-            # Roll back partial effects registered before the failure (Cordis).
+            # Drain partial work while its service references are still valid.
+            try:
+                await self._run_pre_stop()
+            except BaseException as drain_error:
+                self._error = BaseExceptionGroup("activation and pre-stop failed", [exc, drain_error])
+                self._set_state(FiberState.FAILED)
+                return
             await self._run_disposers(list(self._disposers))
             self._disposers.clear()
             self._set_state(FiberState.FAILED)
@@ -727,7 +774,10 @@ class Fiber(EffectOwner):
         if self.state is FiberState.DISPOSED:
             return
         if permanent:
+            await self.ctx._prepare_close()
             self.uid = None
+        else:
+            await self._run_pre_stop()
         self._set_state(FiberState.UNLOADING)
         # B5: release provided services first and let dependents settle before
         # this fiber's own cleanup runs.
@@ -736,15 +786,21 @@ class Fiber(EffectOwner):
             logger.debug(
                 "service.unavailable plugin=%s services=%s",
                 self.name,
-                sorted(removed),
+                sorted(name for _, name in removed),
             )
             await self.ctx.registry._refresh_dependents(removed, await_settle=True)
         errors = await self._run_disposers(list(self._disposers))
         self._disposers.clear()
         if errors:
             self.ctx._bus._emit_sync("internal/error", self, errors)
+        self._bound_dependencies.clear()
         if permanent:
             self._set_state(FiberState.DISPOSED)
+            if self._parent_cleanup in self.parent.fiber._disposers:
+                self.parent.fiber._disposers.remove(self._parent_cleanup)
+            self._parent_cleanup = None
+            self.ctx._detach()
+            self.ctx.registry._remove_dependencies(self)
             if self in self.runtime.fibers:
                 self.runtime.fibers.remove(self)
             if not self.runtime.fibers:
