@@ -6,7 +6,10 @@ import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
-from XBotv2.core.api.tokens import estimate_messages_tokens, estimate_model_request_tokens
+from XBotv2.core.api.tokens import (
+    estimate_messages_tokens,
+    estimate_model_request_tokens,
+)
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.messages import ConversationMessage
 from XBotv2.core.api.domain import (
@@ -28,7 +31,11 @@ from XBotv2.core.api.tools import ToolCall
 from XBotv2.core.api.timing import conversation_stats
 from XBotv2.llm.api.contracts import ModelPort
 from XBotv2.agentloop.api.state import ThreadExecution
-from XBotv2.compact.impl.history import compact_prefix_end, history_chars, tool_pairing_boundaries
+from XBotv2.compact.impl.history import (
+    compact_prefix_end,
+    history_chars,
+    tool_pairing_boundaries,
+)
 from XBotv2.compact.api.contracts import CompactionPlan, CompactionSelection
 from XBotv2.compact.api.protocol import (
     CompactionFailed,
@@ -37,14 +44,18 @@ from XBotv2.compact.api.protocol import (
     CompactionStarted,
     is_automatic_compaction,
 )
-from XBotv2.compact.impl.summary import compacted_message, normalize_summary, summary_request
+from XBotv2.compact.impl.summary import (
+    compacted_message,
+    normalize_summary,
+    summary_request,
+)
 from XBotv2.llm.api.invoke import invoke_llm
 
 logger = logging.getLogger("xbotv2.compact")
 
 RuntimePublisher = Callable[[object], Awaitable[None]]
 UsageRecorder = Callable[[RequestObservation, UsageDelta], Awaitable[None]]
-TrajectoryRecorder = Callable[[TransactionStarted | TransactionEnded], None]
+TrajectoryRecorder = Callable[[TransactionStarted | TransactionEnded], Awaitable[None]]
 
 
 def _summary_input(
@@ -93,7 +104,9 @@ def _fit_summary_prefix(
     # selected message.  Fold it once and remember the largest safe cut that
     # fits; repeatedly estimating every candidate made large histories O(n²).
     base = estimate_messages_tokens(
-        _summary_input(messages, 0, stable_prefix, summary_max_chars, artifacts, compiler=compiler),
+        _summary_input(
+            messages, 0, stable_prefix, summary_max_chars, artifacts, compiler=compiler
+        ),
     )
     boundaries = tool_pairing_boundaries(messages)
     estimate = base
@@ -184,9 +197,9 @@ async def build_compaction_plan(
     # not shrink the request.
     threshold_triggered = reason == "automatic"
     if threshold_triggered:
-        minimum_summary_estimate = estimate_messages_tokens([
-            compacted_message("x", reason=reason)
-        ])
+        minimum_summary_estimate = estimate_messages_tokens(
+            [compacted_message("x", reason=reason)]
+        )
         if removed_estimate <= minimum_summary_estimate:
             return None
 
@@ -203,19 +216,28 @@ async def build_compaction_plan(
         context_limit,
         estimate_source,
     )
-    await publish_runtime_event(CompactionStarted(
-        reason=reason,
-        messages_before=len(messages),
-        history_chars_before=chars_before,
-        context_tokens_before=context_tokens_before,
-        context_limit=context_limit,
-    ))
+    await publish_runtime_event(
+        CompactionStarted(
+            reason=reason,
+            messages_before=len(messages),
+            history_chars_before=chars_before,
+            context_tokens_before=context_tokens_before,
+            context_limit=context_limit,
+        )
+    )
     if record_trajectory is not None:
-        record_trajectory(TransactionStarted(transaction=transaction))
+        await record_trajectory(TransactionStarted(transaction=transaction))
 
     try:
         request_messages = tuple(
-            _summary_input(messages, split, stable_prefix, summary_max_chars, artifacts, compiler=compiler)
+            _summary_input(
+                messages,
+                split,
+                stable_prefix,
+                summary_max_chars,
+                artifacts,
+                compiler=compiler,
+            )
         )
         auxiliary_selection = selection
         model_request = ModelRequest(
@@ -243,27 +265,35 @@ async def build_compaction_plan(
         )
     except asyncio.CancelledError:
         if record_trajectory is not None:
-            record_trajectory(TransactionEnded(
-                transaction=transaction,
-                outcome=TransactionAborted(reason="cancelled"),
-            ))
-        await publish_runtime_event(CompactionFailed(
-            reason=reason,
-            message="Compaction cancelled.",
-            automatic=is_automatic_compaction(reason),
-        ))
+            await record_trajectory(
+                TransactionEnded(
+                    transaction=transaction,
+                    outcome=TransactionAborted(reason="cancelled"),
+                )
+            )
+        await publish_runtime_event(
+            CompactionFailed(
+                reason=reason,
+                message="Compaction cancelled.",
+                automatic=is_automatic_compaction(reason),
+            )
+        )
         raise
     except Exception as exc:
         if record_trajectory is not None:
-            record_trajectory(TransactionEnded(
-                transaction=transaction,
-                outcome=TransactionFailed(error=str(exc) or type(exc).__name__),
-            ))
-        await publish_runtime_event(CompactionFailed(
-            reason=reason,
-            message=str(exc) or type(exc).__name__,
-            automatic=is_automatic_compaction(reason),
-        ))
+            await record_trajectory(
+                TransactionEnded(
+                    transaction=transaction,
+                    outcome=TransactionFailed(error=str(exc) or type(exc).__name__),
+                )
+            )
+        await publish_runtime_event(
+            CompactionFailed(
+                reason=reason,
+                message=str(exc) or type(exc).__name__,
+                automatic=is_automatic_compaction(reason),
+            )
+        )
         if reason == "manual":
             raise
         logger.exception(
@@ -284,16 +314,20 @@ async def build_compaction_plan(
             "the generated summary is not smaller than the removable prefix."
         )
         logger.warning(message)
-        await publish_runtime_event(CompactionFailed(
-            reason=reason,
-            message=message,
-            automatic=is_automatic_compaction(reason),
-        ))
+        await publish_runtime_event(
+            CompactionFailed(
+                reason=reason,
+                message=message,
+                automatic=is_automatic_compaction(reason),
+            )
+        )
         if record_trajectory is not None:
-            record_trajectory(TransactionEnded(
-                transaction=transaction,
-                outcome=TransactionAborted(reason=message),
-            ))
+            await record_trajectory(
+                TransactionEnded(
+                    transaction=transaction,
+                    outcome=TransactionAborted(reason=message),
+                )
+            )
         return None
 
     metrics = CompactionMetrics(

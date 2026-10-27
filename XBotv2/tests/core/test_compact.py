@@ -1,4 +1,6 @@
 from XBotv2.tests.runtime import engine_of
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.context_builder.impl.builder import ContextBuilder
 """Compaction preserves typed history boundaries and bounded summaries."""
 
@@ -45,6 +47,18 @@ from XBotv2.core.api.stream import ModelFailed
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutput, ToolSucceeded
 from XBotv2.llm.impl.mock import MockLLM
+
+
+async def _surface(scope):
+    session = scope.require(LOOP_STATE).session
+    return await scope.root.require(ARCHIVE).surface(session.session_id, session.thread_id)
+
+
+async def _trajectory(scope):
+    session = scope.require(LOOP_STATE).session
+    return (await scope.root.require(ARCHIVE).trajectory_page(
+        session.session_id, session.thread_id, limit=100
+    )).page.items
 
 
 def _human(index: int, text: str) -> HumanInputMessage:
@@ -200,7 +214,7 @@ async def test_compact_command_runs_through_application_and_persists_summary(
         assert application.commands.get("compact") is not None
         await _run_turn(engine_of(application), "Research X")
         await _run_turn(engine_of(application), "Remember decision Y")
-        application.thread_persistence.history.record(
+        await application.require(LOOP_STATE).history.record(
             TransactionStarted(transaction=TransactionRef(
                 kind="compaction", id="orphaned-compaction"
             )),
@@ -221,8 +235,8 @@ async def test_compact_command_runs_through_application_and_persists_summary(
             "Remember decision Y",
         ]
         assert provider.call_count == 4
-        assert application.thread_persistence.history.load_surface() == tuple(history)
-        assert application.thread_persistence.history.open_transactions("compaction") == frozenset()
+        assert await _surface(application) == tuple(history)
+        assert await application.require(LOOP_STATE).history.open_transactions("compaction") == frozenset()
     finally:
         await application.root.close()
     assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
@@ -256,7 +270,7 @@ async def test_compact_command_failure_preserves_live_and_persisted_history(
         await _run_turn(engine_of(application), "Research X")
         await _run_turn(engine_of(application), "Remember decision Y")
         before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
 
         result = await application.serial(
             EXECUTE_COMMAND.name,
@@ -265,7 +279,7 @@ async def test_compact_command_failure_preserves_live_and_persisted_history(
 
         assert result.status == "error"
         assert tuple(engine_of(application).messages) == before
-        assert application.thread_persistence.history.load_surface() == durable_before
+        assert await _surface(application) == durable_before
         assert not any(
             isinstance(item, CompactionSummaryMessage)
             for item in engine_of(application).messages
@@ -311,7 +325,7 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
         await _run_turn(engine_of(application), "Research X")
         await _run_turn(engine_of(application), "Remember decision Y")
         history_before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
         application.compact.model.provider.astream = blocked_summary
 
         command = asyncio.create_task(application.serial(
@@ -324,14 +338,11 @@ async def test_cancelled_compact_command_publishes_failure_and_aborts_transactio
             await command
 
         assert tuple(engine_of(application).messages) == history_before
-        assert application.thread_persistence.history.load_surface() == durable_before
-        assert application.thread_persistence.history.open_transactions(
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
-        trajectory_items = (
-            application.thread_persistence.history
-            .page_trajectory(limit=100).page.items
-        )
+        trajectory_items = await _trajectory(application)
         transaction_ends = [
             item.event
             for item in trajectory_items
@@ -389,7 +400,7 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
         await _run_turn(engine_of(application), "Research X")
         await _run_turn(engine_of(application), "Remember decision Y")
         live_before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
 
         command = asyncio.create_task(application.serial(
             EXECUTE_COMMAND.name,
@@ -407,13 +418,11 @@ async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transa
         assert len(failures) == 1
         assert failures[0].message == "Compaction cancelled."
         assert tuple(engine_of(application).messages) == live_before
-        assert application.thread_persistence.history.load_surface() == durable_before
-        assert application.thread_persistence.history.open_transactions(
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
-        trajectory_items = application.thread_persistence.history.page_trajectory(
-            limit=100
-        ).page.items
+        trajectory_items = await _trajectory(application)
         transaction_ends = [
             item.event
             for item in trajectory_items
@@ -495,7 +504,7 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
         assert isinstance(compact_result.execution.message.outcome, ToolSucceeded)
         live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
         )
         assert not any(
             isinstance(message, CompactionSummaryMessage)
@@ -508,15 +517,13 @@ async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transac
 
         assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
             == durable_before_cancel
         )
-        assert application.thread_persistence.history.open_transactions(
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
-        trajectory_items = application.thread_persistence.history.page_trajectory(
-            limit=100
-        ).page.items
+        trajectory_items = await _trajectory(application)
         transaction_ends = [
             item.event
             for item in trajectory_items
@@ -612,7 +619,7 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
         await asyncio.wait_for(summary_started.wait(), timeout=2)
         live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
         )
 
         turn.cancel()
@@ -621,15 +628,13 @@ async def test_cancelled_automatic_compaction_preserves_history_and_aborts_trans
 
         assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
             == durable_before_cancel
         )
-        assert application.thread_persistence.history.open_transactions(
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
-        trajectory_items = application.thread_persistence.history.page_trajectory(
-            limit=100
-        ).page.items
+        trajectory_items = await _trajectory(application)
         transaction_ends = [
             item.event
             for item in trajectory_items
@@ -744,7 +749,7 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
         )
         live_before_cancel = tuple(engine_of(application).messages)
         durable_before_cancel = (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
         )
 
         turn.cancel()
@@ -753,15 +758,13 @@ async def test_cancelled_context_overflow_compaction_preserves_history_and_abort
 
         assert tuple(engine_of(application).messages) == live_before_cancel
         assert (
-            application.thread_persistence.history.load_surface()
+            await _surface(application)
             == durable_before_cancel
         )
-        assert application.thread_persistence.history.open_transactions(
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
-        trajectory_items = application.thread_persistence.history.page_trajectory(
-            limit=100
-        ).page.items
+        trajectory_items = await _trajectory(application)
         transaction_ends = [
             item.event
             for item in trajectory_items
@@ -828,7 +831,7 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
         await _run_turn(engine_of(application), "Research X")
         await _run_turn(engine_of(application), "Remember decision Y")
         before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
 
         result = await application.serial(
             EXECUTE_COMMAND.name,
@@ -839,8 +842,8 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
         assert listener_marker.read_text(encoding="utf-8") == "called"
         assert "rejected before commit" in result.message
         assert tuple(engine_of(application).messages) == before
-        assert application.thread_persistence.history.load_surface() == durable_before
-        assert application.thread_persistence.history.open_transactions(
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
             "compaction"
         ) == frozenset()
     finally:
@@ -888,7 +891,7 @@ async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
             isinstance(event, (CompactionCompleted, CompactionFailed))
             for event in runtime_events
         )
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
         assert provider.call_count == 2
@@ -1001,7 +1004,7 @@ async def test_automatic_compaction_uses_final_request_budget_not_history_only(
         assert metrics.context_tokens_before > context_limit
         assert metrics.context_tokens_after_estimate < metrics.context_tokens_before
         assert len(ready_requests) == 3
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
     finally:
@@ -1076,7 +1079,7 @@ async def test_automatic_compaction_is_triggered_before_request_and_survives_res
             for message in provider.request_history[-1].messages
             for part in message.parts
         )
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
     finally:
@@ -1152,12 +1155,12 @@ async def test_automatic_summary_failure_preserves_the_full_live_and_durable_his
     try:
         await _run_turn(engine_of(application), "Old context " + "x" * 150)
         before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
 
         await _run_turn(engine_of(application), "Continue after summary failure")
 
         live = tuple(engine_of(application).messages)
-        durable = application.thread_persistence.history.load_surface()
+        durable = await _surface(application)
         assert len(live) == len(before) + 2
         assert live[:-2] == before
         assert durable[:-2] == durable_before
@@ -1301,7 +1304,7 @@ async def test_provider_context_overflow_recovery_retries_at_most_once(
         ]
         assert len(completed) == 1
         assert completed[0].reason == "context-overflow"
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
     finally:
@@ -1383,7 +1386,7 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
         await _run_turn(engine_of(application), "Old context " + "x" * 150)
         await _run_turn(engine_of(application), "New context " + "y" * 150)
         before = tuple(engine_of(application).messages)
-        durable_before = application.thread_persistence.history.load_surface()
+        durable_before = await _surface(application)
         completed_before = [
             event for event in runtime_events
             if isinstance(event, CompactionCompleted)
@@ -1393,7 +1396,7 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
         await _run_turn(engine_of(application), "Continue after provider failure")
 
         live = tuple(engine_of(application).messages)
-        durable = application.thread_persistence.history.load_surface()
+        durable = await _surface(application)
         assert provider.probe["summary_failure"] is not None
         assert live[:-2] == before
         assert durable[:-2] == durable_before
@@ -1415,7 +1418,7 @@ async def test_automatic_summary_provider_failure_continues_with_original_reques
         ]
         assert len(failures) == 1
         assert failures[0].reason == "automatic"
-        assert application.thread_persistence.history.load_surface() == live
+        assert await _surface(application) == live
     finally:
         await application.root.close()
 
@@ -1694,7 +1697,7 @@ async def test_automatic_compaction_commits_over_artifact_bearing_history(
             and "decision Y" in item.summary
             for item in engine_of(application).messages
         )
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
     finally:
@@ -1895,7 +1898,7 @@ async def test_compaction_releases_context_and_the_session_continues(
             event for event in runtime_events
             if isinstance(event, CompactionCompleted)
         ]) == 1, "compaction ran more than once"
-        assert application.thread_persistence.history.load_surface() == tuple(
+        assert await _surface(application) == tuple(
             engine_of(application).messages
         )
     finally:

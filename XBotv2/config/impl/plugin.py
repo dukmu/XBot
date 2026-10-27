@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from xcore.api.context import Context
-from XBotv2.config.api.contracts import ConfigPluginConfig, GET_POLICY, UPDATE_POLICY, SETTINGS
+from XBotv2.config.api.contracts import (
+    ConfigPluginConfig,
+    GET_POLICY,
+    UPDATE_POLICY,
+    SETTINGS,
+)
 from XBotv2.config.impl.service import ConfigService
 from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.loader.api.service import LOADER
@@ -16,7 +21,9 @@ async def mount_http(ctx: Context) -> None:
     await contribute_router(
         ctx,
         owner="xbot.config.http",
-        router=build_router(sessions=ctx.sessions, paths=ctx.runtime_paths, loader=ctx.require(LOADER)),
+        router=build_router(
+            sessions=ctx.sessions, paths=ctx.runtime_paths, loader=ctx.require(LOADER)
+        ),
     )
 
 
@@ -39,10 +46,23 @@ def mount_settings(ctx: Context) -> None:
 
 
 def mount_process(ctx, config):
+    from XBotv2.session.api.storage import FORK_COPY_STATE
+    from XBotv2.persistence.api.contracts import PERSISTENCE
+
+    async def copy_state(event):
+        await ctx.require(PERSISTENCE).copy_document(
+            event.source_session_id, event.target_session_id, "config.yaml"
+        )
+        event.handled.add("config")
+
+    ctx.on(FORK_COPY_STATE, copy_state)
     ensure_initial_config(ctx.runtime_paths)
     ctx.inject(["server", "sessions", "runtime_paths", LOADER], mount_http)
 
-mount_process.inject = ("runtime_paths",)
+
+from XBotv2.persistence.api.contracts import PERSISTENCE
+
+mount_process.inject = ("runtime_paths", PERSISTENCE)
 mount_process.provide = ()
 mount_process.Config = ConfigPluginConfig
 
@@ -50,7 +70,15 @@ mount_process.Config = ConfigPluginConfig
 def mount_thread(ctx, config):
     mount_settings(ctx)
 
-mount_thread.inject = ("runtime_log", "runtime_paths", "thread_info", "plugin_overrides", "plugin_dirs", "no_plugins")
+
+mount_thread.inject = (
+    "runtime_log",
+    "runtime_paths",
+    "thread_info",
+    "plugin_overrides",
+    "plugin_dirs",
+    "no_plugins",
+)
 mount_thread.provide = (SETTINGS,)
 mount_thread.Config = ConfigPluginConfig
 

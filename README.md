@@ -105,7 +105,7 @@ provider operation, including adapter retries, and reports `provider_timeout`
 through the normal turn error stream.
 
 Provider definitions live in the `llm` plugin's tree config; sessions,
-message history (`messages.jsonl`), usage, and artifacts are stored per
+rollout history, usage, and artifacts are stored per
 thread and are resumable.
 
 ## Architecture

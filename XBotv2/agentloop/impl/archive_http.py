@@ -1,4 +1,5 @@
-"""HTTP routes owned by persistence."""
+"""HTTP history and referenced artifacts owned by Agentloop."""
+
 from __future__ import annotations
 from XBotv2.session.api.records import conversation_replay
 from urllib.parse import quote
@@ -8,7 +9,8 @@ from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.api.records import ConversationRecord
 
-def build_router(*, sessions, persistence):
+
+def build_router(*, sessions, archive):
     router = APIRouter()
 
     @router.get(
@@ -22,7 +24,7 @@ def build_router(*, sessions, persistence):
         limit: int | None = Query(default=None, ge=1, le=500),
     ) -> HistoryPage[ConversationRecord]:
         await sessions.thread_summary(session_id, thread_id)
-        page = persistence.message_page(
+        page = await archive.message_page(
             session_id,
             thread_id,
             cursor=Cursor(cursor) if cursor is not None else None,
@@ -32,6 +34,7 @@ def build_router(*, sessions, persistence):
             items=conversation_replay(page.items),
             older_cursor=page.older_cursor,
         )
+
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/trajectory",
         operation_id="list_trajectory",
@@ -44,7 +47,7 @@ def build_router(*, sessions, persistence):
         limit: int = Query(default=160, ge=1, le=500),
     ) -> TrajectoryRead:
         await sessions.thread_summary(session_id, thread_id)
-        page = persistence.trajectory_page(
+        page = await archive.trajectory_page(
             session_id,
             thread_id,
             cursor=Cursor(cursor) if cursor is not None else None,
@@ -52,6 +55,7 @@ def build_router(*, sessions, persistence):
             before=before,
         )
         return page
+
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}",
         operation_id="get_artifact",
@@ -62,7 +66,7 @@ def build_router(*, sessions, persistence):
         artifact_id: str,
     ) -> Response:
         await sessions.thread_summary(session_id, thread_id)
-        artifact = persistence.artifact(session_id, thread_id, artifact_id)
+        artifact = await archive.artifact(session_id, thread_id, artifact_id)
         headers = (
             {
                 "Content-Disposition": (

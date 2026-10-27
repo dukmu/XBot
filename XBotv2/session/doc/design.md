@@ -32,3 +32,10 @@ Agentloop owns the live history working set and history mutations. Persistence
 owns physical records and locks. Stateless `project_message`,
 `project_human_input` and `conversation_replay` are defined in `api/records.py`
 for all clients, including TUI; there is no projection service facade.
+
+Session owns `ThreadFacts`, `ThreadRepository` and the session/thread SQL
+schema. Reads and default resolution do not materialize an empty session;
+other owners explicitly call `ensure` before their first durable mutation.
+Session coordinates fork staging and publication and emits the public fork
+events; each participating owner handles its own state. An unhandled owner
+prevents publication.

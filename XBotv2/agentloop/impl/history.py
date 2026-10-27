@@ -1,5 +1,7 @@
 """Effective conversation working set and transcript lineage."""
+
 from __future__ import annotations
+import asyncio
 from collections.abc import Iterable, Iterator, Sequence
 from typing import overload
 from uuid import uuid4
@@ -10,8 +12,8 @@ from XBotv2.core.api.history import (
     HistoryPage,
     DurableEvent,
     page_messages,
-    resolve_transcript_sources,
 )
+
 
 class ConversationHistory(Sequence[ConversationMessage]):
     """The sole owner of the current, effective conversation history."""
@@ -23,11 +25,11 @@ class ConversationHistory(Sequence[ConversationMessage]):
         sink: HistorySink | None = None,
     ) -> None:
         self._surface = list(messages)
-        self._seen_ids: set[str] = set()
-        self._seen_ids.update(self._validate_identities(self._surface))
-        self._transcript = list(self._surface)
-        self._lineage: dict[str, tuple[str, ...]] = {}
+        if len({message.id for message in self._surface}) != len(self._surface):
+            raise ValueError("Conversation message identities must be unique")
         self._sink = sink
+        self._storage_version = None
+        self._mutation_lock = asyncio.Lock()
         self._surface_revision = uuid4().hex
         self._transcript_revision = uuid4().hex
 
@@ -47,21 +49,41 @@ class ConversationHistory(Sequence[ConversationMessage]):
     def transcript_revision(self) -> HistoryRevision:
         return HistoryRevision(self._transcript_revision)
 
-    def append(self, message: ConversationMessage) -> None:
-        self.extend((message,))
+    async def synchronize(self):
+        if self._sink is None:
+            return
+        state = await self._sink.surface_state(self._storage_version)
+        if state is not None:
+            self._storage_version, messages = state
+            self._surface = list(messages)
+            self._surface_revision = uuid4().hex
+            self._transcript_revision = uuid4().hex
 
-    def extend(self, messages: Iterable[ConversationMessage]) -> None:
+    async def append(self, message: ConversationMessage) -> None:
+        await self.extend((message,))
+
+    async def extend(self, messages: Iterable[ConversationMessage]) -> None:
         added = tuple(messages)
         if not added:
             return
-        identities = self._validate_identities(added)
-        if self._sink is not None:
-            self._sink.append(added)
-        self._seen_ids.update(identities)
-        self._surface.extend(added)
-        self._transcript.extend(added)
+        async with self._mutation_lock:
+            await self.synchronize()
+            self._validate_identities(added)
+            if self._sink is not None:
+                try:
+                    self._storage_version = await self._sink.append(
+                        added, expected_version=self._storage_version
+                    )
+                except BaseException as error:
+                    try:
+                        await self.synchronize()
+                    except Exception as recovery_error:
+                        raise error from recovery_error
+                    raise
+            self._surface.extend(added)
+            self._surface_revision = uuid4().hex
 
-    def replace(
+    async def replace(
         self,
         messages: Iterable[ConversationMessage],
         *,
@@ -69,11 +91,13 @@ class ConversationHistory(Sequence[ConversationMessage]):
     ) -> None:
         replacement = tuple(messages)
         if not self._surface:
-            self.extend(replacement)
+            await self.extend(replacement)
             return
-        self.replace_range(0, len(self._surface), replacement, operation=operation)
+        await self.replace_range(
+            0, len(self._surface), replacement, operation=operation
+        )
 
-    def replace_range(
+    async def replace_range(
         self,
         start: int,
         end: int,
@@ -82,73 +106,68 @@ class ConversationHistory(Sequence[ConversationMessage]):
         operation: str,
         preserve_transcript: bool = False,
     ) -> None:
-        """Replace one current contiguous surface span by appending an operation."""
-        if start < 0 or end > len(self._surface) or start >= end:
-            raise ValueError("History replacement range must be non-empty and current")
-        replacement = tuple(messages)
-        if preserve_transcript and len(replacement) != 1:
-            raise ValueError(
-                "Transcript-preserving replacement must produce one surface record"
-            )
-        identities = self._validate_identities(replacement)
-        source = self._surface[start:end]
-        source_ids = tuple(message.id for message in source)
-        transcript_start = None
-        if not preserve_transcript:
-            origins = resolve_transcript_sources(source_ids, self._lineage)
-            transcript_start = self._transcript_span(self._transcript, origins)
+        """Replace a current span only if its pre-await revision still applies."""
+        proposed_revision = self.surface_revision
+        async with self._mutation_lock:
+            await self.synchronize()
+            if proposed_revision != self.surface_revision:
+                raise ValueError("History changed before replacement commit")
+            if start < 0 or end > len(self._surface) or start >= end:
+                raise ValueError(
+                    "History replacement range must be non-empty and current"
+                )
+            replacement = tuple(messages)
+            if preserve_transcript and len(replacement) != 1:
+                raise ValueError(
+                    "Transcript-preserving replacement must produce one surface record"
+                )
+            identities = self._validate_identities(replacement)
+            source = self._surface[start:end]
+            source_ids = tuple(message.id for message in source)
+            if self._sink is not None:
+                try:
+                    self._storage_version = await self._sink.replace_surface(
+                        source_ids,
+                        replacement,
+                        operation=operation,
+                        preserve_transcript=preserve_transcript,
+                        expected_version=self._storage_version,
+                    )
+                except BaseException as error:
+                    try:
+                        await self.synchronize()
+                    except Exception as recovery_error:
+                        raise error from recovery_error
+                    raise
+            if not preserve_transcript:
+                self._transcript_revision = uuid4().hex
+            self._surface[start:end] = replacement
+            self._surface_revision = uuid4().hex
+
+    async def begin_turn(self, input_id: str) -> int | None:
         if self._sink is not None:
-            self._sink.replace_surface(
-                source_ids,
-                replacement,
-                operation=operation,
-                preserve_transcript=preserve_transcript,
-            )
-        self._seen_ids.update(identities)
-        if preserve_transcript:
-            self._lineage[replacement[0].id] = source_ids
-        else:
-            assert transcript_start is not None
-            self._transcript[transcript_start:transcript_start + len(origins)] = replacement
-            self._transcript_revision = uuid4().hex
-        self._surface[start:end] = replacement
-        self._surface_revision = uuid4().hex
+            return await self._sink.begin_turn(input_id)
+        return None
 
-    @staticmethod
-    def _transcript_span(
-        transcript: list[ConversationMessage],
-        source_ids: Sequence[str],
-    ) -> int:
-        try:
-            start = next(
-                index
-                for index, message in enumerate(transcript)
-                if message.id == source_ids[0]
-            )
-        except StopIteration as exc:
-            raise RuntimeError("History transcript sources are not current") from exc
-        current = [message.id for message in transcript[start:start + len(source_ids)]]
-        if current != list(source_ids):
-            raise RuntimeError("History transcript sources are not current")
-        return start
-
-    def record(self, event: DurableEvent, *, durable: bool = False) -> None:
+    async def record(self, event: DurableEvent, *, durable: bool = False) -> None:
         """Append a log-only trajectory event without changing the surface."""
         if self._sink is not None:
-            self._sink.record(event, durable=durable)
+            await self._sink.record(event, durable=durable)
 
-    def open_transactions(
+    async def open_transactions(
         self,
         transaction_kind: str,
     ) -> frozenset[str]:
         """Return durable starts that do not yet have a correlated end."""
         if self._sink is None:
             return frozenset()
-        return self._sink.open_transactions(transaction_kind)
+        return await self._sink.open_transactions(transaction_kind)
 
-    def _validate_identities(self, messages: Sequence[ConversationMessage]) -> list[str]:
+    def _validate_identities(
+        self, messages: Sequence[ConversationMessage]
+    ) -> list[str]:
         identities = [message.id for message in messages]
-        duplicates = self._seen_ids.intersection(identities)
+        duplicates = {message.id for message in self._surface}.intersection(identities)
         if len(identities) != len(set(identities)) or duplicates:
             raise ValueError("Conversation message identities must be unique")
         return identities
@@ -167,31 +186,27 @@ class ConversationHistory(Sequence[ConversationMessage]):
             out_of_range="History cursor is outside the current history",
         )
 
-    def page_transcript(
+    async def page_transcript(
         self,
         *,
         limit: int,
         cursor: Cursor | None = None,
     ) -> HistoryPage[ConversationMessage]:
-        return page_messages(
-            self._transcript,
-            revision=HistoryRevision(self._transcript_revision),
-            limit=limit,
-            cursor=cursor,
-            out_of_range="History cursor is outside the transcript",
-        )
+        if self._sink is None:
+            return self.page(limit=limit, cursor=cursor)
+        return await self._sink.page_transcript(limit=limit, cursor=cursor)
 
-    def replace_last(self, message: ConversationMessage) -> None:
+    async def replace_last(self, message: ConversationMessage) -> None:
         if not self._surface:
             raise IndexError("Cannot replace the last message of empty history")
-        self.replace_range(
+        await self.replace_range(
             len(self._surface) - 1,
             len(self._surface),
             (message,),
             operation="replace_last",
         )
 
-    def undo(self, turns: int) -> tuple[ConversationMessage, ...]:
+    async def undo(self, turns: int) -> tuple[ConversationMessage, ...]:
         if turns < 1:
             raise ValueError("Undo turns must be positive")
         user_indexes = [
@@ -203,7 +218,7 @@ class ConversationHistory(Sequence[ConversationMessage]):
             raise ValueError(
                 f"Cannot undo {turns} turns; history has {len(user_indexes)}."
             )
-        self.replace_range(
+        await self.replace_range(
             user_indexes[-turns],
             len(self._surface),
             (),
@@ -211,9 +226,9 @@ class ConversationHistory(Sequence[ConversationMessage]):
         )
         return self.snapshot()
 
-    def clear(self) -> None:
+    async def clear(self) -> None:
         if self._surface:
-            self.replace_range(0, len(self._surface), (), operation="clear")
+            await self.replace_range(0, len(self._surface), (), operation="clear")
 
     @overload
     def __getitem__(self, index: int) -> ConversationMessage: ...
@@ -221,7 +236,9 @@ class ConversationHistory(Sequence[ConversationMessage]):
     @overload
     def __getitem__(self, index: slice) -> list[ConversationMessage]: ...
 
-    def __getitem__(self, index: int | slice) -> ConversationMessage | list[ConversationMessage]:
+    def __getitem__(
+        self, index: int | slice
+    ) -> ConversationMessage | list[ConversationMessage]:
         return self._surface[index]
 
     def __iter__(self) -> Iterator[ConversationMessage]:

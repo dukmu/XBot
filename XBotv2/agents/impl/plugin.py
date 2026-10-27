@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from XBotv2.commands.api.contracts import COMMANDS
+from XBotv2.session.api.storage import THREAD_REPOSITORY
 from XBotv2.permissions.api.models import PERMISSIONS
 
 from XBotv2.agentloop.api.contracts import INBOX, TOOLS
@@ -13,7 +14,8 @@ from XBotv2.agents.impl.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.agents.impl.catalog import AgentCatalog
 from XBotv2.agents.impl.commands import build_agent_commands
 from XBotv2.agents.api.contracts import (
-    AGENT_CATALOG, AGENT_RUNTIME,
+    AGENT_CATALOG,
+    AGENT_RUNTIME,
     AgentCatalog as AgentCatalogData,
     AgentCatalogPort,
     AgentSelection,
@@ -27,7 +29,14 @@ from XBotv2.agents.impl.service import AgentsService
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.api.contracts import SETTINGS
 from XBotv2.llm.api.contracts import LLM, MODEL
-from XBotv2.llm.api.contracts import EffortSelection, ProviderSelection, SELECT_EFFORT, SELECT_PROVIDER, SelectEffort, SelectProvider
+from XBotv2.llm.api.contracts import (
+    EffortSelection,
+    ProviderSelection,
+    SELECT_EFFORT,
+    SELECT_PROVIDER,
+    SelectEffort,
+    SelectProvider,
+)
 from XBotv2.server.api.contracts import contribute_router
 
 
@@ -51,6 +60,7 @@ _RUNTIME_DEPENDENCIES = [
     # here builds the engine only after restored input is on hand, with no
     # reliance on plugin-tree order.
     INBOX,
+    THREAD_REPOSITORY,
     COMMANDS,
     "agent_options",
     "thread_info",
@@ -63,13 +73,15 @@ def mount_catalog(ctx: Context) -> None:
     definitions = {
         definition.name: definition for definition in BUILTIN_AGENT_DEFINITIONS
     }
-    definitions.update({
-        definition.name: definition
-        for definition in load_definitions(
-            Path(ctx.data_root) / ".agents",
-            ctx.variables,
-        )
-    })
+    definitions.update(
+        {
+            definition.name: definition
+            for definition in load_definitions(
+                Path(ctx.data_root) / ".agents",
+                ctx.variables,
+            )
+        }
+    )
     for definition in definitions.values():
         catalog.register(definition)
     catalog.register_markdown(
@@ -81,6 +93,7 @@ def mount_catalog(ctx: Context) -> None:
 
 
 async def mount_runtime(ctx: Context) -> None:
+    repository = ctx.require(THREAD_REPOSITORY)
     service = AgentsService(
         catalog=ctx.require(AGENT_CATALOG),
         events=ctx,
@@ -90,6 +103,8 @@ async def mount_runtime(ctx: Context) -> None:
         model=ctx.require(MODEL),
         tools=ctx.require(TOOLS),
         runtime_log=ctx.runtime_log,
+        stored_facts=await repository.load(),
+        session_title=await repository.session_title(),
     )
     ctx.set(AGENT_RUNTIME, service)
     await service.bind(ctx.agent_options, ctx.thread_info)
@@ -144,12 +159,14 @@ def mount_thread(ctx, config):
     mount_catalog(ctx)
     ctx.inject(_RUNTIME_DEPENDENCIES, mount_runtime)
 
+
 mount_thread.inject = tuple(_CATALOG_DEPENDENCIES)
 mount_thread.provide = (AGENT_CATALOG, AGENT_RUNTIME)
 
 
 def mount_process(ctx, config):
     ctx.inject(["server", "sessions"], mount_http)
+
 
 mount_process.inject = ()
 mount_process.provide = ()

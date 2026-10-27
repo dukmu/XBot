@@ -14,7 +14,12 @@ from weakref import WeakValueDictionary
 import uuid
 from dataclasses import dataclass
 from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
-from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, LoopTurnEnded, TurnCancelled
+from XBotv2.agentloop.api.outputs import (
+    AssistantCompleted,
+    LoopError,
+    LoopTurnEnded,
+    TurnCancelled,
+)
 from XBotv2.agents.api.contracts import AgentDefinition
 from XBotv2.agents.api.contracts import AgentCatalogPort
 from XBotv2.context_builder.api.contracts import BuiltContext, InlinePromptComponent
@@ -23,11 +28,28 @@ from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.prompts import prompt_container, prompt_element
-from XBotv2.jobs.api.contracts import Job, JobNotFound, JobRegistryClosed, JobsPort, parse_job_status
-from XBotv2.session.api.contracts import OpenThread, ThreadInfo, SessionNotFound, SessionsPort, ThreadNotActive, ThreadSummary
+from XBotv2.jobs.api.contracts import (
+    Job,
+    JobNotFound,
+    JobRegistryClosed,
+    JobsPort,
+    parse_job_status,
+)
+from XBotv2.session.api.contracts import (
+    OpenThread,
+    ThreadInfo,
+    SessionNotFound,
+    SessionsPort,
+    ThreadNotActive,
+    ThreadSummary,
+)
 from XBotv2.agentloop.api.models import PendingInputUpdate
 from XBotv2.session.api.events import InputClaimedEvent
-from XBotv2.subagents.api.contracts import SubagentAgentError, SubagentExecutionError, SubagentResult
+from XBotv2.subagents.api.contracts import (
+    SubagentAgentError,
+    SubagentExecutionError,
+    SubagentResult,
+)
 
 _MAX_PROMPT_PREVIEW = 100
 
@@ -43,14 +65,15 @@ class AgentJobSpec:
 
 class SubagentCoordinator:
     """Session-owned child identities and operation locks."""
+
     def __init__(self, session_info, sessions):
         self._info = session_info
         self._sessions = sessions
         self._locks = WeakValueDictionary()
         self._owned = {}
 
-    def allocate(self, agent):
-        return self._sessions.new_thread_id(self._info.session_id, agent)
+    async def allocate(self, agent):
+        return await self._sessions.new_thread_id(self._info.session_id, agent)
 
     def lock(self, thread_id):
         return self._locks.setdefault(thread_id, asyncio.Lock())
@@ -84,8 +107,8 @@ class SubagentLauncher:
     def parent_thread_id(self) -> str:
         return self._session.thread_id
 
-    def allocate(self, agent: str) -> str:
-        return self._coordinator.allocate(self._definition(agent).name)
+    async def allocate(self, agent: str) -> str:
+        return await self._coordinator.allocate(self._definition(agent).name)
 
     async def resolve(self, thread_id: str) -> ThreadSummary:
         for summary in await self._sessions.list_threads(self._session.session_id):
@@ -117,16 +140,18 @@ class SubagentLauncher:
                 self._owned_threads.add(thread_id)
                 return
             mode = "resume"
-        await self._sessions.open_thread(OpenThread(
-            session_id=self._session.session_id,
-            thread_id=thread_id,
-            parent_thread_id=self._session.thread_id,
-            workspace_root=self._session.workspace_root,
-            provider_name=self._provider_name,
-            mode=mode,
-            no_plugins=self._no_plugins,
-            selected_agent=definition.name,
-        ))
+        await self._sessions.open_thread(
+            OpenThread(
+                session_id=self._session.session_id,
+                thread_id=thread_id,
+                parent_thread_id=self._session.thread_id,
+                workspace_root=self._session.workspace_root,
+                provider_name=self._provider_name,
+                mode=mode,
+                no_plugins=self._no_plugins,
+                selected_agent=definition.name,
+            )
+        )
         self._owned_threads.add(thread_id)
 
     async def submit(self, thread_id: str, item: InboxItem, *, wake: bool) -> None:
@@ -142,10 +167,12 @@ class SubagentLauncher:
         return scope.require(THREAD_EVENTS).subscribe()
 
     async def usage(self, thread_id: str):
-        return (await self._sessions.thread_summary(
-            self._session.session_id,
-            thread_id,
-        )).usage
+        return (
+            await self._sessions.thread_summary(
+                self._session.session_id,
+                thread_id,
+            )
+        ).usage
 
     async def cancel_input(
         self,
@@ -259,9 +286,7 @@ class SubagentRunner:
                     if isinstance(part, TextPart)
                 )
             elif isinstance(event, LoopError):
-                raise SubagentExecutionError(
-                    event.message or "Subagent turn failed"
-                )
+                raise SubagentExecutionError(event.message or "Subagent turn failed")
             elif isinstance(event, LoopTurnEnded):
                 if isinstance(event.outcome, TurnCancelled):
                     raise SubagentExecutionError(event.outcome.reason)
@@ -310,7 +335,7 @@ class SubagentTools:
         if not prompt.strip():
             return failed_text("invalid_prompt", "Subagent prompt cannot be empty")
         try:
-            thread_id = self._launcher.allocate(agent)
+            thread_id = await self._launcher.allocate(agent)
             job = await self._new_job(
                 agent=agent,
                 message=prompt,
@@ -407,9 +432,7 @@ class SubagentTools:
                 if job is not None and isinstance(job.spec, AgentJobSpec)
                 else "unknown"
             )
-            lines.append(
-                f"{view.id}: {view.state} · thread {thread_id} · {view.label}"
-            )
+            lines.append(f"{view.id}: {view.state} · thread {thread_id} · {view.label}")
         return succeeded_text("\n".join(lines))
 
     async def wait_subagent(
@@ -492,24 +515,30 @@ class SubagentTools:
             if create:
                 await self._launcher.close_thread(thread_id)
             raise
-        self._registry.start(job.id, SubagentRunner(
-            launcher=self._launcher,
-            thread_id=thread_id,
-            agent=agent,
-            message=message,
-        ))
+        self._registry.start(
+            job.id,
+            SubagentRunner(
+                launcher=self._launcher,
+                thread_id=thread_id,
+                agent=agent,
+                message=message,
+            ),
+        )
         return job
 
     def _active_job(self, thread_id: str) -> Job | None:
-        return next((
-            job
-            for job in reversed(self._registry.all())
-            if (
-                not job.terminal
-                and isinstance(job.spec, AgentJobSpec)
-                and job.spec.thread_id == thread_id
-            )
-        ), None)
+        return next(
+            (
+                job
+                for job in reversed(self._registry.all())
+                if (
+                    not job.terminal
+                    and isinstance(job.spec, AgentJobSpec)
+                    and job.spec.thread_id == thread_id
+                )
+            ),
+            None,
+        )
 
 
 class SubagentCatalogPrompt:
@@ -529,14 +558,15 @@ class SubagentCatalogPrompt:
             "with send_message or followup_task:"
         ]
         lines.extend(
-            f"- {definition.name}: {definition.description}"
-            for definition in visible
+            f"- {definition.name}: {definition.description}" for definition in visible
         )
-        event.components.append(InlinePromptComponent(
-            stage="context_suffix",
-            source="xbot.subagents",
-            text="\n".join(lines),
-        ))
+        event.components.append(
+            InlinePromptComponent(
+                stage="context_suffix",
+                source="xbot.subagents",
+                text="\n".join(lines),
+            )
+        )
 
 
 def _message_item(

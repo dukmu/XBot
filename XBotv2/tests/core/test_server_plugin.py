@@ -92,9 +92,11 @@ async def test_existing_process_state_keeps_tui_session_routes_available(tmp_pat
     from XBotv2.main import open_runtime
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
-    paths.data_dir.mkdir()
-    state_path = paths.data_dir / "state.json"
-    state_path.write_text('{"unrelated.setting": "preserved"}\n', encoding="utf-8")
+    from XBotv2.persistence.api.contracts import PERSISTENCE
+
+    initial = await open_runtime(paths=paths)
+    await initial.require(PERSISTENCE).state().set("unrelated.setting", "preserved")
+    await initial.close()
     context = await open_runtime(paths=paths)
     try:
         async with httpx.AsyncClient(
@@ -102,9 +104,7 @@ async def test_existing_process_state_keeps_tui_session_routes_available(tmp_pat
         ) as client:
             assert (await client.get("/sessions")).status_code == 200
             assert (await client.get("/workspaces")).status_code == 200
-        assert await context.state.get("unrelated.setting") == "preserved"
-        from xcore.api.state import StateService
-        assert await StateService(path=state_path).get("unrelated.setting") == "preserved"
+        assert await context.require(PERSISTENCE).state().get("unrelated.setting") == "preserved"
     finally:
         await context.destroy()
 
@@ -155,7 +155,7 @@ async def booted_server(tmp_path: Path):
     try:
         yield server
     finally:
-        await server.stop()
+        await server.close()
 
 
 @pytest.mark.asyncio

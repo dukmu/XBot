@@ -8,7 +8,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 import uuid
-from xcore.api.state import StateService
+from XBotv2.persistence.api.contracts import StatePort
+from XBotv2.workspaces.impl.storage import WorkspaceStorage
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.workspaces.api.contracts import (
     WorkspaceRecord,
@@ -44,12 +45,12 @@ class WorkspaceRegistry(WorkspacesPort):
 
     def __init__(
         self,
-        state: StateService,
+        state: StatePort,
         sessions: SessionListing,
         events: EventEmitter,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
-        self._state = state
+        self._storage = WorkspaceStorage(state)
         self._sessions = sessions
         self._events = events
         self._log = runtime_log.bind("workspaces")
@@ -69,9 +70,11 @@ class WorkspaceRegistry(WorkspacesPort):
             archive_changed = archived_session_ids != snapshot.archived_session_ids
             if archive_changed:
                 removed = len(snapshot.archived_session_ids) - len(archived_session_ids)
-                snapshot = snapshot.model_copy(update={
-                    "archived_session_ids": archived_session_ids,
-                })
+                snapshot = snapshot.model_copy(
+                    update={
+                        "archived_session_ids": archived_session_ids,
+                    }
+                )
             if membership_changes or archive_changed:
                 await self._write(snapshot)
             if membership_changes:
@@ -95,13 +98,10 @@ class WorkspaceRegistry(WorkspacesPort):
         )
 
     async def create(self, path: Path | str) -> tuple[WorkspaceView, bool]:
-        record, created = await self._register(
-            self._require_existing_directory(path)
-        )
+        record, created = await self._register(self._require_existing_directory(path))
         listing = await self.list()
         workspace = next(
-            item for item in listing.items
-            if item.workspace_id == record.id
+            item for item in listing.items if item.workspace_id == record.id
         )
         return workspace, created
 
@@ -137,26 +137,32 @@ class WorkspaceRegistry(WorkspacesPort):
             items: list[WorkspaceRecord] = []
             for record in snapshot.items:
                 if session_id in record.session_ids:
-                    record = record.model_copy(update={
-                        "session_ids": tuple(
-                            value for value in record.session_ids
-                            if value != session_id
-                        ),
-                        "updated_at": _now(),
-                    })
+                    record = record.model_copy(
+                        update={
+                            "session_ids": tuple(
+                                value
+                                for value in record.session_ids
+                                if value != session_id
+                            ),
+                            "updated_at": _now(),
+                        }
+                    )
                     changed.append(record)
                 items.append(record)
             archived = tuple(
-                value for value in snapshot.archived_session_ids
-                if value != session_id
+                value for value in snapshot.archived_session_ids if value != session_id
             )
             archive_changed = archived != snapshot.archived_session_ids
             if not changed and not archive_changed:
                 return
-            await self._write(snapshot.model_copy(update={
-                "items": tuple(items),
-                "archived_session_ids": archived,
-            }))
+            await self._write(
+                snapshot.model_copy(
+                    update={
+                        "items": tuple(items),
+                        "archived_session_ids": archived,
+                    }
+                )
+            )
         for record in changed:
             await self._events.emit(
                 WORKSPACE_RESOURCE_CHANGED,
@@ -192,15 +198,21 @@ class WorkspaceRegistry(WorkspacesPort):
             )
             if existing is not None:
                 if session_id and session_id not in existing.session_ids:
-                    record = existing.model_copy(update={
-                        "session_ids": (session_id, *existing.session_ids),
-                        "updated_at": _now(),
-                    })
+                    record = existing.model_copy(
+                        update={
+                            "session_ids": (session_id, *existing.session_ids),
+                            "updated_at": _now(),
+                        }
+                    )
                     items = list(snapshot.items)
                     items[_index(snapshot, existing.id)] = record
-                    await self._write(snapshot.model_copy(update={
-                        "items": tuple(items),
-                    }))
+                    await self._write(
+                        snapshot.model_copy(
+                            update={
+                                "items": tuple(items),
+                            }
+                        )
+                    )
                     changed = True
                 else:
                     record = existing
@@ -216,13 +228,19 @@ class WorkspaceRegistry(WorkspacesPort):
                     created_at=now,
                     updated_at=now,
                 )
-                await self._write(snapshot.model_copy(update={
-                    "items": (*snapshot.items, record),
-                }))
+                await self._write(
+                    snapshot.model_copy(
+                        update={
+                            "items": (*snapshot.items, record),
+                        }
+                    )
+                )
                 created = True
                 changed = True
         if created:
-            self._log.info("workspace.created", workspace_id=record.id, path=record.path)
+            self._log.info(
+                "workspace.created", workspace_id=record.id, path=record.path
+            )
         elif changed:
             self._log.info(
                 "workspace.session.attached",
@@ -321,7 +339,10 @@ class WorkspaceRegistry(WorkspacesPort):
                 raise WorkspaceSessionMoveInvalid(
                     f"Session {session_id!r} is not in Workspace {workspace_id!r}"
                 )
-            if before_session_id is not None and before_session_id not in record.session_ids:
+            if (
+                before_session_id is not None
+                and before_session_id not in record.session_ids
+            ):
                 raise WorkspaceSessionMoveInvalid(
                     f"Session anchor {before_session_id!r} is not in Workspace {workspace_id!r}"
                 )
@@ -337,10 +358,12 @@ class WorkspaceRegistry(WorkspacesPort):
             ordered = tuple(session_ids)
             if ordered == record.session_ids:
                 return _view(record)
-            updated = record.model_copy(update={
-                "session_ids": ordered,
-                "updated_at": _now(),
-            })
+            updated = record.model_copy(
+                update={
+                    "session_ids": ordered,
+                    "updated_at": _now(),
+                }
+            )
             items = list(snapshot.items)
             items[index] = updated
             await self._write(snapshot.model_copy(update={"items": tuple(items)}))
@@ -362,13 +385,10 @@ class WorkspaceRegistry(WorkspacesPort):
         archived: bool,
     ) -> tuple[str, ...]:
         known = {
-            str(session.session_id)
-            for session in await self._sessions.list_sessions()
+            str(session.session_id) for session in await self._sessions.list_sessions()
         }
         if session_id not in known:
-            raise WorkspaceSessionNotFound(
-                f"Session {session_id!r} was not found"
-            )
+            raise WorkspaceSessionNotFound(f"Session {session_id!r} was not found")
         async with self._lock:
             snapshot = await self._snapshot()
             current = list(snapshot.archived_session_ids)
@@ -379,9 +399,13 @@ class WorkspaceRegistry(WorkspacesPort):
             archived_session_ids = tuple(current)
             if archived_session_ids == snapshot.archived_session_ids:
                 return archived_session_ids
-            await self._write(snapshot.model_copy(update={
-                "archived_session_ids": archived_session_ids,
-            }))
+            await self._write(
+                snapshot.model_copy(
+                    update={
+                        "archived_session_ids": archived_session_ids,
+                    }
+                )
+            )
         self._log.info(
             "workspace.session.archive.updated",
             session_id=session_id,
@@ -402,15 +426,10 @@ class WorkspaceRegistry(WorkspacesPort):
         return str(resolved)
 
     async def _snapshot(self) -> WorkspaceSnapshot:
-        stored = await self._state.get("snapshot")
-        if stored is None:
-            return WorkspaceSnapshot()
-        if not isinstance(stored, Mapping):
-            raise TypeError("Persisted Workspace snapshot must be an object")
-        return WorkspaceSnapshot.model_validate(stored)
+        return await self._storage.load()
 
     async def _write(self, snapshot: WorkspaceSnapshot) -> None:
-        await self._state.set("snapshot", snapshot.model_dump(mode="json"))
+        await self._storage.save(snapshot)
 
 
 def _views(records: tuple[WorkspaceRecord, ...]) -> tuple[WorkspaceView, ...]:
@@ -434,10 +453,12 @@ def _reconcile_membership(
         added = tuple(sorted(known.difference(retained), reverse=True))
         session_ids = (*added, *retained)
         if session_ids != record.session_ids:
-            record = record.model_copy(update={
-                "session_ids": session_ids,
-                "updated_at": _now(),
-            })
+            record = record.model_copy(
+                update={
+                    "session_ids": session_ids,
+                    "updated_at": _now(),
+                }
+            )
             changed.append(record)
         items.append(record)
     if not changed:

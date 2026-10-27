@@ -1,7 +1,7 @@
 """Session routes: sessions, threads, messages, history, fork, events,
 close, interrupt, and interactions.
 
-Session lifecycle and persistence remain behind the public SessionsPort;
+Session lifecycle and archive remain behind the public SessionsPort;
 this module owns only HTTP request/response and SSE mapping.
 """
 
@@ -16,14 +16,33 @@ from typing import AsyncIterator
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, JsonValue
-from XBotv2.protocol.api.http_util import _SSE_RESPONSE, error_payload, _sse_response, HttpServerError
+from XBotv2.protocol.api.http_util import (
+    _SSE_RESPONSE,
+    error_payload,
+    _sse_response,
+    HttpServerError,
+)
 from XBotv2.protocol.api.models import ServerEvent
 from XBotv2.protocol.api.sse import encode_server_event
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.session.impl.config import SessionConfig
 from XBotv2.session.api.events import MessagePublishedEvent
-from XBotv2.session.api.contracts import SessionsPort, OpenedThread, OpenSession, OpenThread, SessionExists, SessionEventSubscription, SessionEventFrame, SessionEventCursorExpired, SessionNotFound, SessionMode, SessionSummary, ThreadNotActive, ThreadSummary
+from XBotv2.session.api.contracts import (
+    SessionsPort,
+    OpenedThread,
+    OpenSession,
+    OpenThread,
+    SessionExists,
+    SessionEventSubscription,
+    SessionEventFrame,
+    SessionEventCursorExpired,
+    SessionNotFound,
+    SessionMode,
+    SessionSummary,
+    ThreadNotActive,
+    ThreadSummary,
+)
 from XBotv2.agentloop.api.models import AttachmentInput, ImageInput
 from XBotv2.session.api.records import ConversationRecord
 from XBotv2.session.api.snapshot import thread_snapshot
@@ -31,7 +50,22 @@ from XBotv2.session.api.snapshot import thread_snapshot
 logger = logging.getLogger("xbotv2.api")
 
 
-from XBotv2.session.api.protocol import OpenSessionRequest, ThreadListResponse, SessionListResponse, WorkspaceEventCursor, SessionUpdateRequest, OpenThreadRequest, UndoRequest, ForkResponse, DeleteSessionResponse, MessageRequest, InterruptResponse, CloseResponse, OpenSessionResponse
+from XBotv2.session.api.protocol import (
+    OpenSessionRequest,
+    ThreadListResponse,
+    SessionListResponse,
+    WorkspaceEventCursor,
+    SessionUpdateRequest,
+    OpenThreadRequest,
+    UndoRequest,
+    ForkResponse,
+    DeleteSessionResponse,
+    MessageRequest,
+    InterruptResponse,
+    CloseResponse,
+    OpenSessionResponse,
+)
+
 
 def _open_session_response(
     value: OpenedThread,
@@ -42,12 +76,12 @@ def _open_session_response(
 
 
 async def _requested_history_page(
-    persistence,
+    archive,
     session_id: str,
     thread_id: str,
     limit: int | None,
 ) -> HistoryPage[ConversationRecord]:
-    page = persistence.message_page(
+    page = await archive.message_page(
         session_id,
         thread_id,
         cursor=None,
@@ -59,11 +93,14 @@ async def _requested_history_page(
     )
 
 
-
-
 def _session_event_payload(event: object) -> dict[str, JsonValue]:
     """Encode a typed internal event at the sole SSE boundary."""
-    from XBotv2.agentloop.api.outputs import AssistantCompleted, ToolCompleted, UsageObserved, is_loop_event
+    from XBotv2.agentloop.api.outputs import (
+        AssistantCompleted,
+        ToolCompleted,
+        UsageObserved,
+        is_loop_event,
+    )
     from XBotv2.session.api.records import project_message
 
     if isinstance(event, MessagePublishedEvent):
@@ -100,28 +137,26 @@ def _format_sse(
     thread_id: str,
 ) -> bytes:
     """Encode a complete typed session frame at the HTTP boundary."""
-    return encode_server_event(ServerEvent(
-        session_id=session_id,
-        thread_id=thread_id,
-        sequence=frame.sequence,
-        scope=frame.scope,
-        kind=frame.event.kind,
-        payload=_session_event_payload(frame.event),
-    ))
+    return encode_server_event(
+        ServerEvent(
+            session_id=session_id,
+            thread_id=thread_id,
+            sequence=frame.sequence,
+            scope=frame.scope,
+            kind=frame.event.kind,
+            payload=_session_event_payload(frame.event),
+        )
+    )
 
 
-async def _session_not_found(
-    _: Request, exc: SessionNotFound
-) -> JSONResponse:
+async def _session_not_found(_: Request, exc: SessionNotFound) -> JSONResponse:
     return JSONResponse(
         status_code=404,
         content=error_payload("session_not_found", str(exc)),
     )
 
 
-async def _thread_not_active(
-    _: Request, exc: ThreadNotActive
-) -> JSONResponse:
+async def _thread_not_active(_: Request, exc: ThreadNotActive) -> JSONResponse:
     return JSONResponse(
         status_code=409,
         content=error_payload("thread_not_active", str(exc), retryable=True),
@@ -133,7 +168,7 @@ def build_session_router(
     sessions: SessionsPort,
     options: SessionConfig,
     workspace_events: WorkspaceEventCursor,
-    persistence,
+    archive,
 ) -> APIRouter:
     """Session, thread, message, history, fork, event, and policy routes."""
 
@@ -159,15 +194,17 @@ def build_session_router(
         if workspace_root is None and payload.mode == "new":
             workspace_root = str(options.workspace_root)
         try:
-            opened_scope = await sessions.open(OpenSession(
-                session_id=raw_session_id,
-                thread_id=thread_id,
-                provider_name=options.provider_name,
-                workspace_root=workspace_root,
-                mode=payload.mode,
-                selected_agent=payload.agent,
-                no_plugins=options.no_plugins,
-            ))
+            opened_scope = await sessions.open(
+                OpenSession(
+                    session_id=raw_session_id,
+                    thread_id=thread_id,
+                    provider_name=options.provider_name,
+                    workspace_root=workspace_root,
+                    mode=payload.mode,
+                    selected_agent=payload.agent,
+                    no_plugins=options.no_plugins,
+                )
+            )
             opened = await thread_snapshot(opened_scope)
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
@@ -177,16 +214,22 @@ def build_session_router(
             raise HttpServerError(
                 exc.code,
                 exc.message,
-                status=409 if exc.code in {"session_in_use", "session_closing"} else 404 if exc.code.endswith("_not_found") else 400,
+                status=409
+                if exc.code in {"session_in_use", "session_closing"}
+                else 404
+                if exc.code.endswith("_not_found")
+                else 400,
                 retryable=exc.retryable,
             ) from exc
         except Exception as exc:  # noqa: BLE001
             logger.exception("Session open failed for %s", raw_session_id or "<new>")
             raise HttpServerError(
-                "session_open_failed", "".join(format_exception_only(exc)).strip(), status=500
+                "session_open_failed",
+                "".join(format_exception_only(exc)).strip(),
+                status=500,
             ) from exc
         page = await _requested_history_page(
-            persistence,
+            archive,
             opened.key.session_id,
             opened.key.thread_id,
             payload.history_limit,
@@ -213,7 +256,9 @@ def build_session_router(
         try:
             return await sessions.rename_session(session_id, payload.title)
         except ValueError as exc:
-            raise HttpServerError("invalid_session_title", str(exc), status=400) from exc
+            raise HttpServerError(
+                "invalid_session_title", str(exc), status=400
+            ) from exc
 
     @router.post(
         "/sessions/{session_id}/fork",
@@ -253,23 +298,25 @@ def build_session_router(
         payload: OpenThreadRequest,
     ) -> OpenSessionResponse:
         try:
-            opened_scope = await sessions.open_thread(OpenThread(
-                session_id=session_id,
-                thread_id=payload.thread_id,
-                parent_thread_id=payload.parent_thread_id,
-                provider_name=options.provider_name,
-                workspace_root=payload.workspace_root,
-                mode=payload.mode,
-                selected_agent=payload.agent,
-                no_plugins=options.no_plugins,
-            ))
+            opened_scope = await sessions.open_thread(
+                OpenThread(
+                    session_id=session_id,
+                    thread_id=payload.thread_id,
+                    parent_thread_id=payload.parent_thread_id,
+                    provider_name=options.provider_name,
+                    workspace_root=payload.workspace_root,
+                    mode=payload.mode,
+                    selected_agent=payload.agent,
+                    no_plugins=options.no_plugins,
+                )
+            )
             opened = await thread_snapshot(opened_scope)
         except SessionNotFound as exc:
             raise HttpServerError("session_not_found", str(exc), status=404) from exc
         except SessionExists as exc:
             raise HttpServerError("session_exists", str(exc), status=409) from exc
         page = await _requested_history_page(
-            persistence,
+            archive,
             opened.key.session_id,
             opened.key.thread_id,
             payload.history_limit,
@@ -286,15 +333,6 @@ def build_session_router(
     ) -> ThreadSummary:
         return await sessions.thread_summary(session_id, thread_id)
 
-
-
-
-
-
-
-
-
-
     @router.get(
         "/sessions/{session_id}/threads/{thread_id}/events",
         operation_id="stream_events",
@@ -307,7 +345,11 @@ def build_session_router(
         after: int | None = Query(default=None, ge=0),
     ) -> Response:
         try:
-            events = (await sessions.locate(session_id, thread_id)).require(THREAD_EVENTS).subscribe(after)
+            events = (
+                (await sessions.locate(session_id, thread_id))
+                .require(THREAD_EVENTS)
+                .subscribe(after)
+            )
         except SessionEventCursorExpired as exc:
             raise HttpServerError(
                 "session_event_cursor_expired",
@@ -327,8 +369,6 @@ def build_session_router(
             _session_sse(events, session_id, thread_id),
         )
 
-
-
     @router.post(
         "/sessions/{session_id}/close",
         operation_id="close_session",
@@ -345,7 +385,4 @@ def build_session_router(
         await sessions.close_thread(session_id, thread_id)
         return CloseResponse(session_id=session_id, thread_id=thread_id)
 
-
     return router
-
-

@@ -30,7 +30,11 @@ from XBotv2.coretools.api.models import CoreToolsConfig
 from XBotv2.loader.api.contracts import PluginTree
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.artifacts import ArtifactStorePort
-from XBotv2.core.api.metadata import MetadataReady, MetadataUninitialized, ThreadMetadata
+from XBotv2.core.api.metadata import (
+    MetadataReady,
+    MetadataUninitialized,
+    ThreadMetadata,
+)
 from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     ReasoningGenerationMode,
@@ -42,7 +46,14 @@ from XBotv2.core.api.domain import (
 )
 from XBotv2.core.api.runtime_logging import RuntimeLog
 from XBotv2.session.api.contracts import SessionKey
-from XBotv2.llm.api.contracts import EffortSelection, LlmServicePort, ModelConfig, ModelPort, ProviderConfig, ProviderSelection
+from XBotv2.llm.api.contracts import (
+    EffortSelection,
+    LlmServicePort,
+    ModelConfig,
+    ModelPort,
+    ProviderConfig,
+    ProviderSelection,
+)
 
 
 class AgentsService(AgentRuntimePort):
@@ -59,7 +70,11 @@ class AgentsService(AgentRuntimePort):
         model: ModelPort,
         tools: ToolsPort,
         runtime_log: RuntimeLog,
+        stored_facts=None,
+        session_title="",
     ) -> None:
+        self._stored_facts = stored_facts
+        self._session_title = session_title
         self.catalog = catalog
         self._events = events
         self._state = state
@@ -87,40 +102,78 @@ class AgentsService(AgentRuntimePort):
             )
         )
         metadata_lifecycle = state.metadata.lifecycle
-        stored_metadata = (
-            metadata_lifecycle.metadata
-            if isinstance(metadata_lifecycle, MetadataReady)
-            else None
-        )
+        stored_metadata = self._stored_facts
         definition = self._resolve_definition(options, launch, stored_metadata)
         if state.resumed and stored_metadata is None:
-            raise RuntimeError("Cannot resume a persisted thread without thread metadata")
-        provider_override = stored_metadata.provider_override if stored_metadata is not None else None
-        model_override = stored_metadata.model_override if stored_metadata is not None else None
-        effort_override = stored_metadata.effort_override if stored_metadata is not None else None
-        if stored_metadata is None and options.provider_name is not None and not (definition is not None and isinstance(definition.model_policy.route, ModelRoute)):
+            raise RuntimeError(
+                "Cannot resume a persisted thread without thread metadata"
+            )
+        provider_override = (
+            stored_metadata.provider_override if stored_metadata is not None else None
+        )
+        model_override = (
+            stored_metadata.model_override if stored_metadata is not None else None
+        )
+        effort_override = (
+            stored_metadata.effort_override if stored_metadata is not None else None
+        )
+        if (
+            stored_metadata is None
+            and options.provider_name is not None
+            and not (
+                definition is not None
+                and isinstance(definition.model_policy.route, ModelRoute)
+            )
+        ):
             provider_override = options.provider_name
-        provider_name = provider_override or self._resolve_provider(launch, definition, None)
+        provider_name = provider_override or self._resolve_provider(
+            launch, definition, None
+        )
         provider = self._providers.provider_config(provider_name)
-        model_config = self._resolve_model_config(provider, definition, model=model_override)
+        model_config = self._resolve_model_config(
+            provider, definition, model=model_override
+        )
         if effort_override is not None:
             if effort_override not in (model_config.effort or ()):
-                raise ValueError(f"Saved effort {effort_override!r} is unavailable for {provider_name}/{model_config.model}")
-            model_config = model_config.model_copy(update={"reasoning_effort": effort_override})
+                raise ValueError(
+                    f"Saved effort {effort_override!r} is unavailable for {provider_name}/{model_config.model}"
+                )
+            model_config = model_config.model_copy(
+                update={"reasoning_effort": effort_override}
+            )
         self._restrict_tools(self._tools, config, definition)
-        runtime_selection = self._resolved_runtime_selection(config=config, definition=definition, provider_name=provider_name, model_config=model_config)
-        if stored_metadata is not None:
-            # Registry contributions finish after bind. Keep only this startup
-            # projection stable until announce_initialized records the complete,
-            # currently restricted registry before the scope becomes available.
-            runtime_selection = runtime_selection.model_copy(update={"enabled_tools": stored_metadata.runtime_selection.enabled_tools})
+        runtime_selection = self._resolved_runtime_selection(
+            config=config,
+            definition=definition,
+            provider_name=provider_name,
+            model_config=model_config,
+        )
         if effort_override is not None:
-            runtime_selection = runtime_selection.model_copy(update={"model": runtime_selection.model.model_copy(update={"generation": runtime_selection.model.generation.model_copy(update={"mode": ReasoningGenerationMode(effort=effort_override)})})})
+            runtime_selection = runtime_selection.model_copy(
+                update={
+                    "model": runtime_selection.model.model_copy(
+                        update={
+                            "generation": runtime_selection.model.generation.model_copy(
+                                update={
+                                    "mode": ReasoningGenerationMode(
+                                        effort=effort_override
+                                    )
+                                }
+                            )
+                        }
+                    )
+                }
+            )
         metadata = ThreadMetadata(
-            runtime_selection=runtime_selection, provider_override=provider_override,
-            model_override=model_override, effort_override=effort_override,
-            parent_thread_id=launch.parent_thread_id, workspace_root=str(launch.workspace_root),
-            title=stored_metadata.title if stored_metadata is not None else "",
+            runtime_selection=runtime_selection,
+            provider_override=provider_override,
+            model_override=model_override,
+            effort_override=effort_override,
+            parent_thread_id=launch.parent_thread_id,
+            workspace_root=str(launch.workspace_root),
+            title=stored_metadata.title
+            if stored_metadata is not None
+            else self._session_title,
         )
         if isinstance(metadata_lifecycle, MetadataUninitialized):
             await state.metadata.initialize(metadata)
@@ -158,7 +211,13 @@ class AgentsService(AgentRuntimePort):
         )
         self._restrict_tools(self._tools, self.runtime_config(definition), definition)
         current = self._state.metadata.value.runtime_selection
-        await self._state.metadata.replace_runtime_selection(current.model_copy(update={"enabled_tools": tuple(tool.name for tool in self._tools.enabled())}))
+        await self._state.metadata.replace_runtime_selection(
+            current.model_copy(
+                update={
+                    "enabled_tools": tuple(tool.name for tool in self._tools.enabled())
+                }
+            )
+        )
 
     def definition(self, name: str) -> AgentDefinition | None:
         return self.catalog.get(name)
@@ -185,21 +244,32 @@ class AgentsService(AgentRuntimePort):
         overrides: dict[str, str | None] | None = None,
     ) -> None:
         current = self._state.metadata.value.runtime_selection
-        selection = current.model_copy(update={
-            "agent_name": current.agent_name if agent_name is None else agent_name,
-            "model": current.model.model_copy(update={
-                "route": ModelRoute(provider=provider, model=model),
-                "generation": current.model.generation.model_copy(update={
-                    "mode": (
-                        ReasoningGenerationMode(effort=model_mode)
-                        if model_mode else StandardGenerationMode()
-                    ),
-                    "max_output_tokens": max(1, max_output_tokens),
-                }),
-                "context_window": max(1, context_window),
-            }),
-        })
-        await self._state.metadata.replace(self._state.metadata.value.model_copy(update={"runtime_selection": selection, **(overrides or {})}))
+        selection = current.model_copy(
+            update={
+                "agent_name": current.agent_name if agent_name is None else agent_name,
+                "model": current.model.model_copy(
+                    update={
+                        "route": ModelRoute(provider=provider, model=model),
+                        "generation": current.model.generation.model_copy(
+                            update={
+                                "mode": (
+                                    ReasoningGenerationMode(effort=model_mode)
+                                    if model_mode
+                                    else StandardGenerationMode()
+                                ),
+                                "max_output_tokens": max(1, max_output_tokens),
+                            }
+                        ),
+                        "context_window": max(1, context_window),
+                    }
+                ),
+            }
+        )
+        await self._state.metadata.replace(
+            self._state.metadata.value.model_copy(
+                update={"runtime_selection": selection, **(overrides or {})}
+            )
+        )
 
     def current_selection(self) -> AgentSelection:
         runtime = self._state.metadata.value.runtime_selection
@@ -245,13 +315,15 @@ class AgentsService(AgentRuntimePort):
         current = state.metadata.value.runtime_selection
         policy_route = definition.model_policy.route
         saved = state.metadata.value
-        provider_name = policy_route.provider if isinstance(policy_route, ModelRoute) else (saved.provider_override or self._providers.default_name())
+        provider_name = (
+            policy_route.provider
+            if isinstance(policy_route, ModelRoute)
+            else (saved.provider_override or self._providers.default_name())
+        )
         provider = self._providers.provider_config(provider_name)
         model_config = self._resolve_model_config(provider, definition)
         if not self._model_is_override:
-            self._model.replace(
-                self._providers.create(provider, model_config)
-            )
+            self._model.replace(self._providers.create(provider, model_config))
 
         self._restrict_tools(self._tools, config, definition)
         engine.configure(
@@ -264,18 +336,28 @@ class AgentsService(AgentRuntimePort):
             provider_name=provider_name,
             model_config=model_config,
         )
-        await state.metadata.replace(state.metadata.value.model_copy(update={
-            "runtime_selection": runtime,
-            "provider_override": None if isinstance(policy_route, ModelRoute) else saved.provider_override,
-            "model_override": None, "effort_override": None,
-        }))
-        await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
-            runtime_selection=runtime,
-            session_key=SessionKey(
-                session_id=state.session.session_id,
-                thread_id=state.session.thread_id,
+        await state.metadata.replace(
+            state.metadata.value.model_copy(
+                update={
+                    "runtime_selection": runtime,
+                    "provider_override": None
+                    if isinstance(policy_route, ModelRoute)
+                    else saved.provider_override,
+                    "model_override": None,
+                    "effort_override": None,
+                }
+            )
+        )
+        await self._events.emit(
+            AGENT_CONFIGURED,
+            AgentConfigured(
+                runtime_selection=runtime,
+                session_key=SessionKey(
+                    session_id=state.session.session_id,
+                    thread_id=state.session.thread_id,
+                ),
             ),
-        ))
+        )
         self._log.info(
             "agent.selected",
             agent=definition.name,
@@ -313,9 +395,7 @@ class AgentsService(AgentRuntimePort):
                 "max_output_tokens before it can become a runtime selection"
             )
         if not self._model_is_override:
-            self._model.replace(
-                self._providers.create(provider, model_config)
-            )
+            self._model.replace(self._providers.create(provider, model_config))
         engine.configure(
             model_client=self._model,
         )
@@ -325,15 +405,22 @@ class AgentsService(AgentRuntimePort):
             model_mode=model_config.model_mode,
             context_window=model_config.max_context_tokens,
             max_output_tokens=model_config.max_output_tokens,
-            overrides={"provider_override": name, "model_override": model, "effort_override": None},
+            overrides={
+                "provider_override": name,
+                "model_override": model,
+                "effort_override": None,
+            },
         )
-        await self._events.emit(AGENT_CONFIGURED, AgentConfigured(
-            runtime_selection=state.metadata.value.runtime_selection,
-            session_key=SessionKey(
-                session_id=state.session.session_id,
-                thread_id=state.session.thread_id,
+        await self._events.emit(
+            AGENT_CONFIGURED,
+            AgentConfigured(
+                runtime_selection=state.metadata.value.runtime_selection,
+                session_key=SessionKey(
+                    session_id=state.session.session_id,
+                    thread_id=state.session.thread_id,
+                ),
             ),
-        ))
+        )
         self._log.info(
             "provider.selected",
             provider=name,
@@ -361,26 +448,21 @@ class AgentsService(AgentRuntimePort):
         tiers = list(model_config.effort or [])
         if not tiers:
             raise ValueError(
-                f"Model {provider_name}/{model_name} does not advertise "
-                "effort tiers"
+                f"Model {provider_name}/{model_name} does not advertise effort tiers"
             )
         if value not in tiers:
             raise ValueError(
                 f"Unsupported reasoning effort {value!r} for "
                 f"{provider_name}/{model_name}; available: {', '.join(tiers)}"
             )
-        model_config = model_config.model_copy(
-            update={"reasoning_effort": value}
-        )
+        model_config = model_config.model_copy(update={"reasoning_effort": value})
         if model_config.max_output_tokens is None:
             raise ValueError(
                 f"Model {provider_name}/{model_name} must declare "
                 "max_output_tokens before it can become a runtime selection"
             )
         if not self._model_is_override:
-            self._model.replace(
-                self._providers.create(entry, model_config)
-            )
+            self._model.replace(self._providers.create(entry, model_config))
         engine.configure(
             model_client=self._model,
         )
@@ -424,14 +506,10 @@ class AgentsService(AgentRuntimePort):
         self,
         options: AgentCreateOptions,
         launch: ThreadInfo,
-        metadata: ThreadMetadata | None,
+        metadata,
     ) -> AgentDefinition | None:
         definition = options.agent_definition
-        stored_name = (
-            metadata.runtime_selection.agent_name
-            if metadata is not None
-            else None
-        )
+        stored_name = metadata.agent_ref if metadata is not None else None
 
         selected = options.selected_agent
         if selected is not None and stored_name is not None and selected != stored_name:
@@ -469,7 +547,7 @@ class AgentsService(AgentRuntimePort):
         self,
         launch: ThreadInfo,
         definition: AgentDefinition | None,
-        metadata: ThreadMetadata | None,
+        metadata,
     ) -> str:
         provider_name = self._provider_name
         if definition is not None and isinstance(
@@ -535,11 +613,11 @@ class AgentsService(AgentRuntimePort):
             else StandardGenerationMode()
         )
         return ResolvedRuntimeSelection(
-            agent_name=(
-                definition.name if definition is not None else "XBotv2"
-            ),
+            agent_name=(definition.name if definition is not None else "XBotv2"),
             prompt=self._resolved_prompt(config, definition),
-            limits=(definition.limits if definition is not None else AgentExecutionLimits()),
+            limits=(
+                definition.limits if definition is not None else AgentExecutionLimits()
+            ),
             enabled_tools=tuple(tool.name for tool in self._tools.enabled()),
             model=ResolvedModelSelection(
                 route=ModelRoute(provider=provider_name, model=model_config.model),
@@ -574,7 +652,8 @@ class AgentsService(AgentRuntimePort):
     def _resolve_model_config(
         provider: ProviderConfig,
         definition: AgentDefinition | None,
-        *, model: str | None = None,
+        *,
+        model: str | None = None,
     ) -> ModelConfig:
         """Resolve the catalog model for an Agent definition.
 
@@ -587,16 +666,18 @@ class AgentsService(AgentRuntimePort):
         """
         route = definition.model_policy.route if definition is not None else None
         model_config = provider.resolve(
-            model if model is not None else route.model if isinstance(route, ModelRoute) else None
+            model
+            if model is not None
+            else route.model
+            if isinstance(route, ModelRoute)
+            else None
         )
         if definition is not None:
             updates: dict[str, JsonValue] = {}
             if definition.model_policy.temperature is not None:
                 updates["temperature"] = definition.model_policy.temperature
             if definition.model_policy.max_output_tokens is not None:
-                updates["max_output_tokens"] = (
-                    definition.model_policy.max_output_tokens
-                )
+                updates["max_output_tokens"] = definition.model_policy.max_output_tokens
             if updates:
                 model_config = model_config.model_copy(update=updates)
         return model_config
@@ -616,5 +697,6 @@ class AgentsService(AgentRuntimePort):
         tools.restrict(selection)
         if definition is not None and definition.tool_policy.disabled:
             tools.exclude(list(definition.tool_policy.disabled))
+
 
 __all__ = ["AgentsService"]

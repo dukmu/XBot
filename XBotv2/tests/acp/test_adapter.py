@@ -31,7 +31,7 @@ from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.interactions.api.contracts import CLIENT_EVENTS
 from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.usage.api.service import USAGE
-from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import (
     ToolTiming,
@@ -193,15 +193,16 @@ class FakeSessions:
                     host.interaction_responses.append(("permission" if isinstance(resolution, Allowed) else "user_input", (request_id, resolution)))
                 def cancel(self, *args, **kwargs):
                     host.interaction_responses.append(("cancel", args))
+            self.scope.provide(ARCHIVE, self)
             self.scope.provide(AGENT_LOOP, Loop())
             self.scope.provide(THREAD_EVENTS, Events())
             self.scope.provide(CLIENT_EVENTS, Clients())
             self.scope.provide(USAGE, SimpleNamespace(snapshot=lambda: UsageSnapshot()))
-            self.scope.provide(LOOP_STATE, SimpleNamespace(session=SimpleNamespace(key=SessionKey(session_id, "main")), metadata=SimpleNamespace(value=ThreadMetadata(runtime_selection=_selection(), workspace_root=workspace)), history=SimpleNamespace(snapshot=lambda: tuple(self.messages))))
+            self.scope.provide(LOOP_STATE, SimpleNamespace(session=SimpleNamespace(key=SessionKey(session_id, "main"), session_id=session_id, thread_id="main"), metadata=SimpleNamespace(value=ThreadMetadata(runtime_selection=_selection(), workspace_root=workspace)), history=SimpleNamespace(snapshot=lambda: tuple(self.messages))))
             await self.scope.start()
         return self.scope
 
-    def message_page(self, session_id, thread_id, *, cursor=None, limit=None):
+    async def message_page(self, session_id, thread_id, *, cursor=None, limit=None):
         return HistoryPage(items=tuple(self.messages), older_cursor=None)
 
     async def list_sessions(self):
@@ -304,7 +305,7 @@ def _agent(tmp_path, events: list[dict[str, Any]]) -> tuple[XBotACPAgent, FakeCo
     sessions = FakeSessions(events)
     agent = XBotACPAgent(
         sessions=sessions,
-        persistence=sessions,
+        archive=sessions,
         provider_name="default",
         no_plugins=True,
     )
@@ -469,7 +470,7 @@ async def test_official_sdk_jsonrpc_prompt_flow(tmp_path) -> None:
     ])
     agent = XBotACPAgent(
         sessions=host,
-        persistence=host,
+        archive=host,
         provider_name="default",
         no_plugins=False,
     )
@@ -592,7 +593,7 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             session.session_id,
             str(workspace),
         )
-        forked_messages = context.require(PERSISTENCE).messages(forked.session_id, "main")
+        forked_messages = await context.require(ARCHIVE).surface(forked.session_id, "main")
     finally:
         await context.destroy()
 
@@ -626,7 +627,7 @@ async def test_prompt_is_released_when_the_session_stream_ends() -> None:
             del session_id, thread_id
             return ThreadSummary()
 
-    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), archive=None, provider_name="default")
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
 
@@ -684,7 +685,7 @@ async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -
         async def aclose(self):
             self.closed = True
 
-    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), archive=None, provider_name="default")
     agent.connection = FailingConnection()
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
@@ -723,7 +724,7 @@ async def test_cancelled_event_forwarding_closes_stream_and_releases_prompt() ->
         async def aclose(self):
             self.closed = True
 
-    agent = XBotACPAgent(sessions=Sessions(), persistence=None, provider_name="default")
+    agent = XBotACPAgent(sessions=Sessions(), archive=None, provider_name="default")
     prompt = ActivePrompt("acp:s", ACPEventMapper(context_size=4096), asyncio.Event())
     agent._active_prompts["s"] = prompt
     events = BlockingSubscription()

@@ -12,9 +12,7 @@ _IDENTIFIER = re.compile(r"^[A-Za-z0-9._-]+$")
 
 def _identifier(name: str, value: str) -> str:
     if not value or value in {".", ".."} or not _IDENTIFIER.fullmatch(value):
-        raise ValueError(
-            f"{name} must use only letters, numbers, '.', '_', or '-'"
-        )
+        raise ValueError(f"{name} must use only letters, numbers, '.', '_', or '-'")
     return value
 
 
@@ -64,6 +62,10 @@ class SessionPaths:
         return self.runtime.sessions_dir / self.session_id
 
     @property
+    def database_file(self) -> Path:
+        return self.root / "state.sqlite3"
+
+    @property
     def config_file(self) -> Path:
         return self.root / "config.yaml"
 
@@ -99,31 +101,15 @@ class ThreadPaths:
         return self.session.threads_dir / self.thread_id
 
     @property
-    def state_dir(self) -> Path:
-        return self.root / "state"
-
-    @property
-    def messages_file(self) -> Path:
-        return self.state_dir / "messages.jsonl"
-
-    @property
-    def inbox_file(self) -> Path:
-        return self.state_dir / "inbox.jsonl"
-
-    @property
-    def plugin_state_dir(self) -> Path:
-        return self.state_dir / "plugin_state"
-
-    @property
-    def plugin_state_file(self) -> Path:
-        return self.plugin_state_dir / "state.json"
+    def rollout_file(self) -> Path:
+        return self.root / "rollout.jsonl"
 
     @property
     def artifacts_dir(self) -> Path:
-        return self.state_dir / "artifacts"
+        return self.session.root / "objects"
 
     def artifact_dir(self, kind: ArtifactKind) -> Path:
-        return self.artifacts_dir / kind.value
+        return self.artifacts_dir
 
     def artifact_file(self, artifact_id: str) -> Path:
         """Resolve one validated logical artifact id to its physical file."""
@@ -135,14 +121,8 @@ class ThreadPaths:
             kind = ArtifactKind(category)
         except ValueError as exc:
             raise ValueError(f"Unknown artifact kind: {category!r}") from exc
-        if (
-            not filename
-            or filename in {".", ".."}
-            or Path(filename).name != filename
-        ):
+        if not filename or filename in {".", ".."} or Path(filename).name != filename:
             raise ValueError(f"Invalid artifact file name: {filename!r}")
-        return self.artifact_dir(kind) / filename
-
-    @property
-    def metadata_file(self) -> Path:
-        return self.root / "thread.json"
+        if not re.fullmatch(r"[a-f0-9]{64}(?:\.[A-Za-z0-9._-]+)?", filename):
+            raise ValueError("Artifact object identity must contain its SHA-256")
+        return self.artifacts_dir / filename.split(".", 1)[0]

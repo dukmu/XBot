@@ -472,12 +472,11 @@ async def test_resume_uses_saved_workspace_and_rejects_explicit_conflict(tmp_pat
                     break
         await events.aclose()
         await sessions.close_session("workspace-owner")
-        metadata_file = paths.session("workspace-owner").thread("main").metadata_file
-        before = metadata_file.read_bytes()
+        before = await sessions.session_summary("workspace-owner")
         with pytest.raises(OperationError) as conflict:
             await sessions.open(OpenSession("workspace-owner", "main", str(other), None, "resume", True))
         assert conflict.value.code == "workspace_conflict"
-        assert metadata_file.read_bytes() == before
+        assert await sessions.session_summary("workspace-owner") == before
         resumed = await sessions.open(OpenSession("workspace-owner", "main", None, None, "resume", True, model_override=MockLLM()))
         assert resumed.require(THREAD_INFO).workspace_root == workspace
         with pytest.raises(OperationError) as conflict:

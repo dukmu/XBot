@@ -38,6 +38,8 @@ class ImageRef(BaseModel):
 
 
 class ArtifactStorePort(Protocol):
+    async def export_file(self, artifact: ArtifactRef, destination) -> None: ...
+    async def import_file(self, source, artifact: ArtifactRef) -> None: ...
     def put(
         self,
         kind: ArtifactKind,

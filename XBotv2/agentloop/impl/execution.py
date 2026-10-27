@@ -11,8 +11,19 @@ from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.agentloop.api.contracts import Claimed, Consumed, Inserted, HumanInput, InboxItem
-from XBotv2.agentloop.api.outputs import LoopError, LoopTurnStarted, LoopTurnEnded, TurnFinished
+from XBotv2.agentloop.api.contracts import (
+    Claimed,
+    Consumed,
+    Inserted,
+    HumanInput,
+    InboxItem,
+)
+from XBotv2.agentloop.api.outputs import (
+    LoopError,
+    LoopTurnStarted,
+    LoopTurnEnded,
+    TurnFinished,
+)
 from XBotv2.agentloop.api.events import RUNTIME_EVENT
 from xcore.api.context import Context
 from XBotv2.agentloop.impl.engine import Engine, _UNCHANGED, _Unchanged
@@ -24,14 +35,27 @@ from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.agentloop.api.events import RuntimeEvent
 from XBotv2.core.api.artifacts import ArtifactRef, ImageRef, ArtifactKind
 from XBotv2.core.api.errors import OperationError
-from XBotv2.core.api.domain import EventScope, InboxTarget, SessionScope, TurnId, TurnScope, ReasoningGenerationMode
+from XBotv2.core.api.domain import (
+    EventScope,
+    InboxTarget,
+    SessionScope,
+    TurnId,
+    TurnScope,
+    ReasoningGenerationMode,
+)
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.agentloop.api.events import Events, ObserveInbox
 from XBotv2.core.api.timing import conversation_stats
 from XBotv2.core.api.history import HistoryPage
+from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.interactions.api.contracts import InteractionRequest, InteractionResolution
-from XBotv2.session.api.contracts import HISTORY_CHANGED, HistoryChanged, SessionEvent, SessionKey
+from XBotv2.session.api.contracts import (
+    HISTORY_CHANGED,
+    HistoryChanged,
+    SessionEvent,
+    SessionKey,
+)
 from XBotv2.agentloop.api.models import HistoryMutation, SessionStatus, PendingInputData
 from XBotv2.session.api.events import (
     AgentConfiguredEvent,
@@ -43,11 +67,22 @@ from XBotv2.session.api.events import (
     QueueReplacedEvent,
 )
 from XBotv2.session.api.records import InputRecordPayload
-from XBotv2.session.api.records import conversation_replay, project_message, project_human_input
+from XBotv2.session.api.records import (
+    conversation_replay,
+    project_message,
+    project_human_input,
+)
 
 
-class SessionBusy(RuntimeError):
+class SessionBusy(OperationError):
     """The live session cannot accept the requested concurrent operation."""
+
+    def __init__(self, session_id: str) -> None:
+        super().__init__(
+            "thread_busy",
+            f"Cannot start a turn in session {session_id!r} while a turn is active.",
+            retryable=True,
+        )
 
 
 def require_idle(ctx: "AgentLoop", action: str) -> None:
@@ -133,7 +168,7 @@ class AgentLoop:
             yield
             return
         require_idle(self, action)
-        async with self._turn_lock:
+        async with self._submission_lock, self._turn_lock:
             self._idle_owner = current
             try:
                 yield
@@ -149,21 +184,28 @@ class AgentLoop:
         async with self.idle(f"run {operation.name!r}"):
             return await dispatch_operation(self._context, operation, request)
 
-    def configure(self, *, model_client: ModelPort, max_iterations: int | None | _Unchanged = _UNCHANGED) -> None:
+    def configure(
+        self,
+        *,
+        model_client: ModelPort,
+        max_iterations: int | None | _Unchanged = _UNCHANGED,
+    ) -> None:
         self._engine.configure(model_client=model_client, max_iterations=max_iterations)
 
     async def submit_input(self, item, *, wake):
-        if not self._context.is_active or self._context.require(LOOP_STATE).session.status != "active":
+        if (
+            not self._context.is_active
+            or self._context.require(LOOP_STATE).session.status != "active"
+        ):
             raise OperationError("session_closing", "Thread is closing")
         await self._engine.submit_input(item, wake=wake)
         self.touch()
 
     @property
     def provider_name(self) -> str:
-        return (
-            self._context.require(LOOP_STATE).metadata.value
-            .runtime_selection.model.route.provider
-        )
+        return self._context.require(
+            LOOP_STATE
+        ).metadata.value.runtime_selection.model.route.provider
 
     @property
     def workspace_root(self) -> str:
@@ -184,24 +226,30 @@ class AgentLoop:
 
     async def _on_history_changed(self, event: HistoryChanged) -> None:
         """Project history replacement (``/clear``, ``/undo``) as an event."""
-        page = self._context.thread_persistence.history.page_transcript(limit=160)
-        self.publish_event(HistoryUpdatedEvent(
-            operation=event.operation,
-            mutation=HistoryMutation(
-                removed_turns=event.turns,
-                history=HistoryPage(
-                    items=conversation_replay(page.items),
-                    older_cursor=page.older_cursor,
+        page = await self._context.require(ARCHIVE).message_page(
+            self.session_id, self.thread_id, limit=160
+        )
+        self.publish_event(
+            HistoryUpdatedEvent(
+                operation=event.operation,
+                mutation=HistoryMutation(
+                    removed_turns=event.turns,
+                    history=HistoryPage(
+                        items=conversation_replay(page.items),
+                        older_cursor=page.older_cursor,
+                    ),
+                    stats=conversation_stats(event.messages),
                 ),
-                stats=conversation_stats(event.messages),
-            ),
-        ))
+            )
+        )
 
     async def _on_agent_configured(self, event: AgentConfigured) -> None:
         """Publish the effective selection without flattening its fields."""
-        self.publish_event(AgentConfiguredEvent(
-            runtime_selection=event.runtime_selection,
-        ))
+        self.publish_event(
+            AgentConfiguredEvent(
+                runtime_selection=event.runtime_selection,
+            )
+        )
 
     def publish_event(
         self,
@@ -223,14 +271,14 @@ class AgentLoop:
         # queue projection gives UI clients the current editable snapshot.
         self.publish_event(splice_event)
         if isinstance(change, Inserted):
-            self.publish_event(InputAcceptedEvent(
-                message_ids=(change.item.id,),
-                target=change.item.target,
-            ))
-        if isinstance(change, Claimed):
-            claimed = InputClaimedEvent(
-                message_ids=change.ids
+            self.publish_event(
+                InputAcceptedEvent(
+                    message_ids=(change.item.id,),
+                    target=change.item.target,
+                )
             )
+        if isinstance(change, Claimed):
+            claimed = InputClaimedEvent(message_ids=change.ids)
             if self._active_router is not None:
                 self._active_router.emit(claimed)
             else:
@@ -242,12 +290,12 @@ class AgentLoop:
                     isinstance(message, (HumanInputMessage, RuntimeNoticeMessage))
                     and message.id in consumed_ids
                 ):
-                    self.publish_event(MessagePublishedEvent(
-                        record=InputRecordPayload(project_message(message))
-                    ))
-            consumed = InputConsumedEvent(
-                message_ids=change.ids
-            )
+                    self.publish_event(
+                        MessagePublishedEvent(
+                            record=InputRecordPayload(project_message(message))
+                        )
+                    )
+            consumed = InputConsumedEvent(message_ids=change.ids)
             if self._active_router is not None:
                 self._active_router.emit(consumed)
             else:
@@ -258,7 +306,9 @@ class AgentLoop:
         self.publish_event(event.event)
 
     def pending_inputs(self) -> tuple[PendingInputData, ...]:
-        return tuple(_pending_input_snapshot(item) for item in self._engine.pending_inputs)
+        return tuple(
+            _pending_input_snapshot(item) for item in self._engine.pending_inputs
+        )
 
     async def update_pending_input(
         self,
@@ -307,47 +357,54 @@ class AgentLoop:
                     "session_closing",
                     f"Cannot accept input while the session is {status}.",
                 )
-            if not self._turn_lock.locked():
-                try:
-                    await start_turn(
-                        self,
-                        item=InboxItem(
-                            id=request_id or f"input-{uuid.uuid4().hex}",
-                            target=InboxTarget.NEXT_TURN,
-                            input=user_input,
-                        ),
-                        request_id=request_id,
-                    )
-                except SessionBusy:
-                    pass
-                else:
-                    self.touch()
-                    return
-            queued = delivery == "queue"
-            await self._engine.submit_input(
-                InboxItem(
-                    id=request_id or f"input-{uuid.uuid4().hex}",
-                    target=(
-                        InboxTarget.NEXT_TURN
-                        if queued
-                        else InboxTarget.NEXT_STEP
-                    ),
-                    input=user_input,
-                ),
-                wake=True,
+            busy = self._turn_lock.locked()
+            item = InboxItem(
+                id=request_id or f"input-{uuid.uuid4().hex}",
+                target=InboxTarget.NEXT_STEP
+                if busy and delivery == "steer"
+                else InboxTarget.NEXT_TURN,
+                input=user_input,
             )
+            # Durable acceptance happens in this caller before any model task
+            # or successful HTTP response can escape. Retry keeps the same ID.
+            if not await self._engine.submit_input(item, wake=False):
+                return
+            if not busy:
+                await start_turn(self, item=None, request_id=request_id)
+            if self._engine.pending_input_count:
+                self._request_wakeup()
             self.touch()
 
     async def submit_message(self, request) -> None:
-        if not self._context.is_active or self._context.require(LOOP_STATE).session.status != "active":
+        if (
+            not self._context.is_active
+            or self._context.require(LOOP_STATE).session.status != "active"
+        ):
             raise OperationError("session_closing", "Thread is closing")
         images, attachments = [], []
         for item in request.images:
-            ref = self._context.artifacts.put(ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type)
-            images.append(ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size))
+            ref = self._context.artifacts.put(
+                ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type
+            )
+            images.append(
+                ImageRef(artifact_id=ref.id, media_type=ref.media_type, size=ref.size)
+            )
         for item in request.attachments:
-            attachments.append(self._context.artifacts.put(ArtifactKind.ATTACHMENT, _upload_bytes(item.data), media_type=item.media_type, name=item.name))
-        await self.send_message(request.content, request.request_id, delivery=request.delivery, images=images, artifacts=attachments)
+            attachments.append(
+                self._context.artifacts.put(
+                    ArtifactKind.ATTACHMENT,
+                    _upload_bytes(item.data),
+                    media_type=item.media_type,
+                    name=item.name,
+                )
+            )
+        await self.send_message(
+            request.content,
+            request.request_id,
+            delivery=request.delivery,
+            images=images,
+            artifacts=attachments,
+        )
 
     async def clear_history(self, *, history_limit=None):
         return await self._change_history(None, history_limit)
@@ -359,20 +416,34 @@ class AgentLoop:
         async with self.idle("change history"):
             history = self._context.require(LOOP_STATE).history
             if count is None:
-                removed = sum(isinstance(message, HumanInputMessage) for message in history)
-                history.clear()
+                removed = sum(
+                    isinstance(message, HumanInputMessage) for message in history
+                )
+                await history.clear()
                 operation = "clear"
             else:
                 try:
-                    history.undo(count)
+                    await history.undo(count)
                 except ValueError as exc:
                     raise OperationError("invalid_undo_count", str(exc)) from exc
                 removed = count
                 operation = "undo"
-            await self._context.emit(HISTORY_CHANGED, HistoryChanged(history.snapshot(), operation, removed))
+            await self._context.emit(
+                HISTORY_CHANGED, HistoryChanged(history.snapshot(), operation, removed)
+            )
         history = self._context.require(LOOP_STATE).history
-        page = HistoryPage(items=history.snapshot(), older_cursor=None) if limit is None else history.page(limit=limit)
-        return HistoryMutation(removed_turns=removed, history=HistoryPage(items=conversation_replay(page.items), older_cursor=page.older_cursor), stats=conversation_stats(history.snapshot()))
+        page = (
+            HistoryPage(items=history.snapshot(), older_cursor=None)
+            if limit is None
+            else history.page(limit=limit)
+        )
+        return HistoryMutation(
+            removed_turns=removed,
+            history=HistoryPage(
+                items=conversation_replay(page.items), older_cursor=page.older_cursor
+            ),
+            stats=conversation_stats(history.snapshot()),
+        )
 
     async def interrupt(self) -> bool:
         task = self._turn_task
@@ -398,6 +469,8 @@ class AgentLoop:
                 return
             self._wakeup_requested = False
             await start_turn(self, item=None)
+            if self._engine.pending_input_count:
+                self._wakeup_requested = True
             task = self._turn_task
             if task is not None:
                 await task
@@ -420,22 +493,43 @@ class AgentLoop:
         metadata = state.metadata.value
         selection = metadata.runtime_selection
         mode = selection.model.generation.mode
-        return SessionStatus(session_id=self.session_id, thread_id=self.thread_id,
-            workspace_root=metadata.workspace_root, agent=selection.agent_name,
-            provider=selection.model.route.provider, model=selection.model.route.model,
+        return SessionStatus(
+            session_id=self.session_id,
+            thread_id=self.thread_id,
+            workspace_root=metadata.workspace_root,
+            agent=selection.agent_name,
+            provider=selection.model.route.provider,
+            model=selection.model.route.model,
             model_mode=mode.effort if isinstance(mode, ReasoningGenerationMode) else "",
-            context_window=selection.model.context_window, title=metadata.title,
-            status=state.session.status, resumed=state.resumed, turn_count=state.turn_count,
-            message_count=len(state.history), pending_inputs=self.pending_input_count)
+            context_window=selection.model.context_window,
+            title=metadata.title,
+            status=state.session.status,
+            resumed=state.resumed,
+            turn_count=state.turn_count,
+            message_count=len(state.history),
+            pending_inputs=self.pending_input_count,
+        )
 
     async def _regenerate_history(self):
         history = self._context.require(LOOP_STATE).history
-        index = next((position for position in range(len(history)-1, -1, -1) if isinstance(history[position], HumanInputMessage)), None)
+        index = next(
+            (
+                position
+                for position in range(len(history) - 1, -1, -1)
+                if isinstance(history[position], HumanInputMessage)
+            ),
+            None,
+        )
         if index is None:
-            raise OperationError("nothing_to_regenerate", "History has no human-authored turn to regenerate.")
+            raise OperationError(
+                "nothing_to_regenerate",
+                "History has no human-authored turn to regenerate.",
+            )
         message = history[index]
-        history.replace_range(index, len(history), (), operation="regenerate")
-        await self._context.emit(HISTORY_CHANGED, HistoryChanged(history.snapshot(), "regenerate", 1))
+        await history.replace_range(index, len(history), (), operation="regenerate")
+        await self._context.emit(
+            HISTORY_CHANGED, HistoryChanged(history.snapshot(), "regenerate", 1)
+        )
         return message
 
     async def regenerate(self, request_id: str) -> None:
@@ -539,10 +633,9 @@ async def _execute_turn(
 ) -> None:
     """Run one turn independently of any transport response consumer."""
     turn_open = False
+    terminal = None
     try:
-        live_interactive = (
-            runtime.interactive if interactive is None else interactive
-        )
+        live_interactive = runtime.interactive if interactive is None else interactive
         interaction_sink = (
             _live_interaction_sink(runtime, router)
             if live_interactive
@@ -561,11 +654,12 @@ async def _execute_turn(
                 async for event in turn_stream:
                     if ready is not None:
                         ready.set()
-                    router.emit(event)
-                    if isinstance(event, LoopTurnStarted):
-                        turn_open = True
-                    elif isinstance(event, LoopTurnEnded):
-                        turn_open = False
+                    if isinstance(event, LoopTurnEnded):
+                        terminal = event
+                    else:
+                        router.emit(event)
+                        if isinstance(event, LoopTurnStarted):
+                            turn_open = True
     except asyncio.CancelledError:
         runtime._log.info("session.turn.cancelled", request_id=request_id)
         raise
@@ -575,18 +669,20 @@ async def _execute_turn(
             request_id=request_id,
             error_type=type(exc).__name__,
         )
-        router.emit(LoopError(
-            code="turn_failed",
-            message=str(exc) or type(exc).__name__,
-        ))
+        router.emit(
+            LoopError(
+                code="turn_failed",
+                message=str(exc) or type(exc).__name__,
+            )
+        )
         if turn_open:
             # Only a turn that reached its started boundary receives a
             # lifecycle terminal frame; pre-start failures terminate via the
             # typed error event above.
-            router.emit(LoopTurnEnded(
+            terminal = LoopTurnEnded(
                 turn=runtime._engine.turn_count,
                 outcome=TurnFinished(stop_reason="session_error"),
-            ))
+            )
     finally:
         if ready is not None:
             ready.set()
@@ -595,6 +691,8 @@ async def _execute_turn(
         runtime._turn_task = None
         runtime._turn_lock.release()
         runtime.touch()
+        if terminal is not None:
+            router.emit(terminal)
         if runtime._wakeup_requested and runtime.wakeup_task is None:
             runtime._request_wakeup()
 
@@ -619,14 +717,16 @@ async def start_turn(
         router = TurnEventRouter(runtime, TurnId(uuid.uuid4().hex))
         runtime._active_router = router
         ready = asyncio.Event()
-        task = asyncio.create_task(_execute_turn(
-            runtime,
-            router,
-            item=item,
-            request_id=request_id,
-            interactive=interactive,
-            ready=ready,
-        ))
+        task = asyncio.create_task(
+            _execute_turn(
+                runtime,
+                router,
+                item=item,
+                request_id=request_id,
+                interactive=interactive,
+                ready=ready,
+            )
+        )
     except BaseException:
         runtime._turn_lock.release()
         raise
@@ -658,24 +758,24 @@ async def start_regenerate_turn(
         except BaseException:
             runtime._turn_lock.release()
             raise
-        task = asyncio.create_task(_execute_turn(
-            runtime,
-            router,
-            item=InboxItem(
-                id=request_id or f"input-{uuid.uuid4().hex}",
-                target=InboxTarget.NEXT_TURN,
-                input=HumanInput(
-                    content=record.content,
-                    images=record.images,
-                    artifacts=record.artifacts,
+        task = asyncio.create_task(
+            _execute_turn(
+                runtime,
+                router,
+                item=InboxItem(
+                    id=request_id or f"input-{uuid.uuid4().hex}",
+                    target=InboxTarget.NEXT_TURN,
+                    input=HumanInput(
+                        content=record.content,
+                        images=record.images,
+                        artifacts=record.artifacts,
+                    ),
                 ),
-            ),
-            request_id=request_id,
-            interactive=interactive,
-        ))
+                request_id=request_id,
+                interactive=interactive,
+            )
+        )
         runtime._turn_task = task
-
-
 
 
 def _upload_bytes(value):

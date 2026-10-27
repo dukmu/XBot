@@ -1,143 +1,299 @@
-"""Provide thread storage and subscribe to runtime persistence boundaries."""
+"""Process-owned storage backend; no conversation or session-domain policy."""
 
 from __future__ import annotations
-from XBotv2.persistence.impl.client_http import build_router as build_client_router
-from XBotv2.server.api.contracts import contribute_router
-
-from XBotv2.agentloop.api.state import LOOP_STATE
-from pydantic import JsonValue
-from xcore.api.context import Context
-from xcore.api.state import StateService
-from XBotv2.agentloop.api.events import Events
-from XBotv2.core.api.metadata import (
-    THREAD_METADATA_CHANGED,
-    THREAD_METADATA_INITIALIZED,
-    ThreadMetadataChanged,
-    ThreadMetadataInitialized,
-)
-from XBotv2.session.api.contracts import SESSION_INFO, THREAD_INFO
-from XBotv2.persistence.api.contracts import PERSISTENCE, THREAD_PERSISTENCE
+import asyncio
+from collections import Counter
+from contextlib import asynccontextmanager
+from pydantic import BaseModel, ConfigDict, Field
+from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.persistence.impl.database import DatabaseWorker, StorageLimits
+from XBotv2.persistence.impl.schema import COMMON_SCHEMA
+from XBotv2.persistence.impl.state import SqlState
+from XBotv2.persistence.impl.stream import Stream, file_io, sync_parents
 from XBotv2.persistence.impl.artifacts import ArtifactStore
 from XBotv2.persistence.impl.session_lock import acquire_session
-from XBotv2.persistence.impl.store import (
-    DeferredThreadMetadataStore,
-    ThreadMetadataStore,
-    ThreadPersistence,
-)
 
 
-def _materialize_after_first_turn(persistence: ThreadPersistence):
-    """Flush deferred metadata once the first committed turn makes it durable."""
-
-    async def _hook(_event: str, *_args: object) -> None:
-        persistence.materialize()
-
-    return _hook
-
-
-def _save_metadata(store: ThreadMetadataStore | DeferredThreadMetadataStore):
-    """Durable subscriber of the metadata fact: write every accepted change."""
-
-    def _save(change: ThreadMetadataChanged | ThreadMetadataInitialized) -> None:
-        store.save(change.current)
-
-    return _save
+class PersistenceConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+    queue_operations: int = Field(default=64, ge=1)
+    queue_bytes: int = Field(default=16 * 1024 * 1024, ge=4096)
+    replay_records: int = Field(default=128, ge=1, le=1000)
+    replay_bytes: int = Field(default=1024 * 1024, ge=4096)
+    record_bytes: int = Field(default=8 * 1024 * 1024, ge=4096)
+    kv_bytes: int = Field(default=64 * 1024, ge=1024)
 
 
-class ThreadPersistenceComponent:
-    inject = [LOOP_STATE, "thread_persistence", "runtime_log"]
-    name = "xbot.persistence"
-
-    async def apply(
-        self, ctx: Context, config: dict[str, JsonValue] | None = None
-    ) -> None:
-        state = ctx.require(LOOP_STATE)
-        persistence = ctx.thread_persistence
-        ctx.dispose(persistence.materialize)
-        if state.resumed is False and isinstance(
-            persistence.metadata, DeferredThreadMetadataStore
-        ):
-            ctx.on(Events.TURN_END, _materialize_after_first_turn(persistence))
-        # Durability subscribes to the metadata fact, not to the value holder:
-        # the state announces, persistence reacts. The initial load happens
-        # before the listener is registered, so hydration never rewrites the
-        # file it just read; every later change is saved by the listener.
-        save_metadata = _save_metadata(persistence.metadata)
-        ctx.on(THREAD_METADATA_CHANGED, save_metadata)
-        ctx.on(THREAD_METADATA_INITIALIZED, save_metadata)
-
-        ctx.runtime_log.bind("persistence").info(
-            "persistence.attached",
-            session_id=persistence.session_id,
-            thread_id=persistence.thread_id,
-            history_messages=len(state.messages),
-            resumed=state.resumed,
-        )
-
-
-async def mount_thread_persistence(ctx: Context) -> None:
-    await ThreadPersistenceComponent().apply(ctx)
-
-
-from XBotv2.persistence.impl.archive import ArchiveReads
-
-
-from XBotv2.persistence.impl.session_files import fork_persisted_session, delete_persisted_session
-
-class PersistenceResources(ArchiveReads):
-    def __init__(self, paths, runtime_log):
+class PersistenceResources:
+    def __init__(self, paths, runtime_log, config, owner):
         self._paths = paths
         self._log = runtime_log
+        self._owner = owner
+        self.limits = StorageLimits(**config.model_dump())
+        if (
+            self.limits.record_bytes + self.limits.replay_bytes
+            > self.limits.queue_bytes
+        ):
+            raise ValueError(
+                "Replay and record byte budgets must fit the database queue"
+            )
+        self.worker = DatabaseWorker(self.limits)
+        self._operations = Counter()
+        self._uses = {}
+        self._session_draining = set()
+        self._locks = {}
+        self._claims = {}
+        self._preparations = {}
+        self._closing = False
+        self._draining = False
 
-    def fork_session(self, session_id):
-        return fork_persisted_session(self._paths, session_id)
+    def _admit(self, session_id=None):
+        if (
+            not self._owner.is_active
+            or self._closing
+            or self._draining
+            or session_id in self._session_draining
+        ):
+            raise RuntimeError("Persistence owner is closing")
 
-    def delete_session(self, session_id):
-        delete_persisted_session(self._paths, session_id)
+    @asynccontextmanager
+    async def _track(self, session_id):
+        key = (asyncio.current_task(), session_id)
+        token = object()
+        done = asyncio.Event()
+        self._operations[key] += 1
+        self._uses[token] = (key[0], session_id, done)
+        try:
+            yield
+        finally:
+            self._operations[key] -= 1
+            if not self._operations[key]:
+                del self._operations[key]
+            self._uses.pop(token, None)
+            done.set()
 
-    def thread(self, session_paths, *, thread_id):
-        return ThreadPersistence.open(session_paths, thread_id=thread_id)
+    @asynccontextmanager
+    async def use(self, session_id=None):
+        self._admit(session_id)
+        async with self._track(session_id):
+            yield
 
-    def artifacts(self, thread_paths):
-        return ArtifactStore(thread_paths, self._log)
+    async def drain(self, session_id=None):
+        if session_id is not None:
+            self._session_draining.add(session_id)
+        else:
+            self._draining = True
+        accepted = [
+            (task, done)
+            for task, sid, done in self._uses.values()
+            if (session_id is None or sid == session_id)
+            and task is not asyncio.current_task()
+        ]
+        for task in {task for task, _ in accepted}:
+            task.cancel()
+        if accepted:
+            await asyncio.gather(*(done.wait() for _, done in accepted))
 
-    def acquire(self, session_paths):
-        return acquire_session(session_paths.root, label=session_paths.session_id)
+    @asynccontextmanager
+    async def handle_use(self, session_id, binding, *, write=False):
+        existing = self._operations[(asyncio.current_task(), session_id)] > 0
+        if self._closing or (
+            (self._draining or session_id in self._session_draining) and not existing
+        ):
+            raise RuntimeError("Storage scope is closing")
+        if session_id is None:
+            self._admit()
+        elif write:
+            current = self._claims.get(self.paths(session_id).root)
+            if binding is None or current is not binding:
+                raise RuntimeError("Storage writer lease is no longer owned")
+        elif not self._owner.is_active and binding is None and not existing:
+            raise RuntimeError("Persistence owner is closing")
+        async with self._track(session_id):
+            yield
+
+    @property
+    def record_bytes(self):
+        return self.limits.record_bytes
+
+    def paths(self, session_id):
+        prepared = self._preparations.get(session_id)
+        if prepared is not None:
+            if prepared[1] is not asyncio.current_task():
+                raise RuntimeError("Storage target is still being prepared")
+            return prepared[0]
+        return self._paths.session(session_id)
+
+    def database(self, session_id, *, owner, tables):
+        self._admit(session_id)
+        return SqlState(
+            self, self.paths(session_id).database_file, session_id=session_id
+        ).domain(owner, tables)
+
+    def state(self, session_id=None, thread_id=""):
+        self._admit(session_id)
+        path = (
+            self.paths(session_id).database_file
+            if session_id is not None
+            else self._paths.data_dir / "plugin-state.sqlite3"
+        )
+        return SqlState(self, path, thread_id, session_id=session_id)
+
+    async def database_exists(self, session_id):
+        async with self.use(session_id):
+            return self.paths(session_id).database_file.exists()
+
+    async def materialize_database(self, path):
+        if not path.exists():
+
+            def create(c):
+                c.executescript("PRAGMA journal_mode=WAL;" + COMMON_SCHEMA)
+
+            await self.worker.call(path, create, create=True)
+            await file_io(sync_parents, path.parent, self._paths.data_dir.parent)
+
+    def rollout(self, session_id, thread_id, *, domain, project):
+        self._admit(session_id)
+        return Stream(
+            self,
+            self.paths(session_id).thread(thread_id),
+            domain=domain,
+            project=project,
+        )
+
+    @asynccontextmanager
+    async def operation(self, paths, *, write=False, binding=None):
+        async with self.handle_use(paths.session_id, binding, write=write):
+            key = (paths.session.root, paths.thread_id)
+            lock, count = self._locks.get(key, (asyncio.Lock(), 0))
+            self._locks[key] = (lock, count + 1)
+            try:
+                async with lock:
+                    yield
+            finally:
+                lock, count = self._locks[key]
+                if count == 1:
+                    del self._locks[key]
+                else:
+                    self._locks[key] = (lock, count - 1)
+
+    def require_writer(self, session):
+        if session.root not in self._claims:
+            raise RuntimeError("Storage mutations require their actual owner claim")
+
+    def acquire(self, session_id):
+        self._admit(session_id)
+        paths = self.paths(session_id)
+        claim = acquire_session(paths.root, label=session_id)
+        resources = self
+
+        class Ownership:
+            def release(self):
+                if resources._claims.get(paths.root) is self:
+                    resources._claims.pop(paths.root)
+                claim.release()
+                resources._session_draining.discard(session_id)
+
+        owner = Ownership()
+        self._claims[paths.root] = owner
+        return owner
+
+    def owns(self, session_id):
+        return self.paths(session_id).root in self._claims
+
+    def artifacts(self, session_id, thread_id):
+        self._admit(session_id)
+        return ArtifactStore(self.paths(session_id).thread(thread_id), self._log)
+
+    async def owners(self, session_id):
+        async with self.use(session_id):
+            path = self.paths(session_id).database_file
+            if not path.exists():
+                return frozenset()
+            return await self.worker.call(
+                path,
+                lambda c: frozenset(
+                    [
+                        row[0]
+                        for row in c.execute(
+                            "SELECT DISTINCT owner FROM persistence_tables"
+                        )
+                    ]
+                    + [
+                        row[0]
+                        for row in c.execute("SELECT DISTINCT namespace FROM plugin_kv")
+                    ]
+                ),
+            )
+
+    def copy_session(self, source_id, target_id):
+        from XBotv2.persistence.impl.session_files import prepare_copy
+
+        return prepare_copy(self, source_id, target_id)
+
+    def prepare_session(self, target_id):
+        from XBotv2.persistence.impl.session_files import prepare_copy
+
+        return prepare_copy(self, None, target_id)
+
+    async def copy_document(self, source_id, target_id, name):
+        from pathlib import Path
+
+        if Path(name).name != name or name in {".", ".."}:
+            raise ValueError("Document name must be a basename")
+        self.require_writer(self.paths(target_id))
+        source = self.paths(source_id).root / name
+        if source.exists():
+            from XBotv2.persistence.api.files import write_bytes_atomic
+
+            await file_io(
+                write_bytes_atomic,
+                self.paths(target_id).root / name,
+                await file_io(source.read_bytes),
+            )
+
+    async def delete_session(self, session_id):
+        from XBotv2.persistence.impl.session_files import delete_persisted_session
+
+        async with self.use(session_id):
+            self.require_writer(self.paths(session_id))
+            await self.drain(session_id)
+            try:
+                await delete_persisted_session(self, session_id)
+            finally:
+                self._session_draining.discard(session_id)
+
+    async def close(self):
+        self._closing = True
+        await self.drain()
+        await self.worker.close()
 
 
-def mount_process(ctx, config):
-    ctx.inject(["server", "sessions", PERSISTENCE], mount_client_http)
-    ctx.provide(PERSISTENCE, PersistenceResources(ctx.runtime_paths, ctx.runtime_log))
-    ctx.set("state", StateService(path=ctx.runtime_paths.data_dir / "state.json"))
+async def mount_process(ctx, config):
+    resources = PersistenceResources(ctx.runtime_paths, ctx.runtime_log, config, ctx)
+    ctx.provide(PERSISTENCE, resources)
+    ctx.set("state", resources.state())
+    remove = ctx.root.pre_stop(resources.drain)
+    ctx.dispose(remove)
+    ctx.dispose(resources.close)
+    from XBotv2.persistence.impl.session_files import cleanup_deletions
 
-mount_process.inject = ("runtime_log", "runtime_paths")
+    await file_io(cleanup_deletions, ctx.runtime_paths)
+
+
+mount_process.inject = ("runtime_paths", "runtime_log")
 mount_process.provide = (PERSISTENCE, "state")
-
-
-def mount_session(ctx, config):
-    info = ctx.require(SESSION_INFO)
-    claim = ctx.require(PERSISTENCE).acquire(ctx.runtime_paths.session(info.session_id))
-    ctx.dispose(claim.release)
-
-mount_session.inject = (PERSISTENCE, SESSION_INFO, "runtime_paths")
-mount_session.provide = ()
+mount_process.Config = PersistenceConfig
 
 
 def mount_thread(ctx, config):
+    from XBotv2.session.api.contracts import THREAD_INFO
+
     info = ctx.require(THREAD_INFO)
-    paths = ctx.runtime_paths.session(info.session_id).thread(info.thread_id)
-    store = ThreadPersistence.create(
-        paths.session, thread_id=info.thread_id,
-        state=StateService(path=paths.plugin_state_file),
-        defer_metadata=not paths.metadata_file.exists(),
+    ctx.set(
+        "artifacts", ctx.require(PERSISTENCE).artifacts(info.session_id, info.thread_id)
     )
-    ctx.provide(THREAD_PERSISTENCE, store)
-    ctx.set("artifacts", ctx.require(PERSISTENCE).artifacts(paths))
-    ctx.inject(ThreadPersistenceComponent.inject, mount_thread_persistence)
-
-mount_thread.inject = (PERSISTENCE, THREAD_INFO, "runtime_paths", "runtime_log")
-mount_thread.provide = (THREAD_PERSISTENCE, "artifacts")
 
 
-async def mount_client_http(ctx):
-    await contribute_router(ctx, owner="xbot.persistence.client-http", router=build_client_router(sessions=ctx.sessions, persistence=ctx.require(PERSISTENCE)))
+mount_thread.inject = (PERSISTENCE, "thread_info")
+mount_thread.provide = ("artifacts",)

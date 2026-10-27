@@ -563,7 +563,8 @@ async def test_compaction_restates_unfinished_tasks_once(
     from XBotv2.core.api.messages import RuntimeNoticeMessage
     from XBotv2.agentloop.api.events import RUNTIME_EVENT
     from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
-    from XBotv2.persistence.impl.store import ThreadPersistence
+    from XBotv2.agentloop.api.storage import ARCHIVE
+    from XBotv2.main import open_runtime
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.models import TaskList
 
@@ -633,12 +634,13 @@ async def test_compaction_restates_unfinished_tasks_once(
     assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
     assert requests
 
-    paths = RuntimePaths.from_data_dir(temp_data_dir)
-    persisted = ThreadPersistence.open(
-        paths.session("todolist-production").thread("main"),
-        thread_id="main",
-    )
-    persisted_transcript = persisted.history.page_transcript(limit=160).items
+    archive_root = await open_runtime(paths=RuntimePaths.from_data_dir(temp_data_dir))
+    try:
+        persisted_transcript = (await archive_root.require(ARCHIVE).message_page(
+            "todolist-production", "main", limit=160
+        )).items
+    finally:
+        await archive_root.close()
     assert sum(
         isinstance(message, RuntimeNoticeMessage)
         and message.source == "todo"

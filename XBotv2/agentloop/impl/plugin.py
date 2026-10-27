@@ -4,6 +4,11 @@ from __future__ import annotations
 from XBotv2.agentloop.impl.client_http import build_router as build_client_router
 from XBotv2.server.api.contracts import contribute_router
 from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.session.api.storage import THREAD_REPOSITORY
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.agentloop.impl.storage import ConversationStore
+from XBotv2.agentloop.impl.archive import ArchiveService
+from XBotv2.agentloop.impl.archive_http import build_router as archive_router
 
 from XBotv2.agentloop.api.contracts import (
     AGENT_LOOP,
@@ -39,30 +44,29 @@ from XBotv2.server.api.contracts import contribute_router
 async def mount_state(ctx: Context) -> None:
     """Create and hydrate the authoritative thread working set and inbox."""
     launch = ctx.thread_info
-    persistence = ctx.get("thread_persistence", strict=False)
+    repository = ctx.require(THREAD_REPOSITORY)
+    store = ConversationStore(
+        ctx.require(PERSISTENCE), launch.session_id, launch.thread_id, repository
+    )
     state = LoopRuntimeState(
-        ctx, key=SessionKey(launch.session_id, launch.thread_id),
+        ctx,
+        key=SessionKey(launch.session_id, launch.thread_id),
         variables=ctx.variables,
     )
-    if persistence is None:
-        pending_inputs = ()
-        inbox_sink = EphemeralInboxSink()
-    else:
-        state.set_history(ConversationHistory(
-            persistence.history.load_surface(), sink=persistence.history,
-        ))
-        state.restore_turn_count(persistence.history.count_turns())
-        state.restore_resumed(persistence.has_persisted_state())
-        stored_metadata = persistence.metadata.load()
-        if stored_metadata is not None:
-            await state.metadata.initialize(stored_metadata)
-        pending_inputs = persistence.inbox.reconcile(
-            persistence.history.committed_input_ids(),
-        )
-        inbox_sink = persistence.inbox
-    ctx.provide(INBOX, AgentInbox(
-        events=ctx, sink=inbox_sink, items=pending_inputs,
-    ))
+    state.set_history(ConversationHistory(sink=store.history))
+    await state.history.synchronize()
+    state.restore_turn_count(await store.history.count_turns())
+    state.restore_resumed(await repository.persisted())
+    pending_inputs = await store.inbox.load()
+    inbox_sink = store.inbox
+    ctx.provide(
+        INBOX,
+        AgentInbox(
+            events=ctx,
+            sink=inbox_sink,
+            items=pending_inputs,
+        ),
+    )
 
 
 def mount_tools(ctx: Context) -> None:
@@ -78,10 +82,15 @@ async def mount_engine(ctx):
     settings = ctx.require(SETTINGS)
     selection = state.metadata.value.runtime_selection
     engine = Engine(
-        model_client=ctx.require(MODEL), tools=ctx.require(TOOLS), events=ctx,
-        state=state, user_identity=settings.user_context(), memory=settings.memory(),
+        model_client=ctx.require(MODEL),
+        tools=ctx.require(TOOLS),
+        events=ctx,
+        state=state,
+        user_identity=settings.user_context(),
+        memory=settings.memory(),
         max_iterations=selection.limits.max_turns,
-        runtime_log=ctx.runtime_log, inbox=ctx.require(INBOX),
+        runtime_log=ctx.runtime_log,
+        inbox=ctx.require(INBOX),
     )
     runner = AgentLoop(_context=ctx, _engine=engine, interactive=ctx.interactive)
     ctx.provide(AGENT_LOOP, runner)
@@ -105,36 +114,75 @@ class ToolsCatalogHandler:
 
     def list_tools(self, _request: EmptyRequest) -> ToolCatalog:
         enabled = set(self._registry.names())
-        return ToolCatalog(tools=tuple(
-            ToolDescription(
-                name=entry.tool.name,
-                registered_name=entry.registered_name,
-                namespace=entry.namespace,
-                description=entry.tool.description,
-                parameters=dict(entry.tool.parameters),
-                timeout_seconds=entry.timeout_seconds,
+        return ToolCatalog(
+            tools=tuple(
+                ToolDescription(
+                    name=entry.tool.name,
+                    registered_name=entry.registered_name,
+                    namespace=entry.namespace,
+                    description=entry.tool.description,
+                    parameters=dict(entry.tool.parameters),
+                    timeout_seconds=entry.timeout_seconds,
+                )
+                for entry in self._registry.registered_entries()
+                if entry.model_visible and entry.registered_name in enabled
             )
-            for entry in self._registry.registered_entries()
-            if entry.model_visible and entry.registered_name in enabled
-        ))
+        )
 
 
 def mount_thread(ctx, config):
     mount_tools(ctx)
-    ctx.inject(["thread_info", "variables", "thread_persistence"], mount_state)
-    ctx.inject([AGENT_RUNTIME, LOOP_STATE, INBOX, TOOLS, SETTINGS, MODEL, PERMISSIONS, THREAD_EVENTS, "interactive", COMMANDS], mount_engine)
+    ctx.inject(
+        ["thread_info", "variables", THREAD_REPOSITORY, PERSISTENCE], mount_state
+    )
+    ctx.inject(
+        [
+            AGENT_RUNTIME,
+            LOOP_STATE,
+            INBOX,
+            TOOLS,
+            SETTINGS,
+            MODEL,
+            PERMISSIONS,
+            THREAD_EVENTS,
+            "interactive",
+            COMMANDS,
+        ],
+        mount_engine,
+    )
+
 
 mount_thread.inject = ("runtime_log", "thread_info")
 mount_thread.provide = (TOOLS, INBOX, LOOP_STATE, AGENT_LOOP)
 
 
 def mount_process(ctx, config):
+    archive = ArchiveService(ctx.require(PERSISTENCE), ctx.sessions)
+    ctx.provide(ARCHIVE, archive)
+    from XBotv2.session.api.storage import FORK_COPY_STATE, FORK_FINALIZE
+
+    ctx.on(FORK_COPY_STATE, archive.copy_state)
+    ctx.on(FORK_FINALIZE, archive.finalize_fork)
+    ctx.inject(["server", ARCHIVE], mount_archive_http)
     ctx.inject(["server", "sessions", PERSISTENCE], mount_client_http)
     ctx.inject(["server", "sessions"], mount_http)
 
-mount_process.inject = ()
-mount_process.provide = ()
+
+mount_process.inject = (PERSISTENCE, "sessions")
+mount_process.provide = (ARCHIVE,)
 
 
 async def mount_client_http(ctx):
-    await contribute_router(ctx, owner="xbot.agentloop.client-http", router=build_client_router(sessions=ctx.sessions, persistence=ctx.require(PERSISTENCE)))
+    await contribute_router(
+        ctx,
+        owner="xbot.agentloop.client-http",
+        router=build_client_router(sessions=ctx.sessions),
+    )
+
+
+async def mount_archive_http(ctx):
+    await contribute_router(
+        ctx,
+        owner="xbot.agentloop.archive-http",
+        router=archive_router(sessions=ctx.sessions, archive=ctx.require(ARCHIVE)),
+    )

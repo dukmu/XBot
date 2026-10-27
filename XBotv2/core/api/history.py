@@ -9,9 +9,18 @@ from collections.abc import Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Generic, Literal, Protocol, TypeAlias, TypeVar, overload
-from XBotv2.core.api.domain import Cursor, HistoryRevision, TransactionEnded, TransactionStarted
+from XBotv2.core.api.domain import (
+    Cursor,
+    HistoryRevision,
+    TransactionEnded,
+    TransactionStarted,
+)
 from XBotv2.core.api.messages import ConversationMessage
 from pydantic import BaseModel, ConfigDict, Field
+
+
+class HistoryRevisionConflict(ValueError):
+    """A mutation was based on an older canonical working set."""
 
 
 class HistoryCursorInvalid(ValueError):
@@ -78,20 +87,31 @@ class HistoryReader(Protocol):
 class HistorySink(Protocol):
     """Append-only trajectory boundary used by one conversation history."""
 
-    def append(self, messages: Sequence[ConversationMessage]) -> None: ...
+    async def surface_state(
+        self, after_version: int | None = None
+    ) -> tuple[int, tuple[ConversationMessage, ...]] | None: ...
+    async def begin_turn(self, input_id: str) -> int: ...
+    async def page_transcript(
+        self, *, limit: int, cursor: Cursor | None = None
+    ) -> HistoryPage[ConversationMessage]: ...
 
-    def replace_surface(
+    async def append(
+        self, messages: Sequence[ConversationMessage], *, expected_version: int
+    ) -> int: ...
+
+    async def replace_surface(
         self,
         source_ids: Sequence[str],
         messages: Sequence[ConversationMessage],
         *,
         operation: str,
         preserve_transcript: bool,
-    ) -> None: ...
+        expected_version: int,
+    ) -> int: ...
 
-    def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
+    async def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
 
-    def open_transactions(
+    async def open_transactions(
         self,
         transaction_kind: str,
     ) -> frozenset[str]: ...
@@ -104,72 +124,73 @@ class History(Protocol):
     second message list or construct working sets.
     """
 
-    def snapshot(self) -> tuple[ConversationMessage, ...]:
-        ...
+    async def synchronize(self) -> None: ...
+    async def begin_turn(self, input_id: str) -> int | None: ...
 
-    def ids(self) -> tuple[str, ...]:
-        ...
+    def snapshot(self) -> tuple[ConversationMessage, ...]: ...
 
-    @property
-    def surface_revision(self) -> HistoryRevision:
-        ...
+    def ids(self) -> tuple[str, ...]: ...
 
     @property
-    def transcript_revision(self) -> HistoryRevision:
-        ...
+    def surface_revision(self) -> HistoryRevision: ...
 
-    def append(self, message: ConversationMessage) -> None:
-        ...
+    @property
+    def transcript_revision(self) -> HistoryRevision: ...
 
-    def extend(self, messages: Iterable[ConversationMessage]) -> None:
-        ...
+    async def append(self, message: ConversationMessage) -> None: ...
 
-    def replace(self, messages: Iterable[ConversationMessage], *, operation: str='replace') -> None:
-        ...
+    async def extend(self, messages: Iterable[ConversationMessage]) -> None: ...
 
-    def replace_range(self, start: int, end: int, messages: Iterable[ConversationMessage], *, operation: str, preserve_transcript: bool=False) -> None:
-        ...
+    async def replace(
+        self, messages: Iterable[ConversationMessage], *, operation: str = "replace"
+    ) -> None: ...
 
-    def record(self, event: DurableEvent, *, durable: bool=False) -> None:
-        ...
+    async def replace_range(
+        self,
+        start: int,
+        end: int,
+        messages: Iterable[ConversationMessage],
+        *,
+        operation: str,
+        preserve_transcript: bool = False,
+    ) -> None: ...
 
-    def open_transactions(self, transaction_kind: str) -> frozenset[str]:
-        ...
+    async def record(self, event: DurableEvent, *, durable: bool = False) -> None: ...
 
-    def page(self, *, limit: int, cursor: Cursor | None=None) -> HistoryPage[ConversationMessage]:
-        ...
+    async def open_transactions(self, transaction_kind: str) -> frozenset[str]: ...
 
-    def page_transcript(self, *, limit: int, cursor: Cursor | None=None) -> HistoryPage[ConversationMessage]:
-        ...
+    def page(
+        self, *, limit: int, cursor: Cursor | None = None
+    ) -> HistoryPage[ConversationMessage]: ...
 
-    def replace_last(self, message: ConversationMessage) -> None:
-        ...
+    async def page_transcript(
+        self, *, limit: int, cursor: Cursor | None = None
+    ) -> HistoryPage[ConversationMessage]: ...
 
-    def undo(self, turns: int) -> tuple[ConversationMessage, ...]:
-        ...
+    async def replace_last(self, message: ConversationMessage) -> None: ...
 
-    def clear(self) -> None:
-        ...
+    async def undo(self, turns: int) -> tuple[ConversationMessage, ...]: ...
+
+    async def clear(self) -> None: ...
 
     @overload
-    def __getitem__(self, index: int) -> ConversationMessage:
-        ...
+    def __getitem__(self, index: int) -> ConversationMessage: ...
 
     @overload
-    def __getitem__(self, index: slice) -> list[ConversationMessage]:
-        ...
+    def __getitem__(self, index: slice) -> list[ConversationMessage]: ...
 
-    def __getitem__(self, index: int | slice) -> ConversationMessage | list[ConversationMessage]:
-        ...
+    def __getitem__(
+        self, index: int | slice
+    ) -> ConversationMessage | list[ConversationMessage]: ...
 
-    def __iter__(self) -> Iterator[ConversationMessage]:
-        ...
+    def __iter__(self) -> Iterator[ConversationMessage]: ...
 
-    def __len__(self) -> int:
-        ...
+    def __len__(self) -> int: ...
+
 
 def resolve_transcript_sources(
-    source_ids: Sequence[str], lineage: Mapping[str, tuple[str, ...]],
+    source_ids: Sequence[str],
+    lineage: Mapping[str, tuple[str, ...]],
 ) -> tuple[str, ...]:
     """Expand validated summary ancestry only when a transcript span changes."""
     pending = list(reversed(source_ids))
@@ -214,11 +235,13 @@ def encode_history_cursor(revision: HistoryRevision, offset: int) -> Cursor:
 def decode_history_cursor(cursor: Cursor, revision: HistoryRevision) -> int:
     try:
         padding = "=" * (-len(cursor) % 4)
-        value = json.loads(base64.b64decode(
-            cursor + padding,
-            altchars=b"-_",
-            validate=True,
-        ))
+        value = json.loads(
+            base64.b64decode(
+                cursor + padding,
+                altchars=b"-_",
+                validate=True,
+            )
+        )
     except (binascii.Error, UnicodeDecodeError, json.JSONDecodeError) as exc:
         raise HistoryCursorInvalid("History cursor is invalid") from exc
     if (
@@ -229,7 +252,5 @@ def decode_history_cursor(cursor: Cursor, revision: HistoryRevision) -> int:
         or not isinstance(value[2], int)
         or isinstance(value[2], bool)
     ):
-        raise HistoryCursorInvalid(
-            "History cursor does not match the current history"
-        )
+        raise HistoryCursorInvalid("History cursor does not match the current history")
     return value[2]

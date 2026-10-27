@@ -10,7 +10,9 @@ from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
 from xcore.api.context import Context
-from xcore.api.state import StateService
+from XBotv2.persistence.api.contracts import StatePort
+from XBotv2.session.api.storage import THREAD_REPOSITORY
+from XBotv2.todolist.impl.storage import TaskStorage
 from XBotv2.agentloop.api.events import Events, TurnStarted
 from XBotv2.agentloop.api.events import RUNTIME_EVENT
 from XBotv2.agentloop.api.events import RuntimeEvent
@@ -69,26 +71,24 @@ class TaskService:
 
     def __init__(
         self,
-        store: StateService,
+        store: StatePort,
         *,
         agent_name: str,
+        thread_id: str,
+        thread_repository,
         engine: AgentLoopPort,
         events: Context,
         config: TaskConfig,
     ) -> None:
         self._store = store
+        self._storage = TaskStorage(store, thread_id, thread_repository)
         self._agent_name = agent_name
         self._engine = engine
         self._events = events
         self._config = config
 
     async def snapshot(self) -> TaskList:
-        stored = await self._store.get("snapshot")
-        if stored is None:
-            return TaskList()
-        if not isinstance(stored, Mapping):
-            raise TypeError("Persisted task list must be an object")
-        return TaskList.model_validate(stored)
+        return await self._storage.load()
 
     async def task_create(
         self,
@@ -110,16 +110,22 @@ class TaskService:
         """
         try:
             parsed_subject = parse_task_text(
-                subject, field="subject", limit=self._config.max_subject_chars,
+                subject,
+                field="subject",
+                limit=self._config.max_subject_chars,
                 required=True,
             )
             parsed_description = parse_task_text(
-                description, field="description",
-                limit=self._config.max_description_chars, required=False,
+                description,
+                field="description",
+                limit=self._config.max_description_chars,
+                required=False,
             )
             parsed_active_form = parse_task_text(
-                active_form, field="active_form",
-                limit=self._config.max_active_form_chars, required=False,
+                active_form,
+                field="active_form",
+                limit=self._config.max_active_form_chars,
+                required=False,
             )
         except TaskValidationError as exc:
             return failed_text(exc.code, str(exc))
@@ -211,22 +217,30 @@ class TaskService:
                 new_status = parse_task_status(status)
             if subject is not None:
                 changes["subject"] = parse_task_text(
-                    subject, field="subject", limit=self._config.max_subject_chars,
+                    subject,
+                    field="subject",
+                    limit=self._config.max_subject_chars,
                     required=True,
                 )
             if description is not None:
                 changes["description"] = parse_task_text(
-                    description, field="description",
-                    limit=self._config.max_description_chars, required=False,
+                    description,
+                    field="description",
+                    limit=self._config.max_description_chars,
+                    required=False,
                 )
             if active_form is not None:
                 changes["active_form"] = parse_task_text(
-                    active_form, field="active_form",
-                    limit=self._config.max_active_form_chars, required=False,
+                    active_form,
+                    field="active_form",
+                    limit=self._config.max_active_form_chars,
+                    required=False,
                 )
             if owner is not None:
                 changes["owner"] = parse_task_text(
-                    owner, field="owner", limit=self._config.max_subject_chars,
+                    owner,
+                    field="owner",
+                    limit=self._config.max_subject_chars,
                     required=False,
                 )
             blocks = parse_task_ids(add_blocks, field="add_blocks")
@@ -236,7 +250,8 @@ class TaskService:
             )
             unblocks = parse_task_ids(remove_blocks, field="remove_blocks")
             unblocked_by = parse_task_ids(
-                remove_blocked_by, field="remove_blocked_by",
+                remove_blocked_by,
+                field="remove_blocked_by",
             )
         except TaskValidationError as exc:
             return failed_text(exc.code, str(exc))
@@ -254,16 +269,29 @@ class TaskService:
             )
 
         additions = (
-            *(DependencyEdge(prerequisite=task.id, dependent=value) for value in blocks),
-            *(DependencyEdge(prerequisite=value, dependent=task.id) for value in blocked_by),
+            *(
+                DependencyEdge(prerequisite=task.id, dependent=value)
+                for value in blocks
+            ),
+            *(
+                DependencyEdge(prerequisite=value, dependent=task.id)
+                for value in blocked_by
+            ),
         )
         removals = (
-            *(DependencyEdge(prerequisite=task.id, dependent=value) for value in unblocks),
-            *(DependencyEdge(prerequisite=value, dependent=task.id) for value in unblocked_by),
+            *(
+                DependencyEdge(prerequisite=task.id, dependent=value)
+                for value in unblocks
+            ),
+            *(
+                DependencyEdge(prerequisite=value, dependent=task.id)
+                for value in unblocked_by
+            ),
         )
         if set(additions).intersection(removals):
             return failed_text(
-                "invalid_task_update", "Cannot add and remove the same dependency",
+                "invalid_task_update",
+                "Cannot add and remove the same dependency",
             )
         for value in (*blocks, *blocked_by, *unblocks, *unblocked_by):
             if current.find(value) is None:
@@ -385,12 +413,11 @@ class TaskService:
         )
 
     async def _write(self, tasks: TaskList) -> None:
-        await self._store.set("snapshot", tasks.model_dump(mode="json"))
+        await self._storage.save(tasks)
         await self._events.emit(
             RUNTIME_EVENT,
             RuntimeEvent(event=TaskChanged(snapshot=tasks)),
         )
-
 
     async def _stale_turns(self) -> int:
         stored = await self._store.get(_STALE_TURNS_KEY)
@@ -433,6 +460,7 @@ def _format_task_list(tasks: TaskList) -> str:
 
 def _format_task_line(task: Task, tasks: TaskList, *, xml: bool = False) -> str:
     """Render one list row; ``xml`` escapes the model-authored fields."""
+
     def text(value: str) -> str:
         return escape(value) if xml else value
 
@@ -451,9 +479,7 @@ def _format_task_line(task: Task, tasks: TaskList, *, xml: bool = False) -> str:
         line += " \u00b7 blocked by " + ", ".join(f"#{value}" for value in blocking)
     dependents = tasks.dependents(task.id)
     if dependents:
-        line += " \u00b7 blocks " + ", ".join(
-            f"#{value}" for value in dependents
-        )
+        line += " \u00b7 blocks " + ", ".join(f"#{value}" for value in dependents)
     return line
 
 
@@ -472,9 +498,7 @@ def _format_task_detail(task: Task, tasks: TaskList) -> str:
     if dependents:
         lines.append("Blocks: " + ", ".join(f"#{value}" for value in dependents))
     if prerequisites:
-        lines.append(
-            "Blocked by: " + ", ".join(f"#{value}" for value in prerequisites)
-        )
+        lines.append("Blocked by: " + ", ".join(f"#{value}" for value in prerequisites))
     return "\n".join(lines)
 
 
@@ -523,13 +547,9 @@ def _render_stale_reminder() -> str:
     )
 
 
-def _render_compaction_reminder(
-    tasks: TaskList, unfinished: list[Task]
-) -> str:
+def _render_compaction_reminder(tasks: TaskList, unfinished: list[Task]) -> str:
     lines = ["Unfinished tasks (owned by task_update):"]
-    lines.extend(
-        _format_task_line(task, tasks, xml=True) for task in unfinished
-    )
+    lines.extend(_format_task_line(task, tasks, xml=True) for task in unfinished)
     return (
         '<system_reminder source="todo" event="compaction">\n'
         + "\n".join(lines)
@@ -538,18 +558,20 @@ def _render_compaction_reminder(
 
 
 class TodolistRuntimeComponent:
-    inject = {"required": [TOOLS, "state", "agent_loop", LOOP_STATE]}
+    inject = {"required": [TOOLS, "state", "agent_loop", LOOP_STATE, THREAD_REPOSITORY]}
     name = "todolist"
     Config = TaskConfig
 
-    def apply(
-        self, ctx: Context, config: TaskConfig | None = None
-    ) -> None:
+    def apply(self, ctx: Context, config: TaskConfig | None = None) -> None:
         engine: AgentLoopPort = ctx.require(AGENT_LOOP)
         resolved = config or TaskConfig()
         service = TaskService(
             ctx.state.namespace(self.name),
-            agent_name=ctx.require(LOOP_STATE).metadata.value.runtime_selection.agent_name,
+            agent_name=ctx.require(
+                LOOP_STATE
+            ).metadata.value.runtime_selection.agent_name,
+            thread_id=ctx.require(LOOP_STATE).session.thread_id,
+            thread_repository=ctx.require(THREAD_REPOSITORY),
             engine=engine,
             events=ctx,
             config=resolved,
@@ -571,13 +593,18 @@ class TodolistRuntimeComponent:
 async def mount_thread(ctx, config):
     await ctx.plugin(TodolistRuntimeComponent(), config)
 
+
 mount_thread.inject = ()
 mount_thread.provide = ("todolist",)
 mount_thread.Config = TaskConfig
 
 
 def mount_process(ctx, config):
+    from XBotv2.session.api.storage import FORK_COPY_STATE
+
+    ctx.on(FORK_COPY_STATE, lambda event: event.handled.add("todolist"))
     ctx.inject(["server", "sessions"], mount_http)
+
 
 mount_process.inject = ()
 mount_process.provide = ()

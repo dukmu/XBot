@@ -387,11 +387,17 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
             async def record(self, *_args) -> None:
                 return None
 
+        class Sessions:
+            async def rename_session(self, session_id, title):
+                assert session_id == "session-1"
+                await state.replace(state.value.model_copy(update={"title": title}))
+
         model = FlakyCaptionModel()
         service = CaptionService(
             events=events,
             model=model,
             state=state,
+            sessions=Sessions(),
             usage=UsageRecorder(),
             session_id="session-1",
             config=CaptionConfig(auto=True, allow_access=False),
@@ -418,12 +424,13 @@ def test_auto_caption_retries_after_provider_failure_on_a_later_turn():
         assert model.calls == 2
         assert service.title == "Billing plan"
 
-        await state.replace_title("A user-selected title")
+        await state.replace(state.value.model_copy(update={"title": "A user-selected title"}))
         untouched_model = FlakyCaptionModel()
         untouched_service = CaptionService(
             events=events,
             model=untouched_model,
             state=state,
+            sessions=Sessions(),
             usage=UsageRecorder(),
             session_id="session-1",
             config=CaptionConfig(auto=True, allow_access=False),

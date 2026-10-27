@@ -1,104 +1,66 @@
-"""Contract tests for per-plugin persistent state (ctx.state.namespace).
-
-The pre-migration ``PluginStore`` class was removed; plugins now persist
-through ``ctx.state.namespace(manifest.name)`` (an async
-``get/set/delete/all/clear`` store).  These tests pin the store contract on
-the real StateService implementation.
-"""
-
+"""Persistence state namespace contract through the public storage service."""
 import asyncio
-from pathlib import Path
+
 import pytest
-from XBotv2.persistence.impl.store import ThreadPersistence
+
 from XBotv2.core.api.paths import RuntimePaths
-from xcore.api.context import Context
-from xcore.api.state import StateService
+from XBotv2.main import open_runtime
+from XBotv2.persistence.api.contracts import PERSISTENCE
 
 
-def _state_file(tmp_path) -> Path:
-    return (
-        RuntimePaths.from_data_dir(tmp_path).session("s").thread("t").plugin_state_dir
-        / "state.json"
-    )
+@pytest.fixture
+async def state(tmp_path):
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(tmp_path))
+    try:
+        yield root.require(PERSISTENCE).state()
+    finally:
+        await root.close()
 
 
-def _core_store(tmp_path) -> ThreadPersistence:
-    return ThreadPersistence.open(
-        RuntimePaths.from_data_dir(tmp_path).session("s"),
-        thread_id="t",
-    )
-
-
-def _context(store: ThreadPersistence) -> Context:
-    return Context(
-        data_dir=store.paths.plugin_state_dir,
-        state_service=store.state,
-    )
-
-
-@pytest.mark.asyncio
-async def test_mutations_are_persisted_immediately(tmp_path) -> None:
-    ctx = _context(_core_store(tmp_path))
-    store = ctx.state.namespace("sample")
-
+async def test_mutations_are_persisted_immediately(state, tmp_path):
+    store = state.namespace("sample")
     await store.set("enabled", True)
-    state = await StateService(path=_state_file(tmp_path)).all()
-    assert state["sample.enabled"] is True
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(tmp_path))
+    try:
+        reader = root.require(PERSISTENCE).state().namespace("sample")
+        assert await reader.get("enabled") is True
+        await store.delete("enabled")
+        assert await reader.get("enabled") is None
+        await store.set("value", 1)
+        await store.clear()
+        assert await reader.keys() == []
+    finally:
+        await root.close()
 
-    await store.delete("enabled")
-    state = await StateService(path=_state_file(tmp_path)).all()
-    assert "sample.enabled" not in state
 
-    await store.set("value", 1)
-    await store.clear()
-    state = await StateService(path=_state_file(tmp_path)).all()
-    assert not any(key.startswith("sample.") for key in state)
-
-
-@pytest.mark.asyncio
-async def test_store_instances_do_not_lose_sequential_updates(tmp_path) -> None:
-    ctx = _context(_core_store(tmp_path))
-    first = ctx.state.namespace("shared")
-    second = ctx.state.namespace("shared")
-
-    assert await first.all() == {}
-    assert await second.all() == {}
+async def test_store_instances_do_not_lose_sequential_updates(state):
+    first = state.namespace("shared")
+    second = state.namespace("shared")
     await first.set("first", 1)
     await second.set("second", 2)
-
-    assert await first.all() == {"first": 1, "second": 2}
-
-
-@pytest.mark.asyncio
-async def test_event_loop_tasks_preserve_all_updates(tmp_path) -> None:
-    ctx = _context(_core_store(tmp_path))
-    store = ctx.state.namespace("shared")
-
-    await asyncio.gather(*(
-        store.set(f"key_{index}", index) for index in range(10)
-    ))
-
-    assert await store.all() == {f"key_{index}": index for index in range(10)}
+    assert set(await first.keys()) == {"first", "second"}
+    assert await second.get("first") == 1
+    assert await first.get("second") == 2
 
 
-@pytest.mark.asyncio
-async def test_plugin_namespaces_are_isolated(tmp_path) -> None:
-    ctx = _context(_core_store(tmp_path))
-    goal = ctx.state.namespace("goal")
-    todo = ctx.state.namespace("todolist")
+async def test_event_loop_tasks_preserve_all_updates(state):
+    store = state.namespace("shared")
+    await asyncio.gather(*(store.set(f"key_{index}", index) for index in range(10)))
+    assert set(await store.keys()) == {f"key_{index}" for index in range(10)}
+    assert [await store.get(f"key_{index}") for index in range(10)] == list(range(10))
 
+
+async def test_plugin_namespaces_are_isolated(state):
+    goal = state.namespace("goal")
+    todo = state.namespace("todolist")
     await goal.set("state", {"active": True})
-    assert await todo.all() == {}
+    assert await todo.keys() == []
     assert await goal.get("state") == {"active": True}
 
 
-@pytest.mark.asyncio
-async def test_read_values_cannot_mutate_store_without_set(tmp_path) -> None:
-    ctx = _context(_core_store(tmp_path))
-    store = ctx.state.namespace("sample")
+async def test_read_values_cannot_mutate_store_without_set(state):
+    store = state.namespace("sample")
     await store.set("nested", {"count": 1})
-
     value = await store.get("nested")
     value["count"] = 99
-
     assert await store.get("nested") == {"count": 1}

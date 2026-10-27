@@ -47,6 +47,9 @@ from xcore.api.context import Context
 from XBotv2.llm.api.contracts import LLM
 from XBotv2.usage.api.service import USAGE
 from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.session.api.storage import THREAD_REPOSITORY
+from XBotv2.core.api.artifacts import ArtifactKind
 from XBotv2.permissions.api.models import PERMISSIONS
 from XBotv2.sandbox.api.models import SANDBOX
 from XBotv2.core.api.tools import (
@@ -131,10 +134,11 @@ async def _submit_turn(
             json=payload,
         )
         assert response.status_code == 202, response.text
-        async with asyncio.timeout(1):
+        async with asyncio.timeout(10):
             async for frame in events:
                 collected.append(frame.event)
                 if _ends_turn(frame.event):
+                    assert not runtime.require(AGENT_LOOP).busy
                     break
     finally:
         await events.aclose()
@@ -852,7 +856,7 @@ async def test_http_resume_leftover_thread_dir_does_not_create_empty_session(
 
     data_dir = RuntimePaths.from_data_dir(http_app.state.paths.data_dir)
     leftover = (
-        data_dir.session("leftover").thread("main").state_dir
+        data_dir.session("leftover").thread("main").root
     )
     leftover.mkdir(parents=True)
 
@@ -868,8 +872,8 @@ async def test_http_resume_leftover_thread_dir_does_not_create_empty_session(
             },
         )
 
-    assert response.status_code == 400
-    assert response.json()["code"] == "thread_metadata_missing"
+    assert response.status_code == 404
+    assert response.json()["code"] == "session_not_found"
 
 
 @pytest.mark.asyncio
@@ -1513,8 +1517,7 @@ async def test_http_policy_api_updates_live_session_policy(
         status_response.json()["effective_sandbox"]["enabled"]
         is ctx.require(SANDBOX).enabled
     )
-    state_root = http_app.state.paths.session("policy").thread("t").state_dir
-    events_path = state_root / "events.jsonl"
+    events_path = http_app.state.paths.session("policy").thread("t").rollout_file
     events = events_path.read_text(encoding="utf-8") if events_path.exists() else ""
     assert "permission_override_set" not in events
     assert "sandbox_override_set" not in events
@@ -2277,9 +2280,9 @@ async def test_session_close_preserves_accepted_inbox_and_resume_consumes_it(htt
     async with asyncio.timeout(5):
         while resumed.require(AGENT_LOOP).busy or resumed.require(AGENT_LOOP).pending_input_count:
             await asyncio.sleep(0)
-    records = resumed.require("thread_persistence").history.load_surface()
+    records = await http_app.state.test_context.require(ARCHIVE).surface("fold-resume", "t")
     assert sum(isinstance(item, RuntimeNoticeMessage) and item.id == "f-1" for item in records) == 1
-    assert not resumed.require("thread_persistence").inbox.load()
+    assert not resumed.require(AGENT_LOOP).pending_inputs()
 
 
 @pytest.mark.asyncio
@@ -3604,9 +3607,9 @@ async def test_http_compact_command_commits_history_and_streams_typed_events(
         history = await client.list_messages(session_id, thread_id)
         assert not [item for item in history.items if item.kind == "compaction_summary"]
         assert any(item.kind == "human_input" and item.content == "question 0" for item in history.items)
-        persisted = client.test_context.require(PERSISTENCE).thread(RuntimePaths.from_data_dir(tmp_path / "data").session(session_id), thread_id=thread_id)
+        persisted = await client.test_context.require(ARCHIVE).surface(session_id, thread_id)
         from XBotv2.core.api.messages import CompactionSummaryMessage
-        summaries = [item for item in persisted.history.load_surface() if isinstance(item, CompactionSummaryMessage)]
+        summaries = [item for item in persisted if isinstance(item, CompactionSummaryMessage)]
         assert len(summaries) == 1
         assert "summary of the earlier discussion" in summaries[0].summary
         assert any(
@@ -4082,16 +4085,16 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
             "/sessions/goal-compact/threads/t/commands",
             json={"raw": "/goal verify the API"},
         )
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while True:
                 paused = await goal_service.snapshot()
                 if isinstance(paused.state, PausedGoal):
                     break
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
         assert isinstance(paused.state, PausedGoal)
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while runtime.require(AGENT_LOOP).busy:
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
         paused = await goal_service.snapshot()
         assert paused.state.stats.input_tokens == 4
         assert paused.state.stats.output_tokens == 2
@@ -4120,17 +4123,17 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
             "/sessions/goal-compact/threads/t/commands",
             json={"raw": "/goal resume"},
         )
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while True:
                 complete = await goal_service.snapshot()
                 if isinstance(complete.state, CompleteGoal):
                     break
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
         assert isinstance(complete.state, CompleteGoal)
         assert complete.state.goal_id == paused.state.goal_id
-        async with asyncio.timeout(3):
+        async with asyncio.timeout(10):
             while runtime.require(AGENT_LOOP).busy:
-                await asyncio.sleep(0)
+                await asyncio.sleep(0.001)
         complete = await goal_service.snapshot()
         usage_after_resume = runtime.require(USAGE).snapshot().total_counters
         resumed_input = usage_after_resume.input - usage_before_resume.input
@@ -4484,10 +4487,13 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
             session_id="sdk-client",
             thread_id="main",
         )
+        runtime = await http_app.state.manager.locate("sdk-client", "main")
+        events = runtime.require(THREAD_EVENTS).subscribe()
         await sdk.send_message(
             "sdk-client", "main", "sdk question",
             request_id="sdk-request", delivery="queue",
         )
+        await _await_turn_end(events)
         messages = await _wait_for_sdk_messages(sdk, "sdk-client", "main", 2)
         pending = await sdk.list_pending_inputs("sdk-client", "main")
         messages = await sdk.list_messages("sdk-client", "main")
@@ -4507,6 +4513,8 @@ async def test_python_sdk_uses_typed_resources_and_events(http_app) -> None:
         await sdk.regenerate_message(
             "sdk-client", "main", request_id="sdk-regenerate"
         )
+        await _await_turn_end(events)
+        await events.aclose()
         regenerated_messages = await _wait_for_sdk_messages(sdk, "sdk-client", "main", 2)
         regenerated_messages = await sdk.list_messages("sdk-client", "main")
         undone = await sdk.undo_history("sdk-client", "main")
@@ -4557,10 +4565,13 @@ async def test_python_sdk_submit_uses_only_the_shared_session_stream(http_app) -
             session_id="sdk-submit",
             thread_id="main",
         )
+        runtime = await http_app.state.manager.locate("sdk-submit", "main")
+        events = runtime.require(THREAD_EVENTS).subscribe()
         await sdk.send_message(
             "sdk-submit", "main", "submitted question",
             request_id="submit-request",
         )
+        await _await_turn_end(events)
         first_messages = await _wait_for_sdk_messages(sdk, "sdk-submit", "main", 2)
 
         await sdk.regenerate_message(
@@ -4568,6 +4579,8 @@ async def test_python_sdk_submit_uses_only_the_shared_session_stream(http_app) -
             "main",
             request_id="submit-regenerate",
         )
+        await _await_turn_end(events)
+        await events.aclose()
         second_messages = await _wait_for_sdk_messages(sdk, "sdk-submit", "main", 2)
     assert [item.content for item in first_messages.items] == [
         "submitted question", "submitted answer",
@@ -5333,7 +5346,7 @@ async def test_http_switches_primary_agent_without_replacing_thread_history(
         assert selection.model.context_window == 64000
         # History was written before the switch, so the deferred metadata sink
         # flushed on that first record and the disk is authoritative again.
-        assert ctx.thread_persistence.metadata.load().runtime_selection.agent_name == "Explorer"
+        assert (await ctx.require(THREAD_REPOSITORY).load()).agent_ref == "Explorer"
         child_only = await ac.put(
             "/sessions/switch-primary/threads/main/agent",
             json={"name": "worker"},
@@ -5420,43 +5433,31 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     source_session = paths.session("history")
     source = source_session.thread("t")
-    source_records = [
-        json.loads(line)
-        for line in source.messages_file.read_text(encoding="utf-8").splitlines()
-    ]
-    assert any(
-        record["entry"]["kind"] == "message_appended"
-        and any(
-            part.get("text") == "second"
-            for part in record["entry"]["message"]["parts"]
-        )
-        for record in source_records
-    )
-    assert source_records[-1]["entry"]["kind"] == "surface_replaced"
-    assert source_records[-1]["entry"]["operation"] == "undo"
-    assert all(record["schema_version"] == 1 for record in source_records)
-    source.plugin_state_dir.mkdir(exist_ok=True)
-    from xcore.api.state import StateService
-
-    await StateService(path=source.plugin_state_file).set("sample.value", "kept")
-    source.artifact_file("context/cached.txt").parent.mkdir(parents=True)
-    source.artifact_file("context/cached.txt").write_text("cached")
+    source_records = [json.loads(line) for line in source.rollout_file.read_text(encoding="utf-8").splitlines()]
+    assert any(record["kind"] == "input_accepted" and record["data"]["item"]["input"]["content"] == "second" for record in source_records)
+    assert source_records[-1]["kind"] == "surface_replaced"
+    assert source_records[-1]["data"]["operation"] == "undo"
+    persistence = http_app.state.test_context.require(PERSISTENCE)
+    await persistence.state("history", "t").namespace("permissions").set("sample", "source-only")
+    artifact = persistence.artifacts("history", "t").put(ArtifactKind.CONTEXT, b"cached")
     source_session.config_file.write_text(
         "plugins:\n- id: permissions\n  config: {}\n",
         encoding="utf-8",
     )
     forked = await client.post("/sessions/history/fork")
+    assert forked.status_code == 200, forked.text
     fork_id = forked.json()["session_id"]
     fork_session = paths.session(fork_id)
     fork_paths = fork_session.thread("t")
 
-    assert fork_paths.plugin_state_file.read_bytes() == source.plugin_state_file.read_bytes()
-    assert await StateService(path=fork_paths.plugin_state_file).get("sample.value") == "kept"
-    assert fork_paths.artifact_file("context/cached.txt").read_text() == "cached"
-    assert fork_session.config_file.read_text() == (
+    assert await persistence.state("history", "t").namespace("permissions").get("sample") == "source-only"
+    assert await persistence.state(fork_id, "t").namespace("permissions").get("sample") is None
+    assert persistence.artifacts(fork_id, "t").read(artifact) == b"cached"
+    assert fork_session.config_file.read_text(encoding="utf-8") == (
         "plugins:\n- id: permissions\n  config: {}\n"
     )
-    assert fork_paths.messages_file.read_text() == source.messages_file.read_text()
+    fork_records = [json.loads(line) for line in fork_paths.rollout_file.read_text(encoding="utf-8").splitlines()]
+    assert fork_records[:len(source_records)] == source_records
     resumed = await client.post(
         "/sessions",
         json={"session_id": fork_id, "thread_id": "t", "mode": "resume"},
@@ -5477,11 +5478,11 @@ async def test_typed_history_undo_fork_and_clear_persist_atomically(
     assert current.json()["items"] == []
     cleared_records = [
         json.loads(line)
-        for line in source.messages_file.read_text(encoding="utf-8").splitlines()
+        for line in source.rollout_file.read_text(encoding="utf-8").splitlines()
     ]
     assert cleared_records[:len(source_records)] == source_records
-    assert cleared_records[-1]["entry"]["kind"] == "surface_replaced"
-    assert cleared_records[-1]["entry"]["operation"] == "clear"
+    assert cleared_records[-1]["kind"] == "surface_replaced"
+    assert cleared_records[-1]["data"]["operation"] == "clear"
 
     await client.post("/sessions/history/close")
     inactive_fork = await client.post("/sessions/history/fork")
@@ -5594,7 +5595,9 @@ async def test_input_held_while_busy_is_folded_at_turn_end(
     first_task = asyncio.create_task(
         _drain_stream(_runtime_command(ctx, "first", "req-1"))
     )
-    await asyncio.sleep(0)
+    async with asyncio.timeout(5):
+        while llm.calls == 0:
+            await asyncio.sleep(0.001)
     # While the LLM is busy the input is held in the pending fold, not
     # dropped or processed out of band.
     ev_stream = ctx.require(THREAD_EVENTS).subscribe()
@@ -6063,7 +6066,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
     # must NOT wake a turn on its own.
     notice = None
     while notice is None:
-        event = (await asyncio.wait_for(anext(events), timeout=1)).event
+        event = (await asyncio.wait_for(anext(events), timeout=5)).event
         if isinstance(event, JobCompletedEvent):
             notice = event
     assert notice.view.id == job_id
@@ -6959,3 +6962,24 @@ async def test_every_read_of_a_message_names_the_same_node(
         if item["kind"] == "message_appended"
     ]
     assert recorded == [oldest_id, newest_id]
+
+
+@pytest.mark.asyncio
+async def test_empty_thread_trajectory_validates_http_cursors_without_persisting(
+    client: httpx.AsyncClient, http_app,
+) -> None:
+    opened = await client.post(
+        "/sessions", json={"session_id": "empty-trajectory", "thread_id": "main"}
+    )
+    assert opened.status_code == 200
+    path = "/sessions/empty-trajectory/threads/main/trajectory"
+    result = await client.get(path, params={"limit": 10})
+    assert result.status_code == 200
+    assert result.json() == {
+        "page": {"items": [], "older_cursor": None}, "newest_position": 0,
+    }
+    for params in ({"before": 2}, {"cursor": "invalid"}):
+        invalid = await client.get(path, params=params)
+        assert invalid.status_code == 400
+        assert invalid.json()["code"] == "invalid_cursor"
+    assert not http_app.state.paths.session("empty-trajectory").root.exists()

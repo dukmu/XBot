@@ -58,7 +58,7 @@ async def test_session_baseline_cursor_precedes_the_snapshot_read():
     app = FastAPI()
     app.include_router(build_session_router(
         sessions=RacingSessions(),
-        persistence=None,
+        archive=None,
         options=SimpleNamespace(),
         workspace_events=workspace_events,
     ))

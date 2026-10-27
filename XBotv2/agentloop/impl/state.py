@@ -1,4 +1,5 @@
 """Construction and mutation of the thread's loop runtime."""
+
 from __future__ import annotations
 from dataclasses import dataclass
 from xcore.api.context import Context
@@ -8,6 +9,7 @@ from XBotv2.core.api.messages import ConversationMessage
 from XBotv2.agentloop.impl.history import ConversationHistory
 from XBotv2.agentloop.impl.metadata import ThreadMetadataState
 from XBotv2.session.api.contracts import SessionKey
+
 
 class LoopRuntimeState:
     """Mutable conversation state owned by the Agent loop.
@@ -76,10 +78,10 @@ class LoopRuntimeState:
     def set_history(self, history: ConversationHistory) -> None:
         self.history = history
 
-    def replace_messages(self, messages: list[ConversationMessage]) -> None:
-        self.history.replace(messages, operation="replace")
+    async def replace_messages(self, messages: list[ConversationMessage]) -> None:
+        await self.history.replace(messages, operation="replace")
 
-    def replace_message_range(
+    async def replace_message_range(
         self,
         start: int,
         end: int,
@@ -88,7 +90,7 @@ class LoopRuntimeState:
         operation: str,
         preserve_transcript: bool = False,
     ) -> None:
-        self.history.replace_range(
+        await self.history.replace_range(
             start,
             end,
             messages,

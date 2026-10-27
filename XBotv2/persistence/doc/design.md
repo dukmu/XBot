@@ -1,21 +1,32 @@
 # Persistence ownership
 
-`persistence/api` declares durable thread stores, artifact models, ownership
-claims and the process `PERSISTENCE` capability. Public atomic-file primitives
-are defined in `api/files.py`. Implementations own JSONL history, metadata,
-inbox/plugin state, artifacts, session locking and archive reads. Session
-records are declared in `session/api/records.py`.
+`PERSISTENCE` is the process-owned physical backend. It provides one SQLite
+worker with bounded asynchronous admission, owner-restricted SQL transactions,
+KV state, rollout records and offsets, recovery and flush, session writer
+claims and tracked I/O lifetimes, artifacts, and snapshot copy, stage, publish
+and delete primitives. It does not own session facts, conversation record
+schemas or domain projections. Callers explicitly invoke `ThreadRepository.ensure`
+before their first persistent business mutation; the backend does not inject a
+`before_write` callback.
 
-The process creates shared resource definitions once. The session facet claims
-one OS writer lock; thread facets initialize their own stores and artifacts.
-Only actual session-owner descendants share a lock. The same PID does not
-allow independent runtimes to share ownership. Close drains started work before
-releasing the writer claim. Physical fork/delete operations go through the
-persistence resource capability.
+A session owner holds the OS writer claim; its thread descendants share that
+claim. Independent roots, including roots in the same process, cannot share it.
+Draining rejects new work and waits for accepted I/O leases to actually exit.
+Root `pre_stop` runs after children have stopped. Session claims are released
+after their accepted work drains; the process worker closes during disposal. Archive page decoding does not hold the writer mutex, but
+retains a tracked read lifetime.
 
-This batch keeps the existing JSONL/JSON format. SQLite migration and bounded
-history/storage working sets remain separate work. Provider directory/client
-caches are also not currently bounded. General filesystem operations used by
-tools, sandbox and permissions still live in `core.filesystem`; architecture
-and contract audits report those three remaining imports. This does not make
-persistence the executor for ordinary workspace operations.
+For an append, the caller validates its projection in a rolled-back SQL
+savepoint, then the backend appends and fsyncs the rollout record (and new
+directory entries), then commits the SQL references, projection and offset.
+A failure before append propagates without a committed record. A failure after
+the durable append but before SQL confirmation raises `CommitUncertain`; retry
+the original identity and recover the suffix. Recovery truncates only an
+unfinished final line; malformed complete records and inconsistent confirmed
+prefixes raise corruption errors. `flush` confirms the current indexed head.
+
+The default admission budget is 64 operations and 16 MiB; replay defaults to
+128 records and 1 MiB, a record to 8 MiB, and a KV value to 64 KiB. These are
+current experimental configuration values, not hardware-independent
+performance guarantees. General workspace filesystem operations remain owned
+by `core.filesystem`, not by the storage backend.

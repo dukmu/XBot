@@ -33,6 +33,7 @@ from XBotv2.main import open_runtime
 from XBotv2.loader.api.contracts import PluginOverlay
 from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
+    AssistantTextDelta,
     LoopError,
     LoopTurnEnded,
     TurnCancelled,
@@ -189,10 +190,22 @@ async def _run_foldin(app, llm):
         _collect_events(_runtime_command(ctx, "first request", "req-1"))
     )
     await asyncio.wait_for(tool_started.wait(), timeout=2)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://test"
+    ) as client:
+        busy = await client.post(
+            "/sessions/foldin/threads/t/history/regenerate",
+            json={"request_id": "busy-regenerate"},
+        )
+    assert busy.status_code == 409
+    assert busy.json()["code"] == "thread_busy"
+    assert busy.json()["retryable"] is True
     second_task = asyncio.create_task(
         _collect_events(_runtime_command(ctx, "second queued", "req-2"))
     )
-    await asyncio.sleep(0)
+    async with asyncio.timeout(3):
+        while ctx.require(AGENT_LOOP).pending_input_count != 1:
+            await asyncio.sleep(0.001)
     assert ctx.require(AGENT_LOOP).pending_input_count == 1
     release_tool.set()
     first_events, second_events = await asyncio.gather(first_task, second_task)
@@ -361,7 +374,9 @@ async def _run_multi_queue(app, llm):
     await asyncio.wait_for(tool_started.wait(), timeout=3)
     second_task = asyncio.create_task(collect(_runtime_command(ctx, "second", "req-2")))
     third_task = asyncio.create_task(collect(_runtime_command(ctx, "third", "req-3")))
-    await asyncio.sleep(0)
+    async with asyncio.timeout(3):
+        while ctx.require(AGENT_LOOP).pending_input_count != 2:
+            await asyncio.sleep(0.001)
     assert ctx.require(AGENT_LOOP).pending_input_count == 2
     release_tool.set()
     first_events = await asyncio.wait_for(first_task, timeout=5)
@@ -789,6 +804,10 @@ async def test_interrupted_turn_emits_one_cancel_terminal_and_runtime_recovers(
 
     interrupted_stream = runtime.require(THREAD_EVENTS).subscribe()
     await runtime.require(AGENT_LOOP).send_message("interrupt me", "interrupt-request")
+    async with asyncio.timeout(3):
+        async for frame in interrupted_stream:
+            if isinstance(frame.event, AssistantTextDelta):
+                break
     assert await runtime.require(AGENT_LOOP).interrupt()
     interrupted = await asyncio.wait_for(drain(interrupted_stream), timeout=2)
     await interrupted_stream.aclose()
@@ -823,3 +842,63 @@ async def drain(stream):
         if isinstance(frame.event, LoopTurnEnded):
             return events
     raise AssertionError("turn stream ended without a terminal event")
+
+@pytest.mark.asyncio
+async def test_close_before_turn_start_preserves_runtime_input_without_terminal(foldin_app):
+    from XBotv2.agentloop.api.contracts import InboxItem, InboxTarget, RuntimeInput
+    from XBotv2.agentloop.api.events import Events
+    from XBotv2.agentloop.api.storage import ARCHIVE
+    from XBotv2.core.api.messages import RuntimeNoticeMessage
+
+    manager = foldin_app.state.manager
+    options = dict(
+        session_id="pre-start-close", thread_id="t", provider_name="default",
+        workspace_root=str(foldin_app.state.paths.data_dir), no_plugins=True,
+        llm_override=MockLLM(responses=[{"content": "done"}]),
+    )
+    runtime = await _open(manager, **options)
+    entered = asyncio.Event()
+
+    async def block_input(event):
+        entered.set()
+        await asyncio.Event().wait()
+
+    runtime.on(Events.ON_TURN_INPUT, block_input)
+    stream = runtime.require(THREAD_EVENTS).subscribe()
+
+    async def collect():
+        return [frame.event async for frame in stream]
+
+    frames = asyncio.create_task(collect())
+    await runtime.require(AGENT_LOOP).submit_input(
+        InboxItem(
+            id="runtime-before-start", target=InboxTarget.NEXT_STEP,
+            input=RuntimeInput(source="test", event="notice", content="preserved"),
+        ),
+        wake=False,
+    )
+    assert runtime.require(AGENT_LOOP).resume_pending_inputs()
+    await asyncio.wait_for(entered.wait(), 3)
+    await manager.close_session("pre-start-close", reason="client_disconnected")
+    events = await asyncio.wait_for(frames, 3)
+    assert not any(isinstance(event, LoopTurnEnded) for event in events)
+
+    rollout = foldin_app.state.paths.session("pre-start-close").thread("t").rollout_file
+    records = [json.loads(line) for line in rollout.read_text(encoding="utf-8").splitlines()]
+    assert any(
+        record["kind"] == "input_accepted"
+        and record["data"]["item"]["id"] == "runtime-before-start"
+        for record in records
+    )
+    assert not any(record["kind"] == "input_committed" for record in records)
+
+    options["llm_override"] = MockLLM(responses=[{"content": "done"}])
+    resumed = await _open(manager, mode="resume", **options)
+    async with asyncio.timeout(5):
+        while resumed.require(AGENT_LOOP).busy or resumed.require(AGENT_LOOP).pending_input_count:
+            await asyncio.sleep(0.001)
+    messages = await resumed.require(ARCHIVE).surface("pre-start-close", "t")
+    assert sum(
+        isinstance(item, RuntimeNoticeMessage) and item.id == "runtime-before-start"
+        for item in messages
+    ) == 1

@@ -14,7 +14,8 @@ from typing import Literal, Protocol
 from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, JsonValue
 from xcore.api.context import Context
-from xcore.api.state import StateService
+from XBotv2.persistence.api.contracts import StatePort
+from XBotv2.session.api.storage import THREAD_REPOSITORY
 from XBotv2.agentloop.api.events import (
     Events,
     AfterToolExecution,
@@ -72,15 +73,17 @@ class GoalService:
 
     def __init__(
         self,
-        store: StateService,
+        store: StatePort,
         engine: AgentLoopPort,
         *,
         events: Context,
+        thread_repository,
         usage: UsagePort,
         jobs: JobsCommandPort | None = None,
         now: Callable[[], float] = time.time,
     ) -> None:
         self._store = store
+        self._thread_repository = thread_repository
         self._engine = engine
         self._events = events
         self._jobs = jobs
@@ -92,8 +95,10 @@ class GoalService:
 
     async def snapshot(self) -> GoalSnapshot:
         state = await self._read_state()
-        activation = "armed" if isinstance(state, ActiveGoal) and self._armed else (
-            "disarmed" if isinstance(state, ActiveGoal) else "none"
+        activation = (
+            "armed"
+            if isinstance(state, ActiveGoal) and self._armed
+            else ("disarmed" if isinstance(state, ActiveGoal) else "none")
         )
         return GoalSnapshot(state=state, activation=activation)
 
@@ -108,10 +113,9 @@ class GoalService:
             raise TypeError("Persisted Goal snapshot must be an object")
         return _StoredGoal.model_validate(stored)
 
-    async def _write(
-        self, state: GoalState, *, usage_baseline: TokenCounters
-    ) -> None:
+    async def _write(self, state: GoalState, *, usage_baseline: TokenCounters) -> None:
         record = _StoredGoal(state=state, usage_baseline=usage_baseline)
+        await self._thread_repository.ensure()
         await self._store.set("snapshot", record.model_dump(mode="json"))
 
     async def create_goal(self, objective: str) -> ToolOutcome:
@@ -155,7 +159,9 @@ class GoalService:
             if isinstance(current, NoGoal):
                 return failed_text("no_goal", "No goal set")
             if current.goal_id != goal_id or current.revision != revision:
-                return failed_text("stale_goal", "Goal id or revision is no longer current")
+                return failed_text(
+                    "stale_goal", "Goal id or revision is no longer current"
+                )
             if not isinstance(current, ActiveGoal):
                 return failed_text("goal_not_active", f"Goal is already {current.kind}")
             current = await self._refresh_stats(current)
@@ -202,8 +208,13 @@ class GoalService:
             state = await self._refresh_stats(await self._read_state())
             snapshot = GoalSnapshot(
                 state=state,
-                activation=("armed" if isinstance(state, ActiveGoal) and self._armed else
-                            "disarmed" if isinstance(state, ActiveGoal) else "none"),
+                activation=(
+                    "armed"
+                    if isinstance(state, ActiveGoal) and self._armed
+                    else "disarmed"
+                    if isinstance(state, ActiveGoal)
+                    else "none"
+                ),
             )
         return succeeded_text(_format_snapshot(snapshot))
 
@@ -268,11 +279,15 @@ class GoalService:
                 return failed_text("goal_complete", "A complete goal cannot be resumed")
             if isinstance(current, ActiveGoal):
                 if self._armed:
-                    return failed_text("goal_active", "Goal continuation is already armed")
-                updated = current.model_copy(update={
-                    "revision": current.revision + 1,
-                    "pending_input_id": None,
-                })
+                    return failed_text(
+                        "goal_active", "Goal continuation is already armed"
+                    )
+                updated = current.model_copy(
+                    update={
+                        "revision": current.revision + 1,
+                        "pending_input_id": None,
+                    }
+                )
             else:
                 updated = ActiveGoal(
                     goal_id=current.goal_id,
@@ -307,7 +322,11 @@ class GoalService:
 
     async def on_turn_input(self, event: OnTurnInput):
         payload = event.input.input
-        if not isinstance(payload, RuntimeInput) or payload.source != "goal" or payload.event != "continue":
+        if (
+            not isinstance(payload, RuntimeInput)
+            or payload.source != "goal"
+            or payload.event != "continue"
+        ):
             return None
         async with self._lock:
             current = await self._read_state()
@@ -316,20 +335,25 @@ class GoalService:
                 or not self._armed
                 or current.pending_input_id != event.input.id
             ):
-                if isinstance(current, ActiveGoal) and current.pending_input_id == event.input.id:
+                if (
+                    isinstance(current, ActiveGoal)
+                    and current.pending_input_id == event.input.id
+                ):
                     await self._write(
                         current.model_copy(update={"pending_input_id": None}),
                         usage_baseline=await self._read_usage_baseline(),
                     )
                 return RejectInput(error="Stale goal continuation")
-            stats = current.stats.model_copy(update={
-                "rounds_started": current.stats.rounds_started + 1,
-            })
-            updated = current.model_copy(update={"pending_input_id": None, "stats": stats})
-            self._turn_goal_id = current.goal_id
-            await self._write(
-                updated, usage_baseline=await self._read_usage_baseline()
+            stats = current.stats.model_copy(
+                update={
+                    "rounds_started": current.stats.rounds_started + 1,
+                }
             )
+            updated = current.model_copy(
+                update={"pending_input_id": None, "stats": stats}
+            )
+            self._turn_goal_id = current.goal_id
+            await self._write(updated, usage_baseline=await self._read_usage_baseline())
             await self._emit(updated)
         return None
 
@@ -338,14 +362,16 @@ class GoalService:
             current = await self._read_state()
             if isinstance(current, NoGoal) or current.goal_id != self._turn_goal_id:
                 return
-            updated = current.model_copy(update={
-                "stats": current.stats.model_copy(update={
-                    "tool_calls": current.stats.tool_calls + 1,
-                }),
-            })
-            await self._write(
-                updated, usage_baseline=await self._read_usage_baseline()
+            updated = current.model_copy(
+                update={
+                    "stats": current.stats.model_copy(
+                        update={
+                            "tool_calls": current.stats.tool_calls + 1,
+                        }
+                    ),
+                }
             )
+            await self._write(updated, usage_baseline=await self._read_usage_baseline())
             await self._emit(updated)
 
     async def on_turn_end(self, event: TurnEnded) -> None:
@@ -366,7 +392,10 @@ class GoalService:
                 self._turn_goal_id = None
                 return
             current = await self._refresh_stats(current)
-            if isinstance(current, ActiveGoal) and event.stop_reason == "client_interrupt":
+            if (
+                isinstance(current, ActiveGoal)
+                and event.stop_reason == "client_interrupt"
+            ):
                 self._armed = False
             self._turn_goal_id = None
             await self._write(
@@ -416,9 +445,7 @@ class GoalService:
             if not isinstance(current, ActiveGoal):
                 return
             updated = current.model_copy(update={"pending_input_id": None})
-            await self._write(
-                updated, usage_baseline=await self._read_usage_baseline()
-            )
+            await self._write(updated, usage_baseline=await self._read_usage_baseline())
             await self._remove_pending(current)
 
     async def on_session_resume(self, _event: SessionLifecycle) -> None:
@@ -516,19 +543,29 @@ class GoalService:
             return state
         baseline = await self._read_usage_baseline()
         counters = self._usage_snapshot().total_counters
-        stats = state.stats.model_copy(update={
-            "input_tokens": state.stats.input_tokens + max(0, counters.input - baseline.input),
-            "output_tokens": state.stats.output_tokens + max(0, counters.output - baseline.output),
-        })
+        stats = state.stats.model_copy(
+            update={
+                "input_tokens": state.stats.input_tokens
+                + max(0, counters.input - baseline.input),
+                "output_tokens": state.stats.output_tokens
+                + max(0, counters.output - baseline.output),
+            }
+        )
         return state.model_copy(update={"stats": stats})
 
     async def _emit(self, state: GoalState) -> None:
-        activation = "armed" if isinstance(state, ActiveGoal) and self._armed else (
-            "disarmed" if isinstance(state, ActiveGoal) else "none"
+        activation = (
+            "armed"
+            if isinstance(state, ActiveGoal) and self._armed
+            else ("disarmed" if isinstance(state, ActiveGoal) else "none")
         )
         await self._events.emit(
             RUNTIME_EVENT,
-            RuntimeEvent(event=GoalChanged(snapshot=GoalSnapshot(state=state, activation=activation))),
+            RuntimeEvent(
+                event=GoalChanged(
+                    snapshot=GoalSnapshot(state=state, activation=activation)
+                )
+            ),
         )
 
 
@@ -540,8 +577,8 @@ def _render_continuation(goal: ActiveGoal) -> str:
         "the current workspace and tool results; do not rely on narration as "
         "proof. When the objective is actually achieved, call update_goal with "
         f"goal_id={json.dumps(goal.goal_id)}, revision={goal.revision}, and "
-        "status=\"complete\". If progress cannot continue, use status=\"blocked\"; "
-        "use status=\"paused\" only if the user explicitly asked to pause. "
+        'status="complete". If progress cannot continue, use status="blocked"; '
+        'use status="paused" only if the user explicitly asked to pause. '
         "Otherwise keep making "
         "concrete progress.\n</system_reminder>"
     )
@@ -570,10 +607,12 @@ def _has_stats(stats: GoalStats) -> bool:
 
 def _short(value: str, limit: int) -> str:
     text = " ".join(value.split())
-    return text if len(text) <= limit else f"{text[:limit - 1]}…"
+    return text if len(text) <= limit else f"{text[: limit - 1]}…"
 
 
-def _command_result(result: ToolOutcome, *, effects: tuple[CommandEffect, ...] = ()) -> CommandResult:
+def _command_result(
+    result: ToolOutcome, *, effects: tuple[CommandEffect, ...] = ()
+) -> CommandResult:
     return CommandResult(
         message=_tool_outcome_text(result),
         status="ok" if isinstance(result, ToolSucceeded) else "error",
@@ -583,24 +622,33 @@ def _command_result(result: ToolOutcome, *, effects: tuple[CommandEffect, ...] =
 
 def _tool_outcome_text(result: ToolOutcome) -> str:
     if isinstance(result, (ToolSucceeded, ToolFailed)):
-        return "".join(part.text for part in result.output.parts if isinstance(part, TextPart)) or (
-            result.error.message if isinstance(result, ToolFailed) else ""
-        )
+        return "".join(
+            part.text for part in result.output.parts if isinstance(part, TextPart)
+        ) or (result.error.message if isinstance(result, ToolFailed) else "")
     return result.reason
 
 
 class GoalPlugin:
     inject = {
-        "required": [COMMANDS, "agent_loop", "state", TOOLS, "usage"],
+        "required": [
+            COMMANDS,
+            "agent_loop",
+            "state",
+            TOOLS,
+            "usage",
+            THREAD_REPOSITORY,
+        ],
         "optional": [JOBS],
     }
     name = "goal"
+
     def apply(self, ctx: Context, config: object | None = None) -> None:
         if config is not None and (not isinstance(config, Mapping) or bool(config)):
             raise ValueError("goal plugin does not accept configuration")
         service = GoalService(
             ctx.state.namespace(self.name),
             ctx.require(AGENT_LOOP),
+            thread_repository=ctx.require(THREAD_REPOSITORY),
             events=ctx,
             jobs=ctx.get(JOBS, strict=False),
             usage=ctx.usage,
@@ -615,16 +663,25 @@ class GoalPlugin:
         ctx.on(Events.SESSION_CLOSE, service.on_session_close)
         ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
         for function in (service.create_goal, service.get_goal, service.update_goal):
-            ctx.require(TOOLS).register(replace(Tool.from_function(function), kind="think"))
-        ctx.require(COMMANDS).register(Command(
-            name="goal",
-            description="Manage an explicit same-session goal.",
-            handler=service.command,
-            effects=("thread",),
-            usage="/goal | /goal <objective> | /goal pause | /goal resume | /goal clear",
-            examples=("/goal all tests pass", "/goal pause", "/goal resume", "/goal clear"),
-            exclusive=False,
-        ))
+            ctx.require(TOOLS).register(
+                replace(Tool.from_function(function), kind="think")
+            )
+        ctx.require(COMMANDS).register(
+            Command(
+                name="goal",
+                description="Manage an explicit same-session goal.",
+                handler=service.command,
+                effects=("thread",),
+                usage="/goal | /goal <objective> | /goal pause | /goal resume | /goal clear",
+                examples=(
+                    "/goal all tests pass",
+                    "/goal pause",
+                    "/goal resume",
+                    "/goal clear",
+                ),
+                exclusive=False,
+            )
+        )
         ctx.dispose(service.dispose)
 
     def diagnostics(self) -> dict[str, JsonValue]:
@@ -634,8 +691,11 @@ class GoalPlugin:
             "goal_statuses": ["none", "active", "paused", "blocked", "complete"],
             "continuation": "same_session",
             "commands": [
-                "/goal", "/goal <objective>", "/goal pause",
-                "/goal resume", "/goal clear",
+                "/goal",
+                "/goal <objective>",
+                "/goal pause",
+                "/goal resume",
+                "/goal clear",
             ],
         }
 
@@ -645,5 +705,15 @@ def mount_thread(ctx, config):
 
 
 mount_thread.inject = getattr(GoalPlugin, "inject", ())
-mount_thread.provide = ('goal',)
+mount_thread.provide = ("goal",)
 mount_thread.Config = getattr(GoalPlugin, "Config", None)
+
+
+def mount_process(ctx, config):
+    from XBotv2.session.api.storage import FORK_COPY_STATE
+
+    ctx.on(FORK_COPY_STATE, lambda event: event.handled.add("goal"))
+
+
+mount_process.inject = ()
+mount_process.provide = ()

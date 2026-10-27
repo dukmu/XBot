@@ -1,34 +1,16 @@
-"""Versioned persistence envelopes for canonical domain values."""
+"""Durable identities and storage failure contracts."""
 
 from __future__ import annotations
 from dataclasses import dataclass
-
-from typing import Annotated, Literal
-from pydantic import BaseModel, ConfigDict, Field
-from XBotv2.agentloop.api.contracts import InboxMutation
-from XBotv2.core.api.history import DurableEventRecorded, MessageAppended, SurfaceReplaced
-
-TRAJECTORY_SCHEMA_VERSION = 1
-INBOX_SCHEMA_VERSION = 1
+from pydantic import BaseModel, ConfigDict
 
 
-class PersistenceRecord(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class StreamCorrupt(ValueError):
+    """A complete record or one of its references is invalid."""
 
 
-class StoredTrajectoryRecord(PersistenceRecord):
-    schema_version: Literal[1] = TRAJECTORY_SCHEMA_VERSION
-    entry: Annotated[
-        MessageAppended | SurfaceReplaced | DurableEventRecorded,
-        Field(discriminator="kind"),
-    ]
-
-
-class StoredInboxRecord(PersistenceRecord):
-    version: Literal[1] = INBOX_SCHEMA_VERSION
-    change: Annotated[InboxMutation, Field(discriminator="kind")]
-
-
+class CommitUncertain(RuntimeError):
+    """The log is durable but its index is unconfirmed; retry the original ID."""
 
 
 @dataclass(frozen=True, slots=True)

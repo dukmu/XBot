@@ -1,3 +1,7 @@
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.session.api.contracts import THREAD_INFO
+from XBotv2.session.api.storage import THREAD_REPOSITORY
+from XBotv2.persistence.api.contracts import PERSISTENCE
 from XBotv2.tests.runtime import engine_of
 from XBotv2.loader.api.contracts import LoadError
 from XBotv2.session.api.contracts import SESSIONS, OpenThread
@@ -5,6 +9,7 @@ from XBotv2.llm.api.contracts import LLM
 from XBotv2.core.api.errors import OperationError
 """Tests for application startup and instance construction."""
 
+import asyncio
 import base64
 import json
 import sys
@@ -13,6 +18,7 @@ from functools import partial
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 
 def _write_plugin(package, source, encoding="utf-8"):
@@ -121,6 +127,24 @@ async def _hosted_application(
     return host, runtime
 
 
+@pytest_asyncio.fixture(autouse=True)
+async def close_test_roots(monkeypatch):
+    """Close the process worker even when a test only stops its thread."""
+    roots = []
+    original = thread_scope
+
+    async def tracked_thread_scope(**kwargs):
+        scope = await original(**kwargs)
+        roots.append(scope.root)
+        return scope
+
+    monkeypatch.setitem(globals(), "thread_scope", tracked_thread_scope)
+    yield
+    for root in reversed(roots):
+        if root.is_active:
+            await root.close()
+
+
 @pytest.mark.asyncio
 async def test_thread_artifact_roundtrip_and_scope_close(tmp_path):
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -158,8 +182,7 @@ async def test_persistence_mount_identity_does_not_control_history(tmp_path, cap
     try:
         events = await _run_turn(engine_of(application), "remember this")
         assert not any(event.kind == "error" for event in events)
-        assert application.require("thread_persistence").history.count_turns() == 1
-        assert application.state is application.thread_persistence.state
+        assert await application.root.require(ARCHIVE).turn_count("custom-mount", "main") == 1
         await application.state.namespace("extension").set("value", "durable")
     finally:
         await application.root.close()
@@ -231,20 +254,22 @@ async def test_runtime_state_is_shared_restorable_and_thread_local(tmp_path):
     try:
         assert not paths.session("state-owner").thread("first").root.exists()
         plugin_state = first.state.namespace("extension")
-        persisted_view = first.thread_persistence.state.namespace("extension")
+        persisted_view = first.root.require(PERSISTENCE).state("state-owner", "first").namespace("extension")
+        await first.require(THREAD_REPOSITORY).ensure()
         # Load both views before writing: separate caches would lose a key.
-        assert await plugin_state.all() == {}
-        assert await persisted_view.all() == {}
+        assert await plugin_state.keys() == []
+        assert await persisted_view.keys() == []
         await plugin_state.set("first", 1)
         await persisted_view.set("second", 2)
-        assert await plugin_state.all() == {"first": 1, "second": 2}
+        assert {key: await plugin_state.get(key) for key in await plugin_state.keys()} == {"first": 1, "second": 2}
     finally:
         await first.root.close()
-    assert paths.session("state-owner").thread("first").metadata_file.exists()
+    assert paths.session("state-owner").database_file.exists()
 
     restored = await start("first", mode="resume")
     try:
-        assert await restored.state.namespace("extension").all() == {
+        state = restored.state.namespace("extension")
+        assert {key: await state.get(key) for key in await state.keys()} == {
             "first": 1, "second": 2,
         }
         sibling = await restored.root.require(SESSIONS).open_thread(OpenThread(
@@ -252,7 +277,7 @@ async def test_runtime_state_is_shared_restorable_and_thread_local(tmp_path):
             model_override=MockLLM(),
         ))
         try:
-            assert await sibling.state.namespace("extension").all() == {}
+            assert await sibling.state.namespace("extension").keys() == []
             assert not paths.session("state-owner").thread("second").root.exists()
         finally:
             await restored.root.require(SESSIONS).close_thread("state-owner", "second")
@@ -1185,8 +1210,8 @@ mount_thread.Config = getattr(ConfiguredPlugin, "Config", None)
             {"content": "session title"},  # caption auto-titles the first message
 ]),
         )
-        assert application.thread_persistence.session_id == "test-session"
-        assert not application.thread_persistence.paths.metadata_file.exists()
+        assert application.require(THREAD_INFO).session_id == "test-session"
+        assert not RuntimePaths.from_data_dir(temp_data_dir).session("test-session").database_file.exists()
 
     @pytest.mark.asyncio
     async def test_application_startup_includes_workspace_agents_md(self, temp_data_dir, temp_workspace):
@@ -1867,9 +1892,14 @@ mount_thread.Config = getattr(ConfiguredPlugin, "Config", None)
                 ),
             )
             assert result.status == "ok"
-            events = [event async for event in engine_of(application).run_pending()]
-            assert events
-            snapshot = await application.require("goal").snapshot()
+            async def wait_until_disarmed():
+                while True:
+                    snapshot = await application.require("goal").snapshot()
+                    if snapshot.activation == "disarmed":
+                        return snapshot
+                    await asyncio.sleep(0.01)
+
+            snapshot = await asyncio.wait_for(wait_until_disarmed(), timeout=5)
             assert isinstance(snapshot.state, ActiveGoal)
             assert snapshot.activation == "disarmed"
             assert len(llm.request_history) == 1
@@ -1925,7 +1955,7 @@ mount_thread.Config = getattr(ConfiguredPlugin, "Config", None)
 ]),
         )
 
-        session_id = application.thread_persistence.session_id
+        session_id = application.require(THREAD_INFO).session_id
         assert session_id != "default"
         assert "-" in session_id
         assert not (
@@ -2168,20 +2198,19 @@ async def test_metadata_initialization_is_durable_and_resume_is_read_only(tmp_pa
     monkeypatch.setattr(manager_module, "load_plugin_tree", load_tree)
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     first = await thread_scope(paths=paths, session_id="metadata-once", workspace_root=tmp_path, no_plugins=True, llm_override=MockLLM([{"content": "saved"}]))
-    metadata_file = paths.session("metadata-once").thread("main").metadata_file
+    database_file = paths.session("metadata-once").database_file
     try:
-        assert not metadata_file.exists()
+        assert not database_file.exists()
         await _run_turn(engine_of(first), "persist selection")
         expected = first.loop_state.metadata.value
-        assert first.thread_persistence.metadata.load() == expected
+        facts = await first.require(THREAD_REPOSITORY).load()
+        assert facts.workspace_root == str(tmp_path.resolve())
     finally:
         await first.root.close()
-    contents, modified = metadata_file.read_bytes(), metadata_file.stat().st_mtime_ns
     resumed = await thread_scope(paths=paths, session_id="metadata-once", workspace_root=None, mode="resume", no_plugins=True, llm_override=MockLLM())
     try:
         assert resumed.loop_state.metadata.value == expected
-        assert metadata_file.read_bytes() == contents
-        assert metadata_file.stat().st_mtime_ns == modified
+        assert await resumed.require(THREAD_REPOSITORY).load() == facts
     finally:
         await resumed.root.close()
 

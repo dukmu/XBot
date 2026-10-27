@@ -30,7 +30,7 @@ class _Sessions:
         self.threads = tuple(threads)
         self.opened = []
 
-    def new_thread_id(self, session_id, name):
+    async def new_thread_id(self, session_id, name):
         assert session_id == "parent-session"
         return f"child-{name}"
 
@@ -72,14 +72,14 @@ def test_agent_job_spec_binds_one_execution_to_its_stable_thread():
     assert spec.thread_id == "explorer-a1b2c3"
 
 
-def test_launcher_allocates_only_registered_non_primary_agents():
+async def test_launcher_allocates_only_registered_non_primary_agents():
     launcher, _sessions = _launcher(_definition())
-    assert launcher.allocate("explorer") == "child-explorer"
+    assert await launcher.allocate("explorer") == "child-explorer"
 
     for definition in (None, _definition("default", "primary")):
         launcher, _sessions = _launcher(definition)
         with pytest.raises(SubagentAgentError):
-            launcher.allocate("explorer")
+            await launcher.allocate("explorer")
 
 
 @pytest.mark.asyncio

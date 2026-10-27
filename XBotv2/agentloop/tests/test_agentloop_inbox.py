@@ -15,7 +15,6 @@ from XBotv2.agentloop.api.contracts import (
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.events import Events, ObserveInbox
 from XBotv2.agentloop.impl.inbox import AgentInbox, EphemeralInboxSink
-from XBotv2.persistence.api.models import StoredInboxRecord
 
 
 class MemoryInboxSink:
@@ -24,7 +23,10 @@ class MemoryInboxSink:
         self.sizes = []
         self.fail = False
 
-    def append(self, change):
+    async def load(self):
+        return list(self.items)
+
+    async def append(self, change):
         if self.fail:
             raise OSError("disk full")
         if isinstance(change, Inserted):
@@ -41,6 +43,7 @@ class MemoryInboxSink:
             self.items = [item for item in self.items if item.id not in ids]
         self.items.sort(key=lambda item: item.target is InboxTarget.NEXT_TURN)
         self.sizes.append(len(self.items))
+        return True
 
 
 class MemoryEvents:
@@ -59,28 +62,6 @@ def human_input(input_id, content, target=InboxTarget.NEXT_TURN):
         target=target,
         input=HumanInput(content=content),
     )
-
-
-def test_inbox_records_store_existing_typed_events():
-    items = (
-        human_input("human", "hello"),
-        InboxItem(
-            id="runtime",
-            target=InboxTarget.NEXT_STEP,
-            input=RuntimeInput(
-                source="jobs",
-                event="completed",
-                content="job complete",
-            ),
-        ),
-    )
-    for item in items:
-        record = StoredInboxRecord(change=Inserted(item=item, wake=False))
-        assert StoredInboxRecord.model_validate_json(record.model_dump_json()) == record
-    consumed = StoredInboxRecord(change=Consumed(ids=tuple(item.id for item in items)))
-    encoded = consumed.model_dump(mode="json")
-    assert encoded["change"] == {"kind": "consumed", "ids": ["human", "runtime"]}
-    assert StoredInboxRecord.model_validate(encoded) == consumed
 
 
 @pytest.mark.asyncio
@@ -132,11 +113,10 @@ async def test_item_ids_are_unique_across_both_targets():
     inbox = AgentInbox(events=MemoryEvents(), sink=EphemeralInboxSink())
     await inbox.submit(human_input("same", "one"), wake=True)
 
-    with pytest.raises(ValueError, match="Duplicate inbox input id"):
-        await inbox.submit(
-            human_input("same", "two", InboxTarget.NEXT_STEP),
-            wake=True,
-        )
+    assert not await inbox.submit(
+        human_input("same", "two", InboxTarget.NEXT_STEP), wake=True,
+    )
+    assert [(item.id, item.input.content) for item in inbox.pending] == [("same", "one")]
 
 
 @pytest.mark.asyncio

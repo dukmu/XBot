@@ -274,10 +274,6 @@ async def base_url(
             "---\ndescription: Review a change\nmode: subagent\n---\nReview.",
             encoding="utf-8",
         )
-    if scenario == "existing_state":
-        (data_dir / "state.json").write_text(
-            '{"unrelated.setting":"preserved"}\n', encoding="utf-8",
-        )
     server = await open_runtime(
         paths=RuntimePaths.from_data_dir(data_dir),
         overrides=PluginOverlay.parse([{"id": "session", "config": {
@@ -285,6 +281,9 @@ async def base_url(
             "no_plugins": no_plugins,
         }}]),
     )
+    if scenario == "existing_state":
+        from XBotv2.persistence.api.contracts import PERSISTENCE
+        await server.require(PERSISTENCE).state().set("unrelated.setting", "preserved")
     answer = {
         "content": REPLY,
         "reasoning": "I am checking the request before answering.",
@@ -3751,6 +3750,10 @@ async def test_a_real_regenerate_leaves_one_prompt_and_one_answer(
         await wait_for(
             pilot,
             lambda: "Running" not in status_text(app)
+            and app.controller is not None
+            and any(entry.id == "regenerate-1"
+                    and getattr(entry, "content", "") == "first question"
+                    for entry in app.controller.state.timeline)
             and transcript_text(app).count("first question") == 1
             and transcript_text(app).count(REPLY) == 1,
             description="one prompt and one answer after regenerating",

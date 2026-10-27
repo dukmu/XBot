@@ -8,7 +8,8 @@ from pathlib import Path
 from types import SimpleNamespace
 import pytest
 from pydantic import TypeAdapter, ValidationError
-from xcore.api.state import StateService
+from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.session.api.storage import THREAD_REPOSITORY
 from XBotv2.agentloop.api.contracts import AGENT_LOOP, INBOX, InboxItem, RuntimeInput
 from XBotv2.agentloop.api.events import OnTurnInput, RejectInput, SessionLifecycle, TurnEnded
 from XBotv2.tests.runtime import thread_scope
@@ -53,12 +54,23 @@ class FakeUsage:
         return UsageSnapshot(total_counters=self.counters)
 
 
-def _service(tmp_path: Path, *, jobs=None, usage=None) -> tuple[GoalService, FakeEngine]:
+@pytest.fixture
+async def goal_storage(tmp_path):
+    scope = await thread_scope(paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+                               session_id="goal-test", llm_override=MockLLM())
+    try:
+        store = scope.root.require(PERSISTENCE).state("goal-test", "main").namespace("goal")
+        yield store, scope.require(THREAD_REPOSITORY)
+    finally:
+        await scope.root.close()
+
+
+def _service(storage, *, jobs=None, usage=None) -> tuple[GoalService, FakeEngine]:
     engine = FakeEngine()
-    store = StateService(path=tmp_path / "state.json").namespace("goal")
+    store, repository = storage
     return GoalService(
         store, engine, events=FakeEvents(), usage=usage or FakeUsage(), jobs=jobs,
-        now=lambda: 10.0,
+        thread_repository=repository, now=lambda: 10.0,
     ), engine
 
 
@@ -77,8 +89,8 @@ def test_goal_state_is_closed_and_uses_canonical_status_names():
 
 
 @pytest.mark.asyncio
-async def test_command_goal_reserves_one_same_session_continuation(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_command_goal_reserves_one_same_session_continuation(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
     snapshot = await service.snapshot()
     assert snapshot.activation == "armed"
@@ -92,8 +104,8 @@ async def test_command_goal_reserves_one_same_session_continuation(tmp_path: Pat
 
 
 @pytest.mark.asyncio
-async def test_admission_counts_round_and_turn_end_queues_only_one_successor(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_admission_counts_round_and_turn_end_queues_only_one_successor(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
     first = engine.pending_inputs.pop()
     assert await service.on_turn_input(OnTurnInput(first, ())) is None
@@ -105,8 +117,8 @@ async def test_admission_counts_round_and_turn_end_queues_only_one_successor(tmp
 
 
 @pytest.mark.asyncio
-async def test_control_update_is_cas_and_removes_queued_continuation(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_control_update_is_cas_and_removes_queued_continuation(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
     current = (await service.snapshot()).state
     assert isinstance(current, ActiveGoal)
@@ -131,8 +143,8 @@ async def test_control_update_is_cas_and_removes_queued_continuation(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_claimed_continuation_is_rejected_after_goal_replacement(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_claimed_continuation_is_rejected_after_goal_replacement(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("old objective")
     claimed = engine.pending_inputs.pop()
     await service.command("new objective")
@@ -142,8 +154,8 @@ async def test_claimed_continuation_is_rejected_after_goal_replacement(tmp_path:
 
 
 @pytest.mark.asyncio
-async def test_resume_lifecycle_disarms_without_resetting_statistics(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_resume_lifecycle_disarms_without_resetting_statistics(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
     queued = engine.pending_inputs.pop()
     await service.on_turn_input(OnTurnInput(queued, ()))
@@ -159,9 +171,9 @@ async def test_resume_lifecycle_disarms_without_resetting_statistics(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_background_completion_wakes_deferred_goal_once(tmp_path: Path):
+async def test_background_completion_wakes_deferred_goal_once(goal_storage):
     jobs = SimpleNamespace(views=lambda: [SimpleNamespace(state="running")])
-    service, engine = _service(tmp_path, jobs=jobs)
+    service, engine = _service(goal_storage, jobs=jobs)
     await service.create_goal("background result verified")
     assert (await service.snapshot()).state.stats.rounds_started == 1
     await service.on_turn_end(TurnEnded(history=(), stop_reason="completed"))
@@ -174,9 +186,9 @@ async def test_background_completion_wakes_deferred_goal_once(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_disarmed_goal_does_not_charge_unrelated_turn_usage(tmp_path: Path):
+async def test_disarmed_goal_does_not_charge_unrelated_turn_usage(goal_storage):
     usage = FakeUsage()
-    service, engine = _service(tmp_path, usage=usage)
+    service, engine = _service(goal_storage, usage=usage)
     await service.command("tests pass")
     queued = engine.pending_inputs.pop()
     await service.on_turn_input(OnTurnInput(queued, ()))
@@ -190,9 +202,9 @@ async def test_disarmed_goal_does_not_charge_unrelated_turn_usage(tmp_path: Path
 
 
 @pytest.mark.asyncio
-async def test_two_goal_rounds_advance_usage_baseline_without_double_counting(tmp_path: Path):
+async def test_two_goal_rounds_advance_usage_baseline_without_double_counting(goal_storage):
     usage = FakeUsage()
-    service, engine = _service(tmp_path, usage=usage)
+    service, engine = _service(goal_storage, usage=usage)
     await service.command("tests pass")
     await service.on_turn_input(OnTurnInput(engine.pending_inputs.pop(), ()))
     usage.counters = TokenCounters(input=10)
@@ -204,9 +216,9 @@ async def test_two_goal_rounds_advance_usage_baseline_without_double_counting(tm
 
 
 @pytest.mark.asyncio
-async def test_replaced_goal_does_not_inherit_old_turn_tools_or_usage(tmp_path: Path):
+async def test_replaced_goal_does_not_inherit_old_turn_tools_or_usage(goal_storage):
     usage = FakeUsage()
-    service, engine = _service(tmp_path, usage=usage)
+    service, engine = _service(goal_storage, usage=usage)
     await service.command("old")
     await service.on_turn_input(OnTurnInput(engine.pending_inputs.pop(), ()))
     await service.command("new")
@@ -219,9 +231,9 @@ async def test_replaced_goal_does_not_inherit_old_turn_tools_or_usage(tmp_path: 
 
 
 @pytest.mark.asyncio
-async def test_terminal_update_tool_is_counted_at_standard_after_tool_boundary(tmp_path: Path):
+async def test_terminal_update_tool_is_counted_at_standard_after_tool_boundary(goal_storage):
     usage = FakeUsage()
-    service, engine = _service(tmp_path, usage=usage)
+    service, engine = _service(goal_storage, usage=usage)
     await service.command("tests pass")
     await service.on_turn_input(OnTurnInput(engine.pending_inputs.pop(), ()))
     await service.on_tool_call(None)
@@ -236,8 +248,8 @@ async def test_terminal_update_tool_is_counted_at_standard_after_tool_boundary(t
 
 
 @pytest.mark.asyncio
-async def test_pause_command_and_dispose_clear_continuation_reservations(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_pause_command_and_dispose_clear_continuation_reservations(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
     paused = await service.command("pause")
     assert paused.status == "ok"
@@ -253,9 +265,9 @@ async def test_pause_command_and_dispose_clear_continuation_reservations(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_pause_resume_accumulates_only_goal_owned_turns(tmp_path: Path):
+async def test_pause_resume_accumulates_only_goal_owned_turns(goal_storage):
     usage = FakeUsage()
-    service, engine = _service(tmp_path, usage=usage)
+    service, engine = _service(goal_storage, usage=usage)
     await service.command("ship")
     await service.on_turn_input(OnTurnInput(engine.pending_inputs.pop(), ()))
     usage.counters = TokenCounters(input=10)
@@ -303,13 +315,18 @@ async def test_hot_unload_removes_reserved_goal_input(tmp_path: Path):
 
 
 @pytest.mark.asyncio
-async def test_claimed_real_input_is_rejected_after_goal_replacement(tmp_path: Path):
+async def test_claimed_real_input_is_rejected_after_goal_replacement(tmp_path: Path, monkeypatch):
     app = await thread_scope(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
         session_id="goal-claimed", thread_id="main", workspace_root=tmp_path,
         llm_override=MockLLM(responses=[{"content": "unused"}]),
     )
     try:
+        loop = app.require(AGENT_LOOP)
+        submit = loop.submit_input
+        async def queue_without_waking(item, *, wake):
+            await submit(item, wake=False)
+        monkeypatch.setattr(loop, "submit_input", queue_without_waking)
         await app.goal.command("old objective")
         [claimed] = await app.require(INBOX).claim_turn()
         await app.goal.command("new objective")
@@ -321,8 +338,8 @@ async def test_claimed_real_input_is_rejected_after_goal_replacement(tmp_path: P
 
 
 @pytest.mark.asyncio
-async def test_pending_removal_propagates_other_operation_errors(tmp_path: Path):
-    service, engine = _service(tmp_path)
+async def test_pending_removal_propagates_other_operation_errors(goal_storage):
+    service, engine = _service(goal_storage)
     await service.command("tests pass")
 
     async def fail(_input_id, _action):

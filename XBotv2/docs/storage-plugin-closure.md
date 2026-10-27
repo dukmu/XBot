@@ -1,3 +1,5 @@
+> Historical closure report: this describes the earlier JSON-based implementation and its then-current evidence. For the current storage architecture and outstanding verification, see [Persistence and storage](persistence.md).
+
 # Storage and plugin closure evidence
 
 This audit records the production owners and observable closure evidence for

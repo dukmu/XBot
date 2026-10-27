@@ -82,13 +82,38 @@ from XBotv2.agentloop.api.contracts import (
     ToolsPort,
 )
 from XBotv2.agentloop.api.state import LoopState, ThreadExecution
-from XBotv2.core.api.domain import InboxTarget, ModelExchange, ModelTiming, RequestObservation, TurnRequest, ToolTiming
+from XBotv2.core.api.domain import (
+    InboxTarget,
+    ModelExchange,
+    ModelTiming,
+    RequestObservation,
+    TurnRequest,
+    ToolTiming,
+)
 from XBotv2.agentloop.impl.history import ConversationHistory
-from XBotv2.core.api.messages import AssistantMessage, HumanInputMessage, RuntimeNoticeMessage, ToolMessage
+from XBotv2.core.api.messages import (
+    AssistantMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
 from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
-from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ProviderSystem, ToolSchema
+from XBotv2.core.api.provider import (
+    ModelRequest,
+    ProviderMessage,
+    ProviderSystem,
+    ToolSchema,
+)
 from XBotv2.core.api.providers import ProviderFailure
-from XBotv2.core.api.stream import ModelCancelled, ModelCompleted, ModelFailed, ModelResponse, ToolCallDelta, ReasoningDelta, TextDelta
+from XBotv2.core.api.stream import (
+    ModelCancelled,
+    ModelCompleted,
+    ModelFailed,
+    ModelResponse,
+    ToolCallDelta,
+    ReasoningDelta,
+    TextDelta,
+)
 from XBotv2.core.api.domain import UserContext
 from XBotv2.core.api.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
@@ -118,6 +143,7 @@ from XBotv2.core.api.tools import (
     ToolOutcome,
     ToolSucceeded,
 )
+
 
 class _Unchanged:
     """Sentinel distinguishing an omitted model replacement from ``None``."""
@@ -161,9 +187,7 @@ class _ModelRequestCompleted:
     event: LoopEvent
 
 
-_ModelRequestResult = (
-    _ModelRequestReady | _ModelRequestRebuild | _ModelRequestCompleted
-)
+_ModelRequestResult = _ModelRequestReady | _ModelRequestRebuild | _ModelRequestCompleted
 
 
 @dataclass(frozen=True, slots=True)
@@ -274,14 +298,16 @@ class Engine:
         )
 
     async def _resume_loaded_state(self) -> None:
-        self._close_interrupted_tool_calls(
+        await self._close_interrupted_tool_calls(
             ToolFailed(
                 error=ToolError(
                     code="session_restarted",
                     message="Tool call did not complete: session_restarted",
                 ),
                 output=ToolOutput(
-                    parts=(TextPart(text="Tool call did not complete: session_restarted."),)
+                    parts=(
+                        TextPart(text="Tool call did not complete: session_restarted."),
+                    )
                 ),
             )
         )
@@ -319,7 +345,7 @@ class Engine:
     async def submit_input(self, item: InboxItem, *, wake: bool) -> None:
         if self.state.session.status != "active":
             raise OperationError("session_closing", "Thread is closing")
-        await self.inbox.submit(item, wake=wake)
+        return await self.inbox.submit(item, wake=wake)
 
     @property
     def pending_input_count(self) -> int:
@@ -369,7 +395,8 @@ class Engine:
     ) -> AsyncIterator[LoopEvent]:
         if item.target is not InboxTarget.NEXT_TURN:
             raise ValueError("A direct turn input must target the next turn")
-        await self.inbox.submit(item, wake=False)
+        if not await self.inbox.submit(item, wake=False):
+            return
         async for event in self.run_pending(request_id=request_id):
             yield event
 
@@ -409,7 +436,7 @@ class Engine:
         except asyncio.CancelledError:
             outcome = "cancelled"
             self._log.info("turn.interrupted", turn=self.turn_count)
-            interrupted = self._close_interrupted_tool_calls(
+            interrupted = await self._close_interrupted_tool_calls(
                 ToolCancelled(reason="client_interrupt")
             )
             for message, name in interrupted:
@@ -419,16 +446,16 @@ class Engine:
                         directive=ContinueTurn(),
                     )
                 )
-            if not turn_ended:
-                await self._dispatch(Events.TURN_END, TurnEnded(
-                    tuple(self.messages), "client_interrupt"
-                ),
+            if turn_started and not turn_ended:
+                await self._dispatch(
+                    Events.TURN_END,
+                    TurnEnded(tuple(self.messages), "client_interrupt"),
                     short_circuit=False,
                 )
-            yield LoopTurnEnded(
-                turn=self.turn_count,
-                outcome=TurnCancelled(reason="client_interrupt"),
-            )
+                yield LoopTurnEnded(
+                    turn=self.turn_count,
+                    outcome=TurnCancelled(reason="client_interrupt"),
+                )
             raise
         except BaseException as exc:
             outcome = "error"
@@ -438,7 +465,9 @@ class Engine:
                 error_type=type(exc).__name__,
             )
             failure_ctx = LoopFailure(tuple(self.messages), exc)
-            await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False)
+            await self._dispatch(
+                Events.ON_STOP_FAILURE, failure_ctx, short_circuit=False
+            )
             await self._dispatch(Events.ON_ERROR, failure_ctx, short_circuit=False)
             yield LoopError(
                 code="engine_error",
@@ -456,7 +485,9 @@ class Engine:
                     {
                         message.id
                         for message in self.messages
-                        if isinstance(message, (HumanInputMessage, RuntimeNoticeMessage))
+                        if isinstance(
+                            message, (HumanInputMessage, RuntimeNoticeMessage)
+                        )
                     },
                 )
                 await self._publish_state_change()
@@ -500,7 +531,9 @@ class Engine:
             if retrying_iteration:
                 retrying_iteration = False
             else:
-                finalizing = self.max_iterations is not None and iteration >= self.max_iterations
+                finalizing = (
+                    self.max_iterations is not None and iteration >= self.max_iterations
+                )
                 if finalizing:
                     if iteration_limit_reached:
                         break
@@ -522,13 +555,14 @@ class Engine:
                     if finalizing:
                         notice_at = (
                             1
-                            if context_messages
-                            and context_messages[0].role == "system"
+                            if context_messages and context_messages[0].role == "system"
                             else 0
                         )
                         context_messages.insert(
                             notice_at,
-                            ProviderSystem(parts=(TextPart(text=self._iteration_limit_notice()),)),
+                            ProviderSystem(
+                                parts=(TextPart(text=self._iteration_limit_notice()),)
+                            ),
                         )
                     model_preparation = await self._prepare_model_request(
                         context_messages
@@ -639,11 +673,15 @@ class Engine:
                     "AfterModelResponse must return KeepResponse, "
                     "ReplaceResponse, CompleteTurn, or None"
                 )
-            text_parts = tuple(part for part in response.parts if isinstance(part, TextPart))
+            text_parts = tuple(
+                part for part in response.parts if isinstance(part, TextPart)
+            )
             reasoning_parts = tuple(
                 part for part in response.parts if isinstance(part, ReasoningPart)
             )
-            tool_calls = tuple(part for part in response.parts if isinstance(part, ToolCall))
+            tool_calls = tuple(
+                part for part in response.parts if isinstance(part, ToolCall)
+            )
             content = "".join(part.text for part in text_parts)
             if finalizing and tool_calls:
                 names = ", ".join(call.name for call in tool_calls)
@@ -695,7 +733,7 @@ class Engine:
                 ModelResponseObserved(exchange),
                 short_circuit=False,
             )
-            self.messages.append(response_msg)
+            await self.messages.append(response_msg)
             yield AssistantCompleted(message=response_msg)
             if response.usage.counters.output or response.usage.counters.input:
                 yield UsageObserved(usage=response.usage)
@@ -719,7 +757,7 @@ class Engine:
             for index, item in enumerate(items):
                 accepted = await self._accept_user_message(item)
                 if not accepted.proceed:
-                    await self.inbox.commit([item.id for item in items[:index + 1]])
+                    await self.inbox.commit([item.id for item in items[: index + 1]])
                     turn_complete = True
                 for event in accepted.events:
                     yield event
@@ -731,18 +769,14 @@ class Engine:
                 elif not tool_calls:
                     turn_complete = True
 
-        stop_reason = (
-            "max_iterations" if iteration_limit_reached else "completed"
-        )
+        stop_reason = "max_iterations" if iteration_limit_reached else "completed"
         yield await self._finish_turn(stop_reason)
 
     async def _run_tool_batch(
         self,
         response: ModelResponse,
     ) -> AsyncIterator[LoopEvent | _ToolBatchResult]:
-        tool_calls = [
-            part for part in response.parts if isinstance(part, ToolCall)
-        ]
+        tool_calls = [part for part in response.parts if isinstance(part, ToolCall)]
         if not await self._prepare_tool_calls(
             tool_calls,
             agent_response=response,
@@ -765,9 +799,7 @@ class Engine:
                 for call in tool_calls
             ),
         )
-        tool_names_by_id = {
-            call.id: call.name or "tool" for call in tool_calls
-        }
+        tool_names_by_id = {call.id: call.name or "tool" for call in tool_calls}
 
         tool_messages: list[ToolMessage] = []
         directives: list[TurnDirective] = []
@@ -782,7 +814,7 @@ class Engine:
             tool_messages.append(message)
             call_id = str(message.call.id)
             name = tool_names_by_id.get(call_id, "tool")
-            self.messages.append(message)
+            await self.messages.append(message)
             await self._publish_state_change()
             for client_event in execution.events:
                 yield client_event
@@ -798,8 +830,15 @@ class Engine:
             ],
             statuses=[message.outcome.kind for message in tool_messages],
             result_chars=sum(
-                len("".join(part.text for part in message.outcome.output.parts if isinstance(part, TextPart)))
-                if isinstance(message.outcome, (ToolSucceeded, ToolFailed)) else 0
+                len(
+                    "".join(
+                        part.text
+                        for part in message.outcome.output.parts
+                        if isinstance(part, TextPart)
+                    )
+                )
+                if isinstance(message.outcome, (ToolSucceeded, ToolFailed))
+                else 0
                 for message in tool_messages
             ),
         )
@@ -811,8 +850,7 @@ class Engine:
             )
 
         if any(
-            isinstance(directive, CompleteTurnDirective)
-            for directive in directives
+            isinstance(directive, CompleteTurnDirective) for directive in directives
         ):
             yield _ToolBatchResult(directive=CompleteTurnDirective())
             return
@@ -830,9 +868,9 @@ class Engine:
         if not accepted.proceed:
             return accepted
         user_input = accepted.user_input
-        await self._dispatch(Events.TURN_START, TurnStarted(
-            tuple(self.messages)
-        ),
+        await self._dispatch(
+            Events.TURN_START,
+            TurnStarted(tuple(self.messages)),
             short_circuit=False,
         )
         accepted.events.append(LoopTurnStarted(turn=self.turn_count))
@@ -858,9 +896,9 @@ class Engine:
             )
             events.extend(accepted.events)
             if not accepted.proceed:
-                await self.inbox.commit([
-                    claimed_item.id for claimed_item in claimed[:index + 1]
-                ])
+                await self.inbox.commit(
+                    [claimed_item.id for claimed_item in claimed[: index + 1]]
+                )
                 return _TurnStartResult(item.input.content, events, False)
         primary = claimed[primary_index]
         started = await self._start_turn(primary)
@@ -876,6 +914,7 @@ class Engine:
         )
 
     async def _build_turn_context(self) -> _ContextBuildResult:
+        await self.messages.synchronize()
         build_request = ContextBuildRequest(
             history=tuple(self.messages),
             runtime_selection=self.state.metadata.value.runtime_selection,
@@ -907,9 +946,7 @@ class Engine:
         await self._events.emit(CONTEXT_BUILD_INPUTS_READY, build_request)
         context_messages = await self._events.serial(BUILD_CONTEXT, build_request)
         if context_messages is None:
-            raise RuntimeError(
-                f"No context builder handled {BUILD_CONTEXT}"
-            )
+            raise RuntimeError(f"No context builder handled {BUILD_CONTEXT}")
         if not isinstance(context_messages, tuple):
             raise TypeError(
                 f"{BUILD_CONTEXT} must return a tuple of ProviderMessage values"
@@ -1007,16 +1044,22 @@ class Engine:
             reason=stop_reason,
         )
         turn_event = TurnEnded(tuple(self.messages), stop_reason)
-        await self._dispatch(Events.TURN_END, turn_event,
+        await self._dispatch(
+            Events.TURN_END,
+            turn_event,
             short_circuit=False,
         )
         try:
-            await self._dispatch(Events.ON_STOP, turn_event,
+            await self._dispatch(
+                Events.ON_STOP,
+                turn_event,
                 short_circuit=False,
             )
         except BaseException as exc:
             failure_ctx = LoopFailure(tuple(self.messages), exc)
-            await self._dispatch(Events.ON_STOP_FAILURE, failure_ctx,
+            await self._dispatch(
+                Events.ON_STOP_FAILURE,
+                failure_ctx,
                 short_circuit=False,
             )
             raise
@@ -1071,17 +1114,13 @@ class Engine:
                 raise ProviderFailure(chunk.error)
             if isinstance(chunk, ModelCancelled):
                 raise asyncio.CancelledError(chunk.reason)
-            raise TypeError(
-                f"Unsupported model stream event: {type(chunk).__name__}"
-            )
+            raise TypeError(f"Unsupported model stream event: {type(chunk).__name__}")
         if aggregate is None:
             raise RuntimeError("Model stream ended without a terminal event")
         finished = time.perf_counter()
         llm_ms = (finished - started) * 1000
         ttft_ms = (
-            (first_delta_at - started) * 1000
-            if first_delta_at is not None
-            else None
+            (first_delta_at - started) * 1000 if first_delta_at is not None else None
         )
         timing = ModelTiming(
             total_ms=round(llm_ms, 3),
@@ -1093,7 +1132,9 @@ class Engine:
             provider=request.selection.route.provider,
             model=request.selection.route.model,
             chunks=chunk_count,
-            content_chars=sum(len(part.text) for part in aggregate.parts if isinstance(part, TextPart)),
+            content_chars=sum(
+                len(part.text) for part in aggregate.parts if isinstance(part, TextPart)
+            ),
             reasoning_chars=sum(
                 len(part.text)
                 for part in aggregate.parts
@@ -1111,41 +1152,40 @@ class Engine:
     # Helpers
     # ------------------------------------------------------------------
 
-
     async def _publish_state_change(self) -> None:
         """Announce a mutation of the loop-owned state projection."""
         await self._dispatch(Events.STATE_CHANGED, StateChanged(), short_circuit=False)
 
-    def _close_interrupted_tool_calls(
+    async def _close_interrupted_tool_calls(
         self,
         outcome: ToolOutcome,
     ) -> list[tuple[ToolMessage, str]]:
         """Close unanswered calls with the terminal outcome of their turn."""
+        await self.messages.synchronize()
         assistant_index = next(
             (
                 index
                 for index in range(len(self.messages) - 1, -1, -1)
                 if isinstance(self.messages[index], AssistantMessage)
-                and any(isinstance(part, ToolCall) for part in self.messages[index].parts)
+                and any(
+                    isinstance(part, ToolCall) for part in self.messages[index].parts
+                )
             ),
             None,
         )
         if assistant_index is None:
             return []
 
-        tail = self.messages[assistant_index + 1:]
+        tail = self.messages[assistant_index + 1 :]
         if any(not isinstance(message, ToolMessage) for message in tail):
             return []
-        answered = {
-            str(message.call.id) for message in tail
-        }
+        answered = {str(message.call.id) for message in tail}
         calls = tuple(
-            part for part in self.messages[assistant_index].parts
+            part
+            for part in self.messages[assistant_index].parts
             if isinstance(part, ToolCall)
         )
-        missing = [
-            call for call in calls if str(call.id) not in answered
-        ]
+        missing = [call for call in calls if str(call.id) not in answered]
         closed: list[tuple[ToolMessage, str]] = []
         for call in missing:
             message = ToolMessage(
@@ -1154,7 +1194,7 @@ class Engine:
                 outcome=outcome,
                 timing=ToolTiming(duration_ms=0),
             )
-            self.messages.append(message)
+            await self.messages.append(message)
             closed.append((message, call.name))
         return closed
 
@@ -1178,10 +1218,12 @@ class Engine:
             if type(accepted_input.input) is not type(item.input):
                 raise ValueError("ON_TURN_INPUT cannot change input kind")
         elif isinstance(accept_result, RejectInput):
-            events.append(LoopError(
-                code="user_message_rejected",
-                message=accept_result.error,
-            ))
+            events.append(
+                LoopError(
+                    code="user_message_rejected",
+                    message=accept_result.error,
+                )
+            )
             return _TurnStartResult(user_input, events, False)
         elif isinstance(accept_result, HookCompleteTurn):
             if not is_loop_event(accept_result.result):
@@ -1235,17 +1277,25 @@ class Engine:
             replacement = accepted_result.message
             # Canonicalization owns content, not identity or provenance. Compare
             # the entire envelope so all input kinds obey the same constraint.
-            if replacement.model_copy(update={
-                "parts": message.parts,
-                "artifacts": message.artifacts,
-            }) != message:
+            if (
+                replacement.model_copy(
+                    update={
+                        "parts": message.parts,
+                        "artifacts": message.artifacts,
+                    }
+                )
+                != message
+            ):
                 raise ValueError(
                     "INPUT_ACCEPTED may only change parts and artifacts; "
                     "message identity and provenance must be preserved"
                 )
             message = replacement
 
+        await self.messages.append(message)
         if new_turn:
-            self.turn_count += 1
-        self.messages.append(message)
+            durable_count = await self.messages.begin_turn(message.id)
+            self.turn_count = (
+                durable_count if durable_count is not None else self.turn_count + 1
+            )
         return _TurnStartResult(user_input, events, True)

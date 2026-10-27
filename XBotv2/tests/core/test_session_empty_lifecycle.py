@@ -6,7 +6,7 @@ from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session.api.contracts import SessionNotFound
-from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.storage import ARCHIVE
 
 
 @pytest.mark.asyncio
@@ -20,14 +20,16 @@ async def test_empty_active_trajectory_and_delete(tmp_path):
             workspace_root=str(tmp_path), no_plugins=True, llm_override=MockLLM(),
         )
         thread = paths.session("empty").thread("main")
-        assert not thread.messages_file.exists()
-        result = host.require(PERSISTENCE).trajectory_page("empty", "main", cursor=None, limit=10)
+        assert not thread.rollout_file.exists()
+        result = await host.require(ARCHIVE).trajectory_page("empty", "main", cursor=None, limit=10)
         assert result.page.items == ()
         assert result.page.older_cursor is None
         assert result.newest_position == 0
-        assert not thread.messages_file.exists()
+        assert not thread.rollout_file.exists()
         with pytest.raises(OperationError, match="anchor"):
-            host.require(PERSISTENCE).trajectory_page("empty", "main", cursor=None, limit=10, before=2)
+            await host.require(ARCHIVE).trajectory_page("empty", "main", cursor=None, limit=10, before=2)
+        with pytest.raises(OperationError, match="cursor"):
+            await host.require(ARCHIVE).trajectory_page("empty", "main", cursor="invalid", limit=10)
         with pytest.raises(SessionNotFound):
             await manager.thread_summary("empty", "missing")
         # An empty session may also have an allocated directory.
@@ -55,7 +57,6 @@ async def test_closing_empty_and_nonempty_sessions(tmp_path):
         config = paths.session("nonempty").config_file
         config.parent.mkdir(parents=True, exist_ok=True)
         config.write_text("{}", encoding="utf-8")
-        paths.session("empty").root.mkdir(parents=True, exist_ok=True)
         await manager.close_session("empty")
         assert not paths.session("empty").root.exists()
         await manager.close_session("nonempty")

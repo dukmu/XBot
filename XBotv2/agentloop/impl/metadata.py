@@ -1,4 +1,5 @@
 """Thread-local metadata lifecycle owned by the loop runtime."""
+
 from __future__ import annotations
 from xcore.api.context import Context
 from XBotv2.core.api.domain import ResolvedRuntimeSelection
@@ -13,6 +14,7 @@ from XBotv2.core.api.metadata import (
     THREAD_METADATA_CHANGED,
     THREAD_METADATA_INITIALIZED,
 )
+
 
 class ThreadMetadataState:
     """Own one thread's metadata lifecycle and publish each state transition.
@@ -92,7 +94,6 @@ class ThreadMetadataState:
         self,
         selection: ResolvedRuntimeSelection,
     ) -> None:
-        await self.replace(self.value.model_copy(update={"runtime_selection": selection}))
-
-    async def replace_title(self, title: str) -> None:
-        await self.replace(self.value.model_copy(update={"title": title}))
+        await self.replace(
+            self.value.model_copy(update={"runtime_selection": selection})
+        )

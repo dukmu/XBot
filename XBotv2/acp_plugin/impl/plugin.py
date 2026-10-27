@@ -3,22 +3,20 @@
 from __future__ import annotations
 
 from xcore.api.context import Context
-from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.acp_plugin.api.contracts import ACPConfig, ACP_SERVER
 from XBotv2.acp_plugin.impl.xbot_agent import XBotACPAgent
 
 
 class ACPComponent:
     name = "xbot.acp"
-    inject = ["sessions", "runtime_log", PERSISTENCE]
+    inject = ["sessions", "runtime_log", ARCHIVE]
     Config = ACPConfig
 
-    def apply(
-        self, ctx: Context, config: ACPConfig
-    ) -> None:
+    def apply(self, ctx: Context, config: ACPConfig) -> None:
         agent = XBotACPAgent(
             sessions=ctx.sessions,
-            persistence=ctx.require(PERSISTENCE),
+            archive=ctx.require(ARCHIVE),
             provider_name=config.provider_name,
             no_plugins=config.no_plugins,
             selected_agent=config.selected_agent,

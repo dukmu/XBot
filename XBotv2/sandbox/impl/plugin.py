@@ -21,19 +21,33 @@ from XBotv2.config.api.contracts import SETTINGS
 from XBotv2.agentloop.api.contracts import TOOLS
 from xcore.api.context import Context
 from XBotv2.config.api.events import POLICY_CHANGED, PolicyChanged
-from XBotv2.context_builder.api.events import CONTEXT_BUILD_INPUTS_READY, ContextBuildRequest
+from XBotv2.context_builder.api.events import (
+    CONTEXT_BUILD_INPUTS_READY,
+    ContextBuildRequest,
+)
 from XBotv2.sandbox.impl.commands import build_sandbox_commands
 from XBotv2.sandbox.api.models import SANDBOX, SandboxConfig
 from XBotv2.permissions.api.models import APPROVAL
 from XBotv2.sandbox.impl.policy import SandboxPolicy
-from XBotv2.sandbox.impl.tools import RequestSandboxAccessTool, build_apply_sandbox_access
+from XBotv2.sandbox.impl.tools import (
+    RequestSandboxAccessTool,
+    build_apply_sandbox_access,
+)
 
 
 class SandboxComponent:
     inject = [
-        "thread_paths", "thread_info", TOOLS, "data_root", "variables",
-        "workspace_root", COMMANDS, SETTINGS, APPROVAL,
-        "thread_info", "interactive",
+        "thread_paths",
+        "thread_info",
+        TOOLS,
+        "data_root",
+        "variables",
+        "workspace_root",
+        COMMANDS,
+        SETTINGS,
+        APPROVAL,
+        "thread_info",
+        "interactive",
     ]
     """Register the sandbox policy as ``ctx.sandbox`` and its guard."""
 
@@ -45,7 +59,8 @@ class SandboxComponent:
             config,
             data_root=ctx.data_root,
             workspace_root=ctx.workspace_root,
-            session_root=ctx.thread_paths.state_dir,
+            session_root=ctx.thread_paths.root,
+            artifacts_root=ctx.thread_paths.artifacts_dir,
             variables=ctx.variables,
         )
         ctx.set(SANDBOX, policy)
@@ -88,5 +103,5 @@ def mount_thread(ctx, config):
 
 
 mount_thread.inject = getattr(SandboxComponent, "inject", ())
-mount_thread.provide = ('sandbox',)
+mount_thread.provide = ("sandbox",)
 mount_thread.Config = getattr(SandboxComponent, "Config", None)

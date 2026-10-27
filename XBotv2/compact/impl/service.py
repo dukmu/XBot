@@ -56,7 +56,12 @@ from XBotv2.compact.api.protocol import (
     CompactionCompleted,
     CompactionFailed,
 )
-from XBotv2.compact.api.events import POST_COMPACT, PRE_COMPACT, AfterCompact, BeforeCompact
+from XBotv2.compact.api.events import (
+    POST_COMPACT,
+    PRE_COMPACT,
+    AfterCompact,
+    BeforeCompact,
+)
 from XBotv2.compact.impl.history import history_chars, leading_system_messages
 
 logger = logging.getLogger("xbotv2.compact")
@@ -128,6 +133,7 @@ class CompactService:
     async def _compact_current_history(
         self,
     ) -> tuple[bool, CompactionMetrics | None]:
+        await self.state.history.synchronize()
         messages = list(self.state.messages)
         proposal = await self._compact(
             messages,
@@ -243,10 +249,7 @@ class CompactService:
                 "context-overflow compaction failed; preserving provider error"
             )
             return None
-        if (
-            result
-            and self.state.history.ids() != source_ids
-        ):
+        if result and self.state.history.ids() != source_ids:
             self._overflow_retries += 1
             return RetryRequest(request)
         return None
@@ -269,12 +272,12 @@ class CompactService:
         original_messages = list(self.state.messages)
         if proposal.selection.expected_revision != self.state.history.surface_revision:
             message = "Selected history changed while compacting"
-            self._record_end(proposal, TransactionFailed(error=message))
+            await self._record_end(proposal, TransactionFailed(error=message))
             raise RuntimeError(message)
         source_ids = tuple(str(value) for value in proposal.selection.source_ids)
-        if self.state.history.ids()[:len(source_ids)] != source_ids:
+        if self.state.history.ids()[: len(source_ids)] != source_ids:
             message = "Selected history changed while compacting"
-            self._record_end(proposal, TransactionFailed(error=message))
+            await self._record_end(proposal, TransactionFailed(error=message))
             raise RuntimeError(message)
 
         session = self.state.session
@@ -283,15 +286,17 @@ class CompactService:
             pre_result = await self._events.serial(PRE_COMPACT, pre)
         except asyncio.CancelledError:
             message = "Compaction cancelled."
-            self._record_end(proposal, TransactionAborted(reason="cancelled"))
-            await self._publish_runtime_event(CompactionFailed(
-                reason=proposal.reason,
-                message=message,
-                automatic=is_automatic_compaction(proposal.reason),
-            ))
+            await self._record_end(proposal, TransactionAborted(reason="cancelled"))
+            await self._publish_runtime_event(
+                CompactionFailed(
+                    reason=proposal.reason,
+                    message=message,
+                    automatic=is_automatic_compaction(proposal.reason),
+                )
+            )
             raise
         except BaseException as exc:
-            self._record_end(
+            await self._record_end(
                 proposal,
                 TransactionFailed(error=_exception_text(exc)),
             )
@@ -299,19 +304,28 @@ class CompactService:
 
         if pre_result is not None:
             message = "Compaction was rejected before commit."
-            self._record_end(proposal, TransactionFailed(error=message))
-            await self._publish_runtime_event(CompactionFailed(
-                reason=proposal.reason,
-                message=message,
-                automatic=is_automatic_compaction(proposal.reason),
-            ))
+            await self._record_end(proposal, TransactionFailed(error=message))
+            await self._publish_runtime_event(
+                CompactionFailed(
+                    reason=proposal.reason,
+                    message=message,
+                    automatic=is_automatic_compaction(proposal.reason),
+                )
+            )
             raise RuntimeError(message)
 
+        if (
+            proposal.selection.expected_revision != self.state.history.surface_revision
+            or self.state.history.ids()[: len(source_ids)] != source_ids
+        ):
+            message = "Selected history changed while compacting"
+            await self._record_end(proposal, TransactionFailed(error=message))
+            raise RuntimeError(message)
         metrics = proposal.metrics
         prefix_end = len(source_ids)
         previous_count = len(original_messages)
         try:
-            self.state.replace_message_range(
+            await self.state.replace_message_range(
                 0,
                 prefix_end,
                 [proposal.summary],
@@ -335,36 +349,36 @@ class CompactService:
                 ),
             )
         except BaseException as exc:
-            self._record_end(
+            await self._record_end(
                 proposal,
                 TransactionFailed(error=_exception_text(exc)),
             )
             raise
-        self._record_end(proposal, TransactionCommitted())
+        await self._record_end(proposal, TransactionCommitted())
 
         self._record_committed(proposal.reason, metrics, session)
-        await self._publish_runtime_event(CompactionCompleted(
-            reason=proposal.reason,
-            metrics=metrics,
-            automatic=is_automatic_compaction(proposal.reason),
-            summary=proposal.summary,
-        ))
+        await self._publish_runtime_event(
+            CompactionCompleted(
+                reason=proposal.reason,
+                metrics=metrics,
+                automatic=is_automatic_compaction(proposal.reason),
+                summary=proposal.summary,
+            )
+        )
         return True
 
-    def _record_end(
+    async def _record_end(
         self,
         proposal: CompactionPlan,
         outcome: TransactionOutcome,
     ) -> None:
-        transaction = TransactionRef(
-            kind="compaction", id=proposal.id
-        )
-        self.state.history.record(
+        transaction = TransactionRef(kind="compaction", id=proposal.id)
+        await self.state.history.record(
             TransactionEnded(transaction=transaction, outcome=outcome),
             durable=True,
         )
 
-    def _close_stale_compactions(self) -> None:
+    async def _close_stale_compactions(self) -> None:
         """Close durable transactions a crash left without an end marker.
 
         The surface is a fold of the trajectory, so a crashed attempt has
@@ -372,17 +386,15 @@ class CompactService:
         ledger truthful instead of blocking every later compaction.
         """
         for compaction_id in sorted(
-            self.state.history.open_transactions("compaction")
+            await self.state.history.open_transactions("compaction")
         ):
             logger.warning(
                 "compaction transaction %s has no end marker; closing it as aborted",
                 compaction_id,
             )
-            self.state.history.record(
+            await self.state.history.record(
                 TransactionEnded(
-                    transaction=TransactionRef(
-                        kind="compaction", id=compaction_id
-                    ),
+                    transaction=TransactionRef(kind="compaction", id=compaction_id),
                     outcome=TransactionAborted(
                         reason="the failed attempt recorded no end marker"
                     ),
@@ -405,7 +417,7 @@ class CompactService:
         stable_prefix: Sequence[ConversationMessage] | None = None,
         removable_estimate: int | None = None,
     ) -> CompactionPlan | None:
-        self._close_stale_compactions()
+        await self._close_stale_compactions()
         if stable_prefix is None:
             stable: Sequence[ConversationMessage] = ()
         else:

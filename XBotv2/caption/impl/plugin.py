@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 from XBotv2.llm.api.contracts import MODEL
+from XBotv2.session.api.contracts import SESSIONS
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from XBotv2.agentloop.api.state import LOOP_STATE
@@ -13,7 +14,7 @@ from XBotv2.caption.impl.tools import build_caption_tool
 
 
 class CaptionPlugin:
-    inject = [TOOLS, MODEL, LOOP_STATE, "thread_info", "usage"]
+    inject = [TOOLS, MODEL, LOOP_STATE, "thread_info", "usage", SESSIONS]
     name = "caption"
     Config = CaptionConfig
 
@@ -23,6 +24,7 @@ class CaptionPlugin:
             events=ctx,
             model=ctx.require(MODEL),
             state=ctx.require(LOOP_STATE).metadata,
+            sessions=ctx.require(SESSIONS),
             usage=ctx.usage,
             session_id=ctx.thread_info.session_id,
             config=config,
@@ -41,5 +43,5 @@ def mount_thread(ctx, config):
 
 
 mount_thread.inject = getattr(CaptionPlugin, "inject", ())
-mount_thread.provide = ('caption',)
+mount_thread.provide = ("caption",)
 mount_thread.Config = getattr(CaptionPlugin, "Config", None)

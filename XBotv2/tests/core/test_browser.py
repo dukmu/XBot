@@ -89,7 +89,7 @@ async def test_agent_web_fetch_uses_registered_tool_and_active_sandbox_policy(
         final_request = llm.request_history[-1]
         history = application.loop_state.history.snapshot()
     finally:
-        await application.stop()
+        await application.root.close()
 
     assert "web_fetch" in {tool.name for tool in tool_request.tools}
     assert "web_fetch" in {tool.name for tool in final_request.tools}
@@ -178,7 +178,7 @@ async def test_agent_web_fetch_reads_local_page_and_closes_network_client(
         assert len(clients) == 1
         assert not clients[0]._client.is_closed
     finally:
-        await application.stop()
+        await application.root.close()
         server.shutdown()
         thread.join()
         server.server_close()
@@ -309,7 +309,7 @@ async def test_agent_browser_tools_require_permission_and_close_chromium_on_stop
         ] == [message.call.name for message in messages]
     finally:
         dispose_sink()
-        await application.stop()
+        await application.root.close()
         server.shutdown()
         thread.join()
         server.server_close()
@@ -402,7 +402,7 @@ async def test_agent_browser_permission_denial_prevents_page_mutation(tmp_path, 
         assert browser_plugin.diagnostics()["browser_active"] is True
     finally:
         dispose_sink()
-        await application.stop()
+        await application.root.close()
 
     assert browser_plugin.diagnostics()["browser_active"] is False
 
@@ -512,7 +512,7 @@ async def test_agent_browser_permission_cancellation_prevents_page_mutation(
         assert browser_plugin.diagnostics()["browser_active"] is True
     finally:
         dispose_sink()
-        await application.stop()
+        await application.root.close()
 
     assert browser_plugin.diagnostics()["browser_active"] is False
 
@@ -554,7 +554,7 @@ async def test_agent_browser_blocks_loopback_before_launching_chromium(tmp_path)
         assert browser_plugin.diagnostics()["browser_active"] is False
         assert any(isinstance(event, AssistantCompleted) for event in events)
     finally:
-        await application.stop()
+        await application.root.close()
 
 
 @pytest.mark.asyncio
@@ -615,4 +615,4 @@ async def test_agent_web_search_uses_registered_tool_and_active_sandbox(
         ).outcome == outcome
         assert any(isinstance(event, AssistantCompleted) for event in events)
     finally:
-        await application.stop()
+        await application.root.close()

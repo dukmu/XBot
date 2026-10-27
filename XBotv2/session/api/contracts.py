@@ -86,7 +86,9 @@ def compaction_summary_text(messages: Iterable[ConversationMessage]) -> str:
     the expandable compaction entry.
     """
     for message in messages:
-        content = message.summary if isinstance(message, CompactionSummaryMessage) else ""
+        content = (
+            message.summary if isinstance(message, CompactionSummaryMessage) else ""
+        )
         match = re.search(
             r"<conversation_summary[^>]*>([\s\S]*?)</conversation_summary>",
             content,
@@ -94,10 +96,6 @@ def compaction_summary_text(messages: Iterable[ConversationMessage]) -> str:
         if match:
             return match.group(1).strip()
     return ""
-
-
-
-
 
 
 @dataclass(frozen=True, slots=True)
@@ -178,19 +176,6 @@ class ThreadSummary(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
 RequestT = TypeVar("RequestT")
 ResponseT = TypeVar("ResponseT")
 
@@ -225,12 +210,11 @@ class SessionResourceRemoved:
     session_id: str
 
 
-
-
 @dataclass(frozen=True, slots=True)
 class SessionInfo:
     session_id: str
     workspace_root: Path
+
 
 @dataclass(frozen=True, slots=True)
 class ThreadInfo:
@@ -243,10 +227,13 @@ class ThreadInfo:
     def is_subagent(self) -> bool:
         return bool(self.parent_thread_id)
 
+
 class SessionsPort(Protocol):
+    def thread_repository(self, session_id: str, thread_id: str): ...
+
     """Transport-neutral process API for persistent sessions and threads."""
 
-    def new_thread_id(self, session_id: str, agent_ref: str) -> str: ...
+    async def new_thread_id(self, session_id: str, agent_ref: str) -> str: ...
     async def locate(self, session_id: str, thread_id: str) -> Context: ...
     async def scopes(self, session_id: str) -> tuple[Context, ...]: ...
     def session_exists(self, session_id: str) -> bool: ...
@@ -258,15 +245,16 @@ class SessionsPort(Protocol):
     async def delete_session(self, session_id: str) -> None: ...
     async def list_threads(self, session_id: str) -> tuple[ThreadSummary, ...]: ...
     async def open_thread(self, request: OpenThread) -> Context: ...
-    async def thread_summary(self, session_id: str, thread_id: str) -> ThreadSummary: ...
+    async def thread_summary(
+        self, session_id: str, thread_id: str
+    ) -> ThreadSummary: ...
     async def close_session(self, session_id: str) -> None: ...
     async def close_thread(self, session_id: str, thread_id: str) -> None: ...
 
 
-
-
 from xcore.api.context import Context
 from xcore.api.services import ServiceKey
+
 SESSION_INFO: ServiceKey[SessionInfo] = ServiceKey("session_info")
 THREAD_INFO: ServiceKey[ThreadInfo] = ServiceKey("thread_info")
 SESSIONS: ServiceKey[SessionsPort] = ServiceKey("sessions")
@@ -275,8 +263,10 @@ SESSIONS: ServiceKey[SessionsPort] = ServiceKey("sessions")
 class ThreadEvents(Protocol):
     sequence: int
     subscriber_count: int
+
     def publish(self, event: SessionEvent, *, scope: EventScope = ...) -> None: ...
     def subscribe(self, *, after: int | None = None) -> SessionEventSubscription: ...
     def close(self) -> None: ...
+
 
 THREAD_EVENTS: ServiceKey[ThreadEvents] = ServiceKey("thread_events")

@@ -19,7 +19,11 @@ from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.tools import GuardDecision, ToolCall
 from XBotv2.agentloop.api.contracts import ToolRegistration
 from XBotv2.core.filesystem import operations as filesystem_ops
-from XBotv2.sandbox.impl.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
+from XBotv2.sandbox.impl.bwrap import (
+    BubblewrapBackend,
+    SandboxMountSpec,
+    backend_available,
+)
 from XBotv2.sandbox.api.models import PathAccess, SandboxConfig, SandboxPort
 
 
@@ -37,6 +41,7 @@ class SandboxPolicy(SandboxPort):
         data_root: Path | str = "/tmp/xbotv2-data",
         workspace_root: Path | str = "/tmp/xbotv2-workspace",
         session_root: Path | str | None = None,
+        artifacts_root: Path | str | None = None,
         enabled: bool = True,
         network: bool = True,
         external_read: str = "readonly",
@@ -50,6 +55,9 @@ class SandboxPolicy(SandboxPort):
         self.workspace_root = Path(workspace_root).resolve()
         self.session_root = (
             Path(session_root).resolve() if session_root is not None else None
+        )
+        self.artifacts_root = (
+            Path(artifacts_root).resolve() if artifacts_root is not None else None
         )
         self._network = network
         self.external_read = external_read
@@ -129,67 +137,117 @@ class SandboxPolicy(SandboxPort):
     # ------------------------------------------------------------------
 
     def _mount_specs(self) -> list[SandboxMountSpec]:
-        external_access = self._configured_mount_access(self.external_read, self.external_write)
-        mounts = [SandboxMountSpec(
-            Path("/"), Path("/"), external_access or "readonly", "dir",
-            mask=external_access is None,
-        )]
+        external_access = self._configured_mount_access(
+            self.external_read, self.external_write
+        )
+        mounts = [
+            SandboxMountSpec(
+                Path("/"),
+                Path("/"),
+                external_access or "readonly",
+                "dir",
+                mask=external_access is None,
+            )
+        ]
         if external_access is None:
             # A hidden host root still needs the interpreter, shell and shared libraries.
             for path in (
-                "/usr", "/bin", "/sbin", "/lib", "/lib64", sys.base_prefix,
-                "/etc/ld.so.cache", "/etc/alternatives", "/etc/ssl",
-                "/etc/resolv.conf", "/etc/hosts",
+                "/usr",
+                "/bin",
+                "/sbin",
+                "/lib",
+                "/lib64",
+                sys.base_prefix,
+                "/etc/ld.so.cache",
+                "/etc/alternatives",
+                "/etc/ssl",
+                "/etc/resolv.conf",
+                "/etc/hosts",
             ):
                 source = Path(path).resolve()
                 if source.exists():
-                    mounts.append(SandboxMountSpec(source, Path(path), "readonly", _path_kind(str(source))))
-        mounts.append(SandboxMountSpec(
-            source=self.data_root,
-            target=self.data_root,
-            access="readonly",
-            kind="dir",
-        ))
+                    mounts.append(
+                        SandboxMountSpec(
+                            source, Path(path), "readonly", _path_kind(str(source))
+                        )
+                    )
+        mounts.append(
+            SandboxMountSpec(
+                source=self.data_root,
+                target=self.data_root,
+                access="readonly",
+                kind="dir",
+            )
+        )
 
         workspace_access = self._configured_mount_access(
             self.workspace_read,
             self.workspace_write,
         )
         if workspace_access is not None:
-            mounts.append(SandboxMountSpec(
-                source=self.workspace_root,
-                target=self.workspace_root,
-                access=workspace_access,
-                kind="dir",
-            ))
+            mounts.append(
+                SandboxMountSpec(
+                    source=self.workspace_root,
+                    target=self.workspace_root,
+                    access=workspace_access,
+                    kind="dir",
+                )
+            )
         else:
-            mounts.append(SandboxMountSpec(
-                self.workspace_root, self.workspace_root, "readonly", "dir", mask=True,
-            ))
+            mounts.append(
+                SandboxMountSpec(
+                    self.workspace_root,
+                    self.workspace_root,
+                    "readonly",
+                    "dir",
+                    mask=True,
+                )
+            )
         if self.session_root is not None:
-            mounts.append(SandboxMountSpec(
-                source=self.session_root,
-                target=self.session_root,
-                access="readonly",
-                kind="dir",
-            ))
+            mounts.append(
+                SandboxMountSpec(
+                    source=self.session_root,
+                    target=self.session_root,
+                    access="readonly",
+                    kind="dir",
+                )
+            )
+
+        if self.artifacts_root is not None and self.artifacts_root.is_dir():
+            mounts.append(
+                SandboxMountSpec(
+                    source=self.artifacts_root,
+                    target=self.artifacts_root,
+                    access="readonly",
+                    kind="dir",
+                )
+            )
 
         for rule in reversed(self._rules):
             resolved = self.resolve_resource_path(rule.path)
-            if (
-                self.session_root is not None
-                and Path(resolved).is_relative_to(self.session_root)
+            if self.session_root is not None and Path(resolved).is_relative_to(
+                self.session_root
             ):
                 continue
             kind = _path_kind(resolved)
             if rule.access == "readwrite":
-                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind))
+                mounts.append(
+                    SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind)
+                )
             elif rule.access == "readonly":
-                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind))
+                mounts.append(
+                    SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind)
+                )
             elif rule.access == "allow":
-                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind))
+                mounts.append(
+                    SandboxMountSpec(Path(resolved), Path(resolved), "readwrite", kind)
+                )
             elif rule.access == "deny":
-                mounts.append(SandboxMountSpec(Path(resolved), Path(resolved), "readonly", kind, mask=True))
+                mounts.append(
+                    SandboxMountSpec(
+                        Path(resolved), Path(resolved), "readonly", kind, mask=True
+                    )
+                )
 
         worker = Path(filesystem_ops.__file__).resolve()
         if not worker.is_relative_to(self.workspace_root):
@@ -235,17 +293,20 @@ class SandboxPolicy(SandboxPort):
             if write:
                 resolved_target = target.resolve()
                 mounts = [
-                    mount for mount in mounts
+                    mount
+                    for mount in mounts
                     if mount.target not in {target, resolved_target}
                 ]
             required_access = "readwrite" if write else "readonly"
             if not _mount_covers(mounts, parent, write=write):
-                mounts.append(SandboxMountSpec(
-                    source=parent,
-                    target=parent,
-                    access=required_access,
-                    kind="dir",
-                ))
+                mounts.append(
+                    SandboxMountSpec(
+                        source=parent,
+                        target=parent,
+                        access=required_access,
+                        kind="dir",
+                    )
+                )
         return mounts
 
     # ------------------------------------------------------------------
@@ -279,7 +340,11 @@ class SandboxPolicy(SandboxPort):
             if not isinstance(value, str):
                 continue
             write = access == "write"
-            path = self.resolve_write_path(value) if write else self.resolve_read_path(value)
+            path = (
+                self.resolve_write_path(value)
+                if write
+                else self.resolve_read_path(value)
+            )
             resolved[field] = str(path)
         return resolved
 
@@ -297,12 +362,14 @@ class SandboxPolicy(SandboxPort):
             write = access == "write"
             decision = self._path_decision(Path(value), write=write)
             if decision != "allow":
-                decisions.append({
-                    "field": field,
-                    "path": value,
-                    "write": write,
-                    "decision": decision,
-                })
+                decisions.append(
+                    {
+                        "field": field,
+                        "path": value,
+                        "write": write,
+                        "decision": decision,
+                    }
+                )
         return decisions
 
     def check_tool_access(
@@ -313,7 +380,9 @@ class SandboxPolicy(SandboxPort):
         operation = filesystem_ops.resolve_operation(tool_name, args)
         return self.check_filesystem_access(operation, args) if operation else []
 
-    def make_guard(self) -> Callable[[ToolCall, ToolRegistration], GuardDecision | None]:
+    def make_guard(
+        self,
+    ) -> Callable[[ToolCall, ToolRegistration], GuardDecision | None]:
         """Return a monotonic execution guard for the tool pipeline.
 
         The guard receives ``(tool_call, entry)`` and returns ``None`` to
@@ -325,7 +394,9 @@ class SandboxPolicy(SandboxPort):
 
         return self._guard
 
-    def _guard(self, tool_call: ToolCall, entry: ToolRegistration) -> GuardDecision | None:
+    def _guard(
+        self, tool_call: ToolCall, entry: ToolRegistration
+    ) -> GuardDecision | None:
         args = dict(tool_call.args or {})
         # Escalation is a declared capability of the tool (owner = coretools),
         # not a hard-coded tool name. The tool refuses to discharge it without
@@ -344,9 +415,7 @@ class SandboxPolicy(SandboxPort):
             f"{'write' if issue['write'] else 'read'} access: {issue['path']}"
             for issue in issues
         )
-        return GuardDecision(
-            "deny", f"Sandbox denied {details}", source="sandbox"
-        )
+        return GuardDecision("deny", f"Sandbox denied {details}", source="sandbox")
 
     def _path_decision(self, path: Path, *, write: bool) -> str:
         lexical = _absolute_path(path)
@@ -364,6 +433,10 @@ class SandboxPolicy(SandboxPort):
         ):
             return "deny"
         if self.session_root is not None and target.is_relative_to(self.session_root):
+            return "deny" if write else "allow"
+        if self.artifacts_root is not None and target.is_relative_to(
+            self.artifacts_root
+        ):
             return "deny" if write else "allow"
         for rule in sorted(
             self._rules,
@@ -434,10 +507,7 @@ class SandboxPolicy(SandboxPort):
             {"path": r.path, "access": r.access}
             for r in self._rules
             if r.path != str(self.workspace_root)
-            and (
-                self.session_root is None
-                or r.path != str(self.session_root)
-            )
+            and (self.session_root is None or r.path != str(self.session_root))
         ]
         if rules:
             d["resources"] = rules
@@ -461,7 +531,9 @@ class SandboxPolicy(SandboxPort):
             sort_keys=False,
             default_flow_style=False,
         )
-        fd, tmp = tempfile.mkstemp(dir=str(target.parent), prefix=".sandbox-", suffix=".tmp")
+        fd, tmp = tempfile.mkstemp(
+            dir=str(target.parent), prefix=".sandbox-", suffix=".tmp"
+        )
         try:
             os.write(fd, content.encode("utf-8"))
             os.fsync(fd)

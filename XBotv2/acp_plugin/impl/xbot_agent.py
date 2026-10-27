@@ -1,10 +1,14 @@
 """ACP Agent implementation backed by the XBot session runtime."""
 
 from __future__ import annotations
-from XBotv2.session.api.records import conversation_replay, project_message, project_human_input
+from XBotv2.session.api.records import (
+    conversation_replay,
+    project_message,
+    project_human_input,
+)
 from XBotv2.interactions.api.contracts import CLIENT_EVENTS
 from XBotv2.session.api.snapshot import thread_snapshot
-from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.agentloop.api.contracts import AGENT_LOOP
 from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.agentloop.api.models import InterruptResult
@@ -63,19 +67,42 @@ from XBotv2.agentloop.api.outputs import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.impl.events import ACPEventMapper, replay_history
 from XBotv2.session.api.contracts import SessionEventFrame
 from XBotv2.agents.api.contracts import LIST_AGENTS, SELECT_AGENT, SelectAgent
-from XBotv2.commands.api.contracts import EXECUTE_COMMAND, LIST_COMMANDS, CommandCatalog, ExecuteCommand
+from XBotv2.commands.api.contracts import (
+    EXECUTE_COMMAND,
+    LIST_COMMANDS,
+    CommandCatalog,
+    ExecuteCommand,
+)
 from pydantic import JsonValue
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.api.domain import TokenCounters, TurnScope
 from XBotv2.interactions.api.contracts import InteractionRequest, InteractionResolution
-from XBotv2.interactions.api.models import Answered, InputCancelled, InputTimedOut, UserInputRequest
-from XBotv2.permissions.api.models import Allowed, Denied, NamedPermission, PermissionRequest, ToolPermission
+from XBotv2.interactions.api.models import (
+    Answered,
+    InputCancelled,
+    InputTimedOut,
+    UserInputRequest,
+)
+from XBotv2.permissions.api.models import (
+    Allowed,
+    Denied,
+    NamedPermission,
+    PermissionRequest,
+    ToolPermission,
+)
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm.api.contracts import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin.api.models import MCP_PLUGIN_ID
 from XBotv2.agentloop.api.models import ImageInput, SendMessage
-from XBotv2.session.api.contracts import OpenSession, SessionEventSubscription, SessionNotFound, ThreadSummary, ThreadNotActive, SessionsPort
+from XBotv2.session.api.contracts import (
+    OpenSession,
+    SessionEventSubscription,
+    SessionNotFound,
+    ThreadSummary,
+    ThreadNotActive,
+    SessionsPort,
+)
 from XBotv2.session.api.events import AgentConfiguredEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")
@@ -96,14 +123,14 @@ class XBotACPAgent:
         self,
         *,
         sessions: SessionsPort,
-        persistence,
+        archive,
         provider_name: str | None,
         no_plugins: bool = False,
         selected_agent: str | None = None,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self.sessions = sessions
-        self._persistence = persistence
+        self._archive = archive
         self.provider_name = provider_name
         self.no_plugins = no_plugins
         self.selected_agent = selected_agent
@@ -172,18 +199,18 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        opened_scope = await self.sessions.open(OpenSession(
-            session_id=None,
-            thread_id="main",
-            provider_name=self.provider_name,
-            workspace_root=workspace,
-            selected_agent=self.selected_agent,
-            mode="new",
-            no_plugins=self.no_plugins,
-            plugin_configs=self._mcp_plugin_config(
-                workspace, None, mcp_servers
-            ),
-        ))
+        opened_scope = await self.sessions.open(
+            OpenSession(
+                session_id=None,
+                thread_id="main",
+                provider_name=self.provider_name,
+                workspace_root=workspace,
+                selected_agent=self.selected_agent,
+                mode="new",
+                no_plugins=self.no_plugins,
+                plugin_configs=self._mcp_plugin_config(workspace, None, mcp_servers),
+            )
+        )
         opened = await thread_snapshot(opened_scope)
         await self._prepare_session(opened.key.session_id, opened.event_cursor)
         self._log.info(
@@ -242,17 +269,17 @@ class XBotACPAgent:
                 cwd and Path(workspace).resolve() != Path(cwd).resolve()
             ):
                 continue
-            sessions.append(SessionInfo(
-                session_id=snapshot.session_id,
-                cwd=workspace,
-                title=snapshot.title,
-            ))
+            sessions.append(
+                SessionInfo(
+                    session_id=snapshot.session_id,
+                    cwd=workspace,
+                    title=snapshot.title,
+                )
+            )
         self._log.debug("acp.sessions.listed", sessions=len(sessions))
         return ListSessionsResponse(sessions=sessions)
 
-    async def close_session(
-        self, session_id: str, **_: Any
-    ) -> CloseSessionResponse:
+    async def close_session(self, session_id: str, **_: Any) -> CloseSessionResponse:
         await self.sessions.close_session(session_id)
         task_entry = self._event_tasks.pop(session_id, None)
         if task_entry is not None:
@@ -274,19 +301,23 @@ class XBotACPAgent:
         snapshot = await self.sessions.session_summary(session_id)
         stored_workspace = snapshot.workspace_root
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
-            raise RequestError.invalid_params({
-                "sessionId": session_id,
-                "cwd": cwd,
-                "expectedCwd": stored_workspace,
-            })
+            raise RequestError.invalid_params(
+                {
+                    "sessionId": session_id,
+                    "cwd": cwd,
+                    "expectedCwd": stored_workspace,
+                }
+            )
 
         try:
             forked_id = await self.sessions.fork_session(session_id)
         except OperationError as exc:
-            raise RequestError.invalid_params({
-                "sessionId": session_id,
-                "reason": str(exc),
-            }) from exc
+            raise RequestError.invalid_params(
+                {
+                    "sessionId": session_id,
+                    "reason": str(exc),
+                }
+            ) from exc
 
         await self._open_existing(forked_id, workspace, mcp_servers)
         self._log.info(
@@ -330,10 +361,12 @@ class XBotACPAgent:
             self._commands_announced.add(session_id)
 
         if session_id in self._active_prompts:
-            raise RequestError.invalid_request({
-                "sessionId": session_id,
-                "reason": "a prompt is already running",
-            })
+            raise RequestError.invalid_request(
+                {
+                    "sessionId": session_id,
+                    "reason": "a prompt is already running",
+                }
+            )
         request_id = f"acp:{session_id}"
         prompt = ActivePrompt(
             request_id,
@@ -343,10 +376,15 @@ class XBotACPAgent:
         self._active_prompts[session_id] = prompt
         try:
             scope = await self.sessions.locate(session_id, "main")
-            await scope.require(AGENT_LOOP).submit_message(SendMessage(
-                session_id=session_id, thread_id="main", content=content,
-                request_id=request_id, images=tuple(images),
-            ))
+            await scope.require(AGENT_LOOP).submit_message(
+                SendMessage(
+                    session_id=session_id,
+                    thread_id="main",
+                    content=content,
+                    request_id=request_id,
+                    images=tuple(images),
+                )
+            )
             await prompt.completed.wait()
         finally:
             self._active_prompts.pop(session_id, None)
@@ -377,16 +415,18 @@ class XBotACPAgent:
         )
 
     async def cancel(self, session_id: str, **_: Any) -> None:
-        result = InterruptResult(cancelled=await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).interrupt())
+        result = InterruptResult(
+            cancelled=await (await self.sessions.locate(session_id, "main"))
+            .require(AGENT_LOOP)
+            .interrupt()
+        )
         self._log.info(
             "acp.session.cancelled",
             session_id=session_id,
             cancelled=result.cancelled,
         )
 
-    async def set_session_mode(
-        self, session_id: str, mode_id: str, **_: Any
-    ) -> None:
+    async def set_session_mode(self, session_id: str, mode_id: str, **_: Any) -> None:
         del session_id, mode_id
         raise RequestError.method_not_found("session/set_mode")
 
@@ -398,23 +438,35 @@ class XBotACPAgent:
         **_: Any,
     ) -> SetSessionConfigOptionResponse:
         if not isinstance(value, str):
-            raise RequestError.invalid_params({
-                "configId": config_id,
-                "value": value,
-            })
+            raise RequestError.invalid_params(
+                {
+                    "configId": config_id,
+                    "value": value,
+                }
+            )
         try:
             if config_id == "agent":
-                await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(SELECT_AGENT, SelectAgent(value))
+                await (
+                    (await self.sessions.locate(session_id, "main"))
+                    .require(AGENT_LOOP)
+                    .invoke(SELECT_AGENT, SelectAgent(value))
+                )
             elif config_id == "provider":
-                await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(SELECT_PROVIDER, SelectProvider(value))
+                await (
+                    (await self.sessions.locate(session_id, "main"))
+                    .require(AGENT_LOOP)
+                    .invoke(SELECT_PROVIDER, SelectProvider(value))
+                )
             else:
                 raise RequestError.invalid_params({"configId": config_id})
         except OperationError as exc:
-            raise RequestError.invalid_params({
-                "configId": config_id,
-                "value": value,
-                "reason": str(exc),
-            }) from exc
+            raise RequestError.invalid_params(
+                {
+                    "configId": config_id,
+                    "value": value,
+                    "reason": str(exc),
+                }
+            ) from exc
         options = await self._config_options(session_id)
         await self._update(
             session_id,
@@ -434,14 +486,10 @@ class XBotACPAgent:
     async def authenticate(self, method_id: str, **_: Any) -> None:
         raise RequestError.method_not_found(f"authenticate:{method_id}")
 
-    async def ext_method(
-        self, method: str, params: dict[str, Any]
-    ) -> dict[str, Any]:
+    async def ext_method(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
         raise RequestError.method_not_found(method)
 
-    async def ext_notification(
-        self, method: str, params: dict[str, Any]
-    ) -> None:
+    async def ext_notification(self, method: str, params: dict[str, Any]) -> None:
         del method, params
 
     async def close(self) -> None:
@@ -470,23 +518,27 @@ class XBotACPAgent:
         stored_workspace = snapshot.workspace_root
         workspace = _workspace(cwd)
         if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
-            raise RequestError.invalid_params({
-                "sessionId": session_id,
-                "cwd": cwd,
-                "expectedCwd": stored_workspace,
-            })
+            raise RequestError.invalid_params(
+                {
+                    "sessionId": session_id,
+                    "cwd": cwd,
+                    "expectedCwd": stored_workspace,
+                }
+            )
         try:
-            opened_scope = await self.sessions.open(OpenSession(
-                session_id=session_id,
-                thread_id="main",
-                provider_name=self.provider_name,
-                workspace_root=workspace,
-                mode="resume",
-                no_plugins=self.no_plugins,
-                plugin_configs=self._mcp_plugin_config(
-                    workspace, session_id, mcp_servers
-                ),
-                ))
+            opened_scope = await self.sessions.open(
+                OpenSession(
+                    session_id=session_id,
+                    thread_id="main",
+                    provider_name=self.provider_name,
+                    workspace_root=workspace,
+                    mode="resume",
+                    no_plugins=self.no_plugins,
+                    plugin_configs=self._mcp_plugin_config(
+                        workspace, session_id, mcp_servers
+                    ),
+                )
+            )
             opened = await thread_snapshot(opened_scope)
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
@@ -498,7 +550,11 @@ class XBotACPAgent:
             if not existing.done():
                 existing.cancel()
             await asyncio.gather(existing, return_exceptions=True)
-        events = (await self.sessions.locate(session_id, 'main')).require(THREAD_EVENTS).subscribe(event_cursor)
+        events = (
+            (await self.sessions.locate(session_id, "main"))
+            .require(THREAD_EVENTS)
+            .subscribe(event_cursor)
+        )
         task = asyncio.create_task(
             self._forward_session_events(session_id, events),
             name=f"xbot-acp-events-{session_id}",
@@ -528,21 +584,14 @@ class XBotACPAgent:
                 # frame belongs to the running prompt.
                 active_prompt = (
                     active
-                    if (
-                        active is not None
-                        and isinstance(frame.scope, TurnScope)
-                    )
+                    if (active is not None and isinstance(frame.scope, TurnScope))
                     else None
                 )
                 event_mapper = active_prompt.mapper if active_prompt else mapper
-                if (
-                    isinstance(frame.event, AgentConfiguredEvent)
-                ):
+                if isinstance(frame.event, AgentConfiguredEvent):
                     # Track the live window locally: the mapper instance is
                     # never mutated from outside.
-                    fallback_window = (
-                        frame.event.runtime_selection.model.context_window
-                    )
+                    fallback_window = frame.event.runtime_selection.model.context_window
                 for update in event_mapper.updates(
                     frame.event,
                     fallback_context_size=fallback_window,
@@ -584,7 +633,11 @@ class XBotACPAgent:
         await self.connection.session_update(session_id=session_id, update=update)
 
     async def _command_catalog(self, session_id: str) -> CommandCatalog:
-        return await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_COMMANDS, EmptyRequest())
+        return (
+            await (await self.sessions.locate(session_id, "main"))
+            .require(AGENT_LOOP)
+            .invoke(LIST_COMMANDS, EmptyRequest())
+        )
 
     async def _slash_command(
         self,
@@ -627,50 +680,62 @@ class XBotACPAgent:
         session_id: str,
     ) -> list[SessionConfigOptionSelect]:
         options: list[SessionConfigOptionSelect] = []
-        catalog = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_AGENTS, EmptyRequest())
+        catalog = (
+            await (await self.sessions.locate(session_id, "main"))
+            .require(AGENT_LOOP)
+            .invoke(LIST_AGENTS, EmptyRequest())
+        )
         definitions = catalog.agents
         agents = [
-            definition
-            for definition in definitions
-            if definition.mode != "subagent"
+            definition for definition in definitions if definition.mode != "subagent"
         ]
         if agents:
-            options.append(SessionConfigOptionSelect(
-                id="agent",
-                name="Agent",
-                category="_agent",
-                type="select",
-                current_value=catalog.active or agents[0].name,
-                options=[
-                    SessionConfigSelectOption(
-                        value=definition.name,
-                        name=definition.name,
-                        description=definition.description or None,
-                    )
-                    for definition in agents
-                ],
-            ))
+            options.append(
+                SessionConfigOptionSelect(
+                    id="agent",
+                    name="Agent",
+                    category="_agent",
+                    type="select",
+                    current_value=catalog.active or agents[0].name,
+                    options=[
+                        SessionConfigSelectOption(
+                            value=definition.name,
+                            name=definition.name,
+                            description=definition.description or None,
+                        )
+                        for definition in agents
+                    ],
+                )
+            )
 
-        providers = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(LIST_PROVIDERS, EmptyRequest())
+        providers = (
+            await (await self.sessions.locate(session_id, "main"))
+            .require(AGENT_LOOP)
+            .invoke(LIST_PROVIDERS, EmptyRequest())
+        )
         if providers.providers:
             summary = await self._thread(session_id)
-            options.append(SessionConfigOptionSelect(
-                id="provider",
-                name="Provider / model",
-                category="model",
-                type="select",
-                current_value=summary.provider,
-                options=[
-                    SessionConfigSelectOption(value=item.name, name=item.name)
-                    for item in providers.providers
-                ],
-            ))
+            options.append(
+                SessionConfigOptionSelect(
+                    id="provider",
+                    name="Provider / model",
+                    category="model",
+                    type="select",
+                    current_value=summary.provider,
+                    options=[
+                        SessionConfigSelectOption(value=item.name, name=item.name)
+                        for item in providers.providers
+                    ],
+                )
+            )
         return options
 
-    async def _run_command(
-        self, session_id: str, name: str, raw_args: str
-    ) -> None:
-        result = await (await self.sessions.locate(session_id, 'main')).require(AGENT_LOOP).invoke(EXECUTE_COMMAND, ExecuteCommand(name, 'server', raw_args))
+    async def _run_command(self, session_id: str, name: str, raw_args: str) -> None:
+        result = (
+            await (await self.sessions.locate(session_id, "main"))
+            .require(AGENT_LOOP)
+            .invoke(EXECUTE_COMMAND, ExecuteCommand(name, "server", raw_args))
+        )
         await self._update(
             session_id,
             update_agent_message_text(result.message),
@@ -680,7 +745,7 @@ class XBotACPAgent:
         pages = []
         cursor = None
         while True:
-            page = self._persistence.message_page(
+            page = await self._archive.message_page(
                 session_id,
                 "main",
                 cursor=cursor,
@@ -720,9 +785,7 @@ class XBotACPAgent:
                 call_name = event.subject.tool
                 call_args = event.subject.params
             else:  # pragma: no cover - PermissionSubject is closed
-                raise TypeError(
-                    f"Unsupported permission subject: {event.subject!r}"
-                )
+                raise TypeError(f"Unsupported permission subject: {event.subject!r}")
             response: RequestPermissionResponse = (
                 await self.connection.request_permission(
                     session_id=session_id,
@@ -758,11 +821,13 @@ class XBotACPAgent:
                     "allow_session",
                 }
                 if allowed:
-                    return Allowed(scope=(
-                        "session"
-                        if outcome.option_id == "allow_session"
-                        else "once"
-                    ))
+                    return Allowed(
+                        scope=(
+                            "session"
+                            if outcome.option_id == "allow_session"
+                            else "once"
+                        )
+                    )
                 return Denied(reason="permission denied")
             return Denied(
                 reason=(
@@ -778,13 +843,8 @@ class XBotACPAgent:
         options = event.options
         elicitation = getattr(self.client_capabilities, "elicitation", None)
         if getattr(elicitation, "form", None) is None:
-            return InputCancelled(
-                reason="ACP client does not support form elicitation"
-            )
-        labels = [
-            option.label
-            for option in options
-        ]
+            return InputCancelled(reason="ACP client does not support form elicitation")
+        labels = [option.label for option in options]
         mode = ElicitationFormSessionMode(
             session_id=session_id,
             tool_call_id=correlation_id or None,
@@ -827,9 +887,9 @@ class XBotACPAgent:
         additional_directories: list[str] | None,
     ) -> None:
         if additional_directories:
-            raise RequestError.invalid_params({
-                "additionalDirectories": "not supported"
-            })
+            raise RequestError.invalid_params(
+                {"additionalDirectories": "not supported"}
+            )
 
     def _mcp_plugin_config(
         self,
@@ -840,47 +900,39 @@ class XBotACPAgent:
         if not mcp_servers:
             return None
         if self.no_plugins:
-            raise RequestError.invalid_params({
-                "mcpServers": "plugins are disabled"
-            })
+            raise RequestError.invalid_params({"mcpServers": "plugins are disabled"})
         # Plugin enablement is decided by the plugin tree (xcore.yaml /
         # plugins.yaml); requested servers are injected directly.
         servers: dict[str, JsonValue] = {}
         for server in mcp_servers:
             name = str(getattr(server, "name", ""))
             if not _MCP_NAME.fullmatch(name):
-                raise RequestError.invalid_params({
-                    "mcpServers": f"invalid server name: {name!r}"
-                })
+                raise RequestError.invalid_params(
+                    {"mcpServers": f"invalid server name: {name!r}"}
+                )
             if isinstance(server, McpServerStdio):
                 servers[name] = {
                     "type": "local",
                     "command": [server.command, *server.args],
                     "cwd": workspace,
-                    "env": {
-                        item.name: item.value
-                        for item in server.env
-                    },
+                    "env": {item.name: item.value for item in server.env},
                     "required": True,
                 }
             elif isinstance(server, HttpMcpServer):
                 servers[name] = {
                     "type": "remote",
                     "url": server.url,
-                    "headers": {
-                        item.name: item.value
-                        for item in server.headers
-                    },
+                    "headers": {item.name: item.value for item in server.headers},
                     "required": True,
                 }
             elif isinstance(server, SseMcpServer):
-                raise RequestError.invalid_params({
-                    "mcpServers": "SSE transport is not supported"
-                })
+                raise RequestError.invalid_params(
+                    {"mcpServers": "SSE transport is not supported"}
+                )
             else:
-                raise RequestError.invalid_params({
-                    "mcpServers": f"unsupported server type: {type(server).__name__}"
-                })
+                raise RequestError.invalid_params(
+                    {"mcpServers": f"unsupported server type: {type(server).__name__}"}
+                )
         return {MCP_PLUGIN_ID: {"servers": servers}}
 
 
@@ -899,17 +951,19 @@ def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
         if block_type == "text":
             parts.append(str(block.text))
         elif block_type == "image":
-            images.append(ImageInput(
-                data=str(block.data),
-                media_type=str(block.mime_type),
-            ))
+            images.append(
+                ImageInput(
+                    data=str(block.data),
+                    media_type=str(block.mime_type),
+                )
+            )
         elif block_type == "resource":
             resource = block.resource
             text = getattr(resource, "text", None)
             if text is None:
-                raise RequestError.invalid_params({
-                    "prompt": "binary embedded resources are not supported"
-                })
+                raise RequestError.invalid_params(
+                    {"prompt": "binary embedded resources are not supported"}
+                )
             parts.append(
                 f"<embedded_context uri={quoteattr(str(resource.uri))}>\n"
                 f"{escape(str(text))}\n"
@@ -921,9 +975,9 @@ def _prompt_content(blocks: list[Any]) -> tuple[str, list[ImageInput]]:
                 f"name={quoteattr(str(block.name))} />"
             )
         else:
-            raise RequestError.invalid_params({
-                "prompt": f"unsupported content type: {block_type}"
-            })
+            raise RequestError.invalid_params(
+                {"prompt": f"unsupported content type: {block_type}"}
+            )
     content = "\n\n".join(parts).strip()
     if not content and not images:
         raise RequestError.invalid_params({"prompt": "prompt is empty"})
@@ -938,10 +992,7 @@ def _usage(data: TokenCounters | None) -> Usage | None:
         output_tokens=data.output,
         total_tokens=data.input + data.output,
         cached_read_tokens=data.cache_read,
-        cached_write_tokens=(
-            data.cache_create
-            + data.prompt_cache_write
-        ),
+        cached_write_tokens=(data.cache_create + data.prompt_cache_write),
     )
 
 

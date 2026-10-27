@@ -14,7 +14,12 @@ from XBotv2.caption.api.models import (
 )
 from XBotv2.core.api.messages import HumanInputMessage
 from XBotv2.core.api.parts import TextPart
-from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ProviderSystem, ProviderUser
+from XBotv2.core.api.provider import (
+    ModelRequest,
+    ProviderMessage,
+    ProviderSystem,
+    ProviderUser,
+)
 from XBotv2.core.api.metadata import Metadata
 from XBotv2.core.api.domain import AuxiliaryRequest, RequestObservation
 from XBotv2.core.api.tokens import estimate_request_tokens
@@ -91,6 +96,7 @@ class CaptionService:
         events: Context,
         model: ModelPort,
         state: Metadata,
+        sessions,
         usage: UsagePort,
         session_id: str,
         config: CaptionConfig,
@@ -99,6 +105,7 @@ class CaptionService:
         self._events = events
         self.model = model
         self.state = state
+        self._sessions = sessions
         self._usage = usage
         self._session_id = session_id
         self.config = config
@@ -121,8 +128,7 @@ class CaptionService:
         if self.state.value.title != self._session_id:
             return False
         return any(
-            isinstance(message, HumanInputMessage)
-            for message in event.request.history
+            isinstance(message, HumanInputMessage) for message in event.request.history
         )
 
     async def _on_before_context(self, event: BeforeContextBuild) -> None:
@@ -139,11 +145,15 @@ class CaptionService:
             self.config.max_chars,
         )
         selection = self.state.value.runtime_selection.model
-        selection = selection.model_copy(update={
-            "generation": selection.generation.model_copy(update={
-                "max_output_tokens": self.config.output_tokens,
-            }),
-        })
+        selection = selection.model_copy(
+            update={
+                "generation": selection.generation.model_copy(
+                    update={
+                        "max_output_tokens": self.config.output_tokens,
+                    }
+                ),
+            }
+        )
         model_request = ModelRequest(
             messages=request,
             tools=(),
@@ -185,7 +195,7 @@ class CaptionService:
             await self._apply_title(CaptionResult(title=title))
 
     async def _apply_title(self, result: CaptionResult) -> CaptionResult:
-        await self.state.replace_title(result.title)
+        await self._sessions.rename_session(self._session_id, result.title)
         self._captioned = True
         logger.info("caption.applied")
         return result

@@ -7,7 +7,16 @@ from XBotv2.core.api.operations import RequestT, ResponseT
 from collections.abc import AsyncIterator, Sequence
 from dataclasses import dataclass, field
 import uuid
-from typing import TYPE_CHECKING, Annotated, Awaitable, Callable, Literal, Protocol, TypeAlias, overload
+from typing import (
+    TYPE_CHECKING,
+    Annotated,
+    Awaitable,
+    Callable,
+    Literal,
+    Protocol,
+    TypeAlias,
+    overload,
+)
 from XBotv2.core.api.domain import InboxTarget, MessageId
 from XBotv2.core.api.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
@@ -17,9 +26,13 @@ from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
 from XBotv2.core.api.tools import GuardDecision, Tool, ToolCall, ToolExecution
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop.api.models import PendingInputData, SendMessage, HistoryMutation, SessionStatus
+    from XBotv2.agentloop.api.models import (
+        PendingInputData,
+        SendMessage,
+        HistoryMutation,
+        SessionStatus,
+    )
     from XBotv2.llm.api.contracts import ModelPort
-
 
 
 class AllTools(BaseModel):
@@ -59,7 +72,9 @@ InputPayload = Annotated[
 class InboxItem(BaseModel):
     """One uniquely identified model-visible input."""
 
-    id: MessageId = Field(default_factory=lambda: MessageId(f"input-{uuid.uuid4().hex}"), min_length=1)
+    id: MessageId = Field(
+        default_factory=lambda: MessageId(f"input-{uuid.uuid4().hex}"), min_length=1
+    )
     target: InboxTarget
     input: InputPayload
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -110,19 +125,22 @@ class Discarded:
     ids: tuple[MessageId, ...]
 
 
-InboxMutation: TypeAlias = Inserted | Edited | Removed | Retargeted | Consumed | Discarded
+InboxMutation: TypeAlias = (
+    Inserted | Edited | Removed | Retargeted | Consumed | Discarded
+)
 InboxChange: TypeAlias = InboxMutation | Claimed
 
 
 class InboxSink(Protocol):
-    def append(self, change: InboxMutation) -> None: ...
+    async def load(self) -> list[InboxItem]: ...
+    async def append(self, change: InboxMutation) -> bool: ...
 
 
 class Inbox(Protocol):
     @property
     def pending(self) -> list[InboxItem]: ...
     def __len__(self) -> int: ...
-    async def submit(self, item: InboxItem, *, wake: bool) -> None: ...
+    async def submit(self, item: InboxItem, *, wake: bool) -> bool: ...
     async def claim_turn(self) -> list[InboxItem]: ...
     async def claim_step(self) -> list[InboxItem]: ...
     async def commit(self, input_ids: Sequence[str]) -> None: ...
@@ -159,7 +177,6 @@ class ToolRegistration:
     timeout_seconds: float | None = None
 
 
-
 class AgentLoopPort(Protocol):
     @property
     def busy(self) -> bool: ...
@@ -175,16 +192,34 @@ class AgentLoopPort(Protocol):
     @overload
     def configure(self, *, model_client: ModelPort) -> None: ...
     @overload
-    def configure(self, *, model_client: ModelPort, max_iterations: int | None) -> None: ...
-    async def invoke(self, operation: Operation[RequestT, ResponseT], request: RequestT) -> ResponseT: ...
+    def configure(
+        self, *, model_client: ModelPort, max_iterations: int | None
+    ) -> None: ...
+    async def invoke(
+        self, operation: Operation[RequestT, ResponseT], request: RequestT
+    ) -> ResponseT: ...
     async def interrupt(self) -> bool: ...
     async def submit_input(self, item: InboxItem, *, wake: bool) -> None: ...
     async def submit_message(self, request: SendMessage) -> None: ...
-    async def send_message(self, content: str, request_id: str, *, delivery: str = "steer", images: list[ImageRef] | None = None, artifacts: list[ArtifactRef] | None = None) -> None: ...
-    async def update_pending_input(self, message_id: str, action: str, content: str = "") -> tuple[PendingInputData, ...]: ...
+    async def send_message(
+        self,
+        content: str,
+        request_id: str,
+        *,
+        delivery: str = "steer",
+        images: list[ImageRef] | None = None,
+        artifacts: list[ArtifactRef] | None = None,
+    ) -> None: ...
+    async def update_pending_input(
+        self, message_id: str, action: str, content: str = ""
+    ) -> tuple[PendingInputData, ...]: ...
     async def regenerate(self, request_id: str) -> None: ...
-    async def clear_history(self, *, history_limit: int | None = None) -> HistoryMutation: ...
-    async def undo_history(self, count: int, *, history_limit: int | None = None) -> HistoryMutation: ...
+    async def clear_history(
+        self, *, history_limit: int | None = None
+    ) -> HistoryMutation: ...
+    async def undo_history(
+        self, count: int, *, history_limit: int | None = None
+    ) -> HistoryMutation: ...
 
 
 ToolGuard = Callable[
@@ -206,7 +241,10 @@ class ToolsPort(Protocol):
     ) -> str: ...
     def unregister(self, name: str) -> bool: ...
     def guard(
-        self, guard: ToolGuard, *, approval: bool = False,
+        self,
+        guard: ToolGuard,
+        *,
+        approval: bool = False,
         owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> bool: ...
@@ -225,9 +263,6 @@ class ToolsPort(Protocol):
         self,
         tool_calls: list[ToolCall],
     ) -> AsyncIterator[ToolExecution]: ...
-
-
-
 
 
 LIST_TOOLS = Operation("tools/list", EmptyRequest, ToolCatalog)

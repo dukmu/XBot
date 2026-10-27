@@ -17,7 +17,9 @@ _REFERENCE = re.compile(r"\$\$\{([A-Za-z_][A-Za-z0-9_]*)\}")
 # time; runtime variables use the same marker without the ``env:`` namespace.
 # Single-dollar ``${...}`` is ordinary text, preserving regular-expression syntax.
 _ENV_REFERENCE = re.compile(r"\$\$\{env:([A-Za-z_][A-Za-z0-9_]*)\}")
-_RUNTIME_ENV_HINT = "environment reference must be expanded during configuration parsing"
+_RUNTIME_ENV_HINT = (
+    "environment reference must be expanded during configuration parsing"
+)
 _MARKDOWN_VAR_BLOCK = re.compile(
     r"^```var[ \t]*\r?\n[ \t]*\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)\}[ \t]*"
     r"\r?\n```[ \t]*$",
@@ -99,19 +101,23 @@ class RuntimeVariables(Mapping[str, str]):
         workspace: Path | str,
         thread: ThreadPaths,
     ) -> "RuntimeVariables":
-        values = dict(cls.from_roots(
-            workspace=workspace,
-            data_dir=runtime.data_dir,
-            session_dir=thread.session.root,
-            thread_dir=thread.root,
-            state_dir=thread.state_dir,
-        ))
-        values.update({
-            "artifacts": thread.artifacts_dir,
-            "tool_results": thread.artifact_dir(ArtifactKind.TOOL_RESULT),
-            "session_id": thread.session_id,
-            "thread_id": thread.thread_id,
-        })
+        values = dict(
+            cls.from_roots(
+                workspace=workspace,
+                data_dir=runtime.data_dir,
+                session_dir=thread.session.root,
+                thread_dir=thread.root,
+                state_dir=thread.root,
+            )
+        )
+        values.update(
+            {
+                "artifacts": thread.artifacts_dir,
+                "tool_results": thread.artifact_dir(ArtifactKind.TOOL_RESULT),
+                "session_id": thread.session_id,
+                "thread_id": thread.thread_id,
+            }
+        )
         return cls(values)
 
     def __getitem__(self, name: str) -> str:
@@ -134,6 +140,7 @@ class RuntimeVariables(Mapping[str, str]):
 
     def expand_markdown(self, value: str, *, source: str = "Markdown") -> str:
         """Replace explicit Markdown ``var`` blocks without touching other text."""
+
         def replacement(match: re.Match[str]) -> str:
             name = match.group("name")
             self._require(name, source)
@@ -188,7 +195,5 @@ class RuntimeVariables(Mapping[str, str]):
     def _require(self, name: str, source: str) -> None:
         if name not in self._values:
             if name.startswith("env:"):
-                raise ValueError(
-                    f"{_RUNTIME_ENV_HINT}: $${{{name}}} in {source}"
-                )
+                raise ValueError(f"{_RUNTIME_ENV_HINT}: $${{{name}}} in {source}")
             raise ValueError(f"Unknown runtime variable $${{{name}}} in {source}")

@@ -24,3 +24,5 @@ decision = ctx.require(PERMISSIONS).check("shell", {"command": "git status"})
 ```
 
 This query does not consume a grant; the registered tool guard owns authorization.
+
+Permissions handles its own persisted grants during session fork.

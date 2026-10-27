@@ -2,7 +2,11 @@
 
 import pytest
 from xcore.api.context import Context
-from xcore.api.state import StateService
+from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.session.api.storage import THREAD_REPOSITORY
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.domain import (
     AuxiliaryRequest,
     GenerationSettings,
@@ -19,6 +23,17 @@ from XBotv2.core.api.domain import (
     UsageSnapshot,
 )
 from XBotv2.usage.impl.plugin import UsageService
+
+
+@pytest.fixture
+async def usage_storage(tmp_path):
+    scope = await thread_scope(paths=RuntimePaths.from_data_dir(tmp_path / "data"),
+                               session_id="usage-test", llm_override=MockLLM())
+    try:
+        yield (scope.root.require(PERSISTENCE).state("usage-test", "main").namespace("usage"),
+               scope.require(THREAD_REPOSITORY))
+    finally:
+        await scope.root.close()
 
 
 def _selection() -> ResolvedModelSelection:
@@ -71,9 +86,9 @@ def test_token_counters_adds_each_domain_counter():
 
 
 @pytest.mark.asyncio
-async def test_usage_persists_only_counters_not_request_observations(tmp_path):
-    store = StateService(path=tmp_path / "state.json").namespace("usage")
-    usage = UsageService(store, Context())
+async def test_usage_persists_only_counters_not_request_observations(usage_storage):
+    store, repository = usage_storage
+    usage = UsageService(store, Context(), thread_repository=repository)
     await usage.initialize(())
     observation = _observation(TurnRequest(turn_id=TurnId("turn-1")), 24)
 
@@ -99,7 +114,7 @@ async def test_usage_persists_only_counters_not_request_observations(tmp_path):
 
     # Per-request observations already live canonically in AssistantMessage
     # exchanges.  The usage state owns only the cumulative counters and must
-    # not grow another request ledger beside messages.jsonl.
+    # not grow another request ledger beside the canonical history.
     assert await store.get("counters") == {
         "total_counters": {
             "input": 10,
@@ -110,17 +125,16 @@ async def test_usage_persists_only_counters_not_request_observations(tmp_path):
         },
     }
 
-    restored = UsageService(store, Context())
+    restored = UsageService(store, Context(), thread_repository=repository)
     await restored.initialize(())
     assert restored.snapshot().total_counters == snapshot.total_counters
     assert restored.snapshot().latest_turn_observation is None
 
 
 @pytest.mark.asyncio
-async def test_auxiliary_request_accumulates_without_replacing_turn_context(tmp_path):
-    usage = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage"), Context(),
-    )
+async def test_auxiliary_request_accumulates_without_replacing_turn_context(usage_storage):
+    store, repository = usage_storage
+    usage = UsageService(store, Context(), thread_repository=repository)
     await usage.initialize(())
     turn = _observation(TurnRequest(turn_id=TurnId("turn-1")), 100)
     auxiliary = _observation(
@@ -139,10 +153,9 @@ async def test_auxiliary_request_accumulates_without_replacing_turn_context(tmp_
 
 
 @pytest.mark.asyncio
-async def test_usage_service_requires_initialization_before_recording(tmp_path):
-    usage = UsageService(
-        StateService(path=tmp_path / "state.json").namespace("usage"), Context(),
-    )
+async def test_usage_service_requires_initialization_before_recording(usage_storage):
+    store, repository = usage_storage
+    usage = UsageService(store, Context(), thread_repository=repository)
     with pytest.raises(RuntimeError, match="initialized"):
         await usage.record(
             _observation(TurnRequest(turn_id=TurnId("turn-1"))), UsageDelta(

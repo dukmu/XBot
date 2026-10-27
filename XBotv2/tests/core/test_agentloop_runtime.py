@@ -1,3 +1,5 @@
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.session.api.contracts import THREAD_INFO
 from XBotv2.tests.runtime import engine_of
 """Behavioral checks for the composed Agent loop runtime."""
 
@@ -8,6 +10,7 @@ import subprocess
 import sys
 from pathlib import Path
 import pytest
+import pytest_asyncio
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.agentloop.api.events import Events, LoopFailure, TurnEnded
@@ -35,6 +38,24 @@ from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRe
 from XBotv2.session.api.records import project_message
 
 from XBotv2.session.api.records import conversation_replay
+
+
+@pytest_asyncio.fixture(autouse=True)
+async def close_test_roots(monkeypatch):
+    """Close the process worker even when a test only stops its thread."""
+    roots = []
+    original = thread_scope
+
+    async def tracked_thread_scope(**kwargs):
+        scope = await original(**kwargs)
+        roots.append(scope.root)
+        return scope
+
+    monkeypatch.setitem(globals(), "thread_scope", tracked_thread_scope)
+    yield
+    for root in reversed(roots):
+        if root.is_active:
+            await root.close()
 
 
 @pytest.mark.asyncio
@@ -66,14 +87,9 @@ async def test_assistant_completion_is_committed_before_it_is_published(
                     message.id for message in services.loop_state.history.snapshot()
                 }
                 assert event.message.id in history_ids
-                persistence = services.get("thread_persistence", strict=False)
-                if persistent:
-                    assert persistence is not None
-                    assert event.message.id in {
-                        message.id for message in persistence.history.load()
-                    }
-                else:
-                    assert persistence is None
+                info = services.require(THREAD_INFO)
+                durable = await services.root.require(ARCHIVE).surface(info.session_id, info.thread_id)
+                assert event.message.id in {message.id for message in durable}
         assert completed is not None
     finally:
         await stream.aclose()
@@ -84,7 +100,7 @@ async def test_assistant_completion_is_committed_before_it_is_published(
 async def test_assistant_persistence_failure_prevents_completed_event(
     temp_data_dir, temp_workspace, monkeypatch
 ):
-    from XBotv2.persistence.impl.store import MessageHistoryStore
+    from XBotv2.agentloop.impl.storage import MessageHistoryStore
 
     services = await thread_scope(
         paths=RuntimePaths.from_data_dir(temp_data_dir),
@@ -96,10 +112,10 @@ async def test_assistant_persistence_failure_prevents_completed_event(
     )
     original_append = MessageHistoryStore.append
 
-    def fail_assistant_append(self, messages):
+    async def fail_assistant_append(self, messages, *, expected_version=None):
         if any(isinstance(message, AssistantMessage) for message in messages):
             raise OSError("assistant persistence failed")
-        return original_append(self, messages)
+        return await original_append(self, messages, expected_version=expected_version)
 
     monkeypatch.setattr(MessageHistoryStore, "append", fail_assistant_append)
     try:
@@ -284,12 +300,12 @@ async def test_turn_end_hook_observes_the_complete_durable_conversation(
             return f"found:{term}"
 
         engine_of(services).tools.register(Tool.from_function(lookup), cleanup="caller")
-        persistence = services.get("thread_persistence")
-        assert persistence is not None
+        info = services.require(THREAD_INFO)
+        archive = services.root.require(ARCHIVE)
         observations = []
 
         async def inspect_durable_history(event: TurnEnded) -> None:
-            durable_messages = persistence.history.load()
+            durable_messages = await archive.surface(info.session_id, info.thread_id)
             observations.append((
                 tuple(message.id for message in event.history),
                 tuple(message.id for message in durable_messages),
@@ -336,6 +352,8 @@ from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.impl.mock import MockLLM
 
 from XBotv2.session.api.records import project_message
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.session.api.contracts import THREAD_INFO
 
 async def main():
     app = await thread_scope(
@@ -358,10 +376,9 @@ async def main():
     )]
     assert isinstance(events[-1], LoopTurnEnded)
     assert events[-1].outcome.kind == 'finished'
-    persistence = app.get('thread_persistence')
-    assert persistence is not None
+    info = app.require(THREAD_INFO)
     records = [
-        record for message in persistence.history.load()
+        record for message in await app.root.require(ARCHIVE).surface(info.session_id, info.thread_id)
         if (record := project_message(message)) is not None
     ]
     assert [record.kind for record in records] == ['human_input', 'assistant']
@@ -753,15 +770,16 @@ async def test_content_cache_externalizes_user_and_tool_text_through_agent_loop(
         assert tool_path is not None
         user_model_path = Path(user_path.group(1))
         tool_model_path = Path(tool_path.group(1))
-        thread_paths = RuntimePaths.from_data_dir(temp_data_dir).session(
-            "runtime-content-cache"
-        ).thread("main")
-        user_artifact_id = str(
-            user_model_path.relative_to(thread_paths.artifacts_dir)
+        human = next(
+            message for message in engine_of(services).messages
+            if message.kind == "human_input"
         )
-        tool_artifact_id = str(
-            tool_model_path.relative_to(thread_paths.artifacts_dir)
+        tool_message = next(
+            message for message in engine_of(services).messages
+            if message.kind == "tool"
         )
+        user_artifact_id = human.artifacts[0].id
+        tool_artifact_id = tool_message.outcome.output.artifacts[0].id
         assert user_artifact_id.startswith("context/")
         assert tool_artifact_id.startswith("tool_results/")
         assert services.artifacts.model_path(user_artifact_id) == str(user_model_path)
@@ -1095,12 +1113,12 @@ async def test_failed_provider_turn_is_durable_and_same_runtime_recovers(
         llm_override=MockLLM(responses=[{"content": "session title"}]),
     )
     try:
-        persistence = services.get("thread_persistence")
-        assert persistence is not None
+        info = services.require(THREAD_INFO)
+        archive = services.root.require(ARCHIVE)
         failure_observations = []
 
         async def inspect_provider_failure(event: LoopFailure) -> None:
-            durable_messages = persistence.history.load()
+            durable_messages = await archive.surface(info.session_id, info.thread_id)
             failure_observations.append((
                 tuple(message.id for message in event.history),
                 tuple(message.id for message in durable_messages),

@@ -1,78 +1,32 @@
 """Catalog resilience through the actual process/session owner."""
-import pytest_asyncio
-from XBotv2.main import open_runtime
-from XBotv2.session.api.contracts import SESSIONS, OpenSession
-from XBotv2.llm.impl.mock import MockLLM
-
-import asyncio
-
-import os
-
-import time
-
 import pytest
+import pytest_asyncio
 
-from XBotv2.core.api.domain import (
-    MessageId,
-    AgentExecutionLimits,
-    GenerationSettings,
-    ModelRoute,
-    ResolvedModelSelection,
-    ResolvedRuntimeSelection,
-    StandardGenerationMode,
-)
-
-from XBotv2.core.api.metadata import ThreadMetadata
-
+from XBotv2.agentloop.api.state import LOOP_STATE
 from XBotv2.core.api.messages import HumanInputMessage
-
 from XBotv2.core.api.parts import TextPart
-
 from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.main import open_runtime
+from XBotv2.session.api.contracts import SESSIONS, OpenSession, SessionNotFound
 
-from XBotv2.persistence.impl.store import ThreadPersistence
 
-from XBotv2.session.api.contracts import SESSION_RESOURCE_REMOVED, SessionNotFound
+async def _session(tmp_path, manager, session_id):
+    scope = await manager.open(OpenSession(session_id, "main", str(tmp_path), None, "new", False, model_override=MockLLM()))
+    await scope.require(LOOP_STATE).history.append(HumanInputMessage(id=f"input-{session_id}", parts=(TextPart(text=session_id),)))
+    await manager.close_session(session_id)
+    return RuntimePaths.from_data_dir(tmp_path).session(session_id)
 
-def _session(tmp_path, session_id: str):
-    persistence = ThreadPersistence.open(
-        RuntimePaths.from_data_dir(tmp_path).session(session_id),
-        thread_id="main",
-    )
-    persistence.history.append([HumanInputMessage(
-        id=MessageId(f"input-{session_id}"),
-        parts=(TextPart(text=session_id),),
-    )])
-    persistence.metadata.save(ThreadMetadata(
-        runtime_selection=ResolvedRuntimeSelection(
-            agent_name="default",
-            prompt="",
-            limits=AgentExecutionLimits(),
-            enabled_tools=(),
-            model=ResolvedModelSelection(
-                route=ModelRoute(provider="default", model="test"),
-                generation=GenerationSettings(
-                    mode=StandardGenerationMode(), max_output_tokens=128,
-                ),
-                context_window=4096,
-            ),
-        ),
-        workspace_root="/workspace",
-    ))
-    return persistence
 
-def _corrupt(persistence) -> None:
-    path = persistence.history.path
-    path.write_text(
-        path.read_text(encoding="utf-8") + '{"schema_version":\n',
-        encoding="utf-8",
-    )
+def _corrupt(paths):
+    with paths.thread("main").rollout_file.open("ab") as stream:
+        stream.write(b"{complete bad json}\n")
 
 @pytest.mark.asyncio
 async def test_list_sessions_keeps_an_unreadable_session_visible(tmp_path, caplog, manager):
     caplog.set_level("WARNING", logger="xbotv2.session")
-    _session(tmp_path, "good")
-    _corrupt(_session(tmp_path, "broken"))
+    await _session(tmp_path, manager, "good")
+    _corrupt(await _session(tmp_path, manager, "broken"))
 
     summaries = {
         summary.session_id: summary
@@ -87,19 +41,19 @@ async def test_list_sessions_keeps_an_unreadable_session_visible(tmp_path, caplo
 
 @pytest.mark.asyncio
 async def test_session_summary_still_reports_an_unreadable_session(tmp_path, manager):
-    _corrupt(_session(tmp_path, "broken"))
+    _corrupt(await _session(tmp_path, manager, "broken"))
 
-    with pytest.raises(ValueError, match="Invalid messages.jsonl"):
+    with pytest.raises(ValueError, match="Invalid rollout"):
         await manager.session_summary("broken")
 
 @pytest.mark.asyncio
 async def test_delete_session_does_not_read_the_trajectory(tmp_path, manager):
-    persistence = _session(tmp_path, "broken")
-    _corrupt(persistence)
+    paths = await _session(tmp_path, manager, "broken")
+    _corrupt(paths)
 
     await manager.delete_session("broken")
 
-    assert not persistence.paths.session.root.exists()
+    assert not paths.root.exists()
 
 @pytest.mark.asyncio
 async def test_mutating_a_missing_session_still_fails_clearly(tmp_path, manager):

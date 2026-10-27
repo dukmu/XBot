@@ -5,13 +5,27 @@ from types import SimpleNamespace
 import httpx
 import pytest
 from fastapi import FastAPI
-from xcore.api.state import StateService
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.main import open_runtime
+from XBotv2.persistence.api.contracts import PERSISTENCE
 
-from XBotv2.workspaces.api.contracts import WorkspaceNotFound
+from XBotv2.workspaces.api.contracts import WORKSPACES, WorkspaceNotFound
 from XBotv2.workspaces.impl.service import WorkspaceRegistry
 from XBotv2.workspaces.api.contracts import WORKSPACE_RESOURCE_CHANGED
 from XBotv2.workspaces.impl.protocol import build_router
 from XBotv2.workspaces.impl.directories import DirectoryBrowser
+
+
+@pytest.fixture
+async def workspace_state(tmp_path):
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(tmp_path / "data"))
+    try:
+        registry = root.require(WORKSPACES)
+        for workspace in (await registry.list()).items:
+            await registry.delete(workspace.workspace_id)
+        yield root.require(PERSISTENCE).state()
+    finally:
+        await root.close()
 
 
 class Sessions:
@@ -31,7 +45,7 @@ class Events:
 
 
 @pytest.mark.asyncio
-async def test_workspace_registry_persists_and_projects_session_membership(tmp_path):
+async def test_workspace_registry_persists_and_projects_session_membership(tmp_path, workspace_state):
     first_path = tmp_path / "first"
     second_path = tmp_path / "second"
     first_path.mkdir()
@@ -41,8 +55,7 @@ async def test_workspace_registry_persists_and_projects_session_membership(tmp_p
         SimpleNamespace(session_id="s1", workspace_root=str(first_path)),
         SimpleNamespace(session_id="other", workspace_root=str(tmp_path / "other")),
     ])
-    state_file = tmp_path / "state.json"
-    registry = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+    registry = WorkspaceRegistry(workspace_state, sessions, Events())
 
     first, created = await registry.create(first_path)
     same, duplicate_created = await registry.create(first_path / ".")
@@ -61,7 +74,7 @@ async def test_workspace_registry_persists_and_projects_session_membership(tmp_p
     moved = await registry.insert_session_before(first.workspace_id, "s1", "s2")
     assert moved.session_ids == ("s1", "s2")
 
-    restored = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+    restored = WorkspaceRegistry(workspace_state, sessions, Events())
     assert [item.workspace_id for item in (await restored.list()).items] == [
         first.workspace_id,
         second.workspace_id,
@@ -73,12 +86,12 @@ async def test_workspace_registry_persists_and_projects_session_membership(tmp_p
 
 
 @pytest.mark.asyncio
-async def test_workspace_rename_reorder_and_delete_are_strict(tmp_path):
+async def test_workspace_rename_reorder_and_delete_are_strict(tmp_path, workspace_state):
     first_path = tmp_path / "first"
     second_path = tmp_path / "second"
     first_path.mkdir()
     second_path.mkdir()
-    registry = WorkspaceRegistry(StateService(path=tmp_path / "state.json"), Sessions(), Events())
+    registry = WorkspaceRegistry(workspace_state, Sessions(), Events())
     first, _ = await registry.create(first_path)
     second, _ = await registry.create(second_path)
 
@@ -104,8 +117,8 @@ async def test_workspace_rename_reorder_and_delete_are_strict(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workspace_create_requires_an_existing_directory(tmp_path):
-    registry = WorkspaceRegistry(StateService(path=tmp_path / "state.json"), Sessions(), Events())
+async def test_workspace_create_requires_an_existing_directory(tmp_path, workspace_state):
+    registry = WorkspaceRegistry(workspace_state, Sessions(), Events())
 
     with pytest.raises(ValueError, match="existing directory"):
         await registry.create(tmp_path / "missing")
@@ -117,7 +130,7 @@ async def test_workspace_create_requires_an_existing_directory(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workspace_boot_registration_does_not_read_session_history(tmp_path):
+async def test_workspace_boot_registration_does_not_read_session_history(tmp_path, workspace_state):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
 
@@ -127,7 +140,7 @@ async def test_workspace_boot_registration_does_not_read_session_history(tmp_pat
 
     events = Events()
     registry = WorkspaceRegistry(
-        StateService(path=tmp_path / "state.json"),
+        workspace_state,
         CorruptSessions(),
         events,
     )
@@ -139,7 +152,7 @@ async def test_workspace_boot_registration_does_not_read_session_history(tmp_pat
 
 
 @pytest.mark.asyncio
-async def test_session_events_update_durable_workspace_membership(tmp_path):
+async def test_session_events_update_durable_workspace_membership(tmp_path, workspace_state):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     events = Events()
@@ -148,7 +161,7 @@ async def test_session_events_update_durable_workspace_membership(tmp_path):
         workspace_root=str(workspace_path),
     )])
     registry = WorkspaceRegistry(
-        StateService(path=tmp_path / "state.json"),
+        workspace_state,
         sessions,
         events,
     )
@@ -169,15 +182,14 @@ async def test_session_events_update_durable_workspace_membership(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_workspace_archive_uses_the_same_snapshot_and_validates_session(tmp_path):
+async def test_workspace_archive_uses_the_same_snapshot_and_validates_session(tmp_path, workspace_state):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     sessions = Sessions([SimpleNamespace(
         session_id="session-1",
         workspace_root=str(workspace_path),
     )])
-    state_file = tmp_path / "state.json"
-    registry = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+    registry = WorkspaceRegistry(workspace_state, sessions, Events())
     workspace, _ = await registry.create(workspace_path)
 
     assert await registry.set_archived("session-1", True) == ("session-1",)
@@ -186,7 +198,7 @@ async def test_workspace_archive_uses_the_same_snapshot_and_validates_session(tm
 
     sessions.items = ()
     assert (await registry.list()).archived_session_ids == ()
-    restored = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+    restored = WorkspaceRegistry(workspace_state, sessions, Events())
     assert (await restored.list()).archived_session_ids == ()
 
     sessions.items = (SimpleNamespace(
@@ -199,14 +211,14 @@ async def test_workspace_archive_uses_the_same_snapshot_and_validates_session(tm
 
 
 @pytest.mark.asyncio
-async def test_workspace_http_resources_use_stable_wire_fields(tmp_path):
+async def test_workspace_http_resources_use_stable_wire_fields(tmp_path, workspace_state):
     workspace_path = tmp_path / "workspace"
     workspace_path.mkdir()
     (workspace_path / "project").mkdir()
     (workspace_path / ".hidden").mkdir()
     (workspace_path / "README.md").write_text("not a directory", encoding="utf-8")
     registry = WorkspaceRegistry(
-        StateService(path=tmp_path / "state.json"),
+        workspace_state,
         Sessions([SimpleNamespace(
             session_id="session-1",
             workspace_root=str(workspace_path),
@@ -285,7 +297,7 @@ async def test_workspace_baseline_cursor_precedes_the_snapshot_read(tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_attach_session_never_requires_the_directory_to_exist(tmp_path):
+async def test_attach_session_never_requires_the_directory_to_exist(tmp_path, workspace_state):
     """Session-lifecycle projections (attach/detach) must not be able to veto
     a live session when its workspace directory was deleted on disk; only
     explicit user-facing creation validates the directory."""
@@ -296,8 +308,7 @@ async def test_attach_session_never_requires_the_directory_to_exist(tmp_path):
     sessions = Sessions([
         SimpleNamespace(session_id="s-live", workspace_root=str(missing)),
     ])
-    state_file = tmp_path / "state.json"
-    registry = WorkspaceRegistry(StateService(path=state_file), sessions, Events())
+    registry = WorkspaceRegistry(workspace_state, sessions, Events())
 
     # Projection attaches even though the directory is gone.
     await registry.attach_session("s-live", missing)
