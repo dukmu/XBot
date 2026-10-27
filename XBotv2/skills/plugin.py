@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from pydantic import JsonValue
-from xcore import Context
+from xcore.api.context import Context
 
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.agentloop import ToolsPort
@@ -64,8 +64,6 @@ class SkillsPlugin:
         self._registry = SkillRegistry()
         self._permission_scope = SkillPermissionScope()
         self._active_skills: set[str] = set()
-        self._skill_tools: list[str] = []
-        self._skill_commands: list[str] = []
         self._model_skill_names: set[str] = set()
         self._metadata_budget_chars = 8_000
         self._initialized = False
@@ -76,6 +74,7 @@ class SkillsPlugin:
         config: dict[str, JsonValue] | None = None,
     ) -> None:
         del config
+        self._owner = ctx
         self._tools: ToolsPort = ctx.tools
         self._commands = ctx.commands
         self._variables: RuntimeVariables = ctx.variables
@@ -89,13 +88,7 @@ class SkillsPlugin:
         ctx.tools.guard(self._guard_tool_scope)
 
     def _cleanup_runtime(self) -> None:
-        """Unregister session-registered skill tools/commands and reset state."""
-        for command_name in reversed(self._skill_commands):
-            self._commands.unregister(command_name)
-        self._skill_commands.clear()
-        for registered_name in reversed(self._skill_tools):
-            self._tools.unregister(registered_name)
-        self._skill_tools.clear()
+        """Reset plugin state after its registrations are released."""
         self._registry = SkillRegistry()
         self._active_skills.clear()
         self._permission_scope.clear()
@@ -116,11 +109,13 @@ class SkillsPlugin:
                 8_000,
                 int(max_context * 0.02 * 4),
             )
+        registered_tools: list[str] = []
+        registered_commands: list[str] = []
         try:
             for skill in self._registry.list_skills():
                 if not skill.disable_model_invocation:
                     registered_name = self._register_skill_tool(skill)
-                    self._skill_tools.append(registered_name)
+                    registered_tools.append(registered_name)
                     self._model_skill_names.add(skill.name)
                 if skill.user_invocable:
                     command_name = self._commands.register(
@@ -130,13 +125,15 @@ class SkillsPlugin:
                             description=skill.description,
                             usage=f"/{skill.name} [instructions]",
                         ),
-                        # Session-init registration: _cleanup_runtime releases it.
-                        cleanup="caller",
+                        owner=self._owner,
                     )
-                    self._skill_commands.append(command_name)
+                    registered_commands.append(command_name)
         except Exception:
+            for name in reversed(registered_commands):
+                self._commands.unregister(name)
+            for name in reversed(registered_tools):
+                self._tools.unregister(name)
             self._cleanup_runtime()
-            self._registry = SkillRegistry()
             raise
         self._initialized = True
 
@@ -145,9 +142,7 @@ class SkillsPlugin:
         return self._tools.register(
             self._skill_as_tool(skill),
             namespace=f"skills:{skill.scope}",
-            # Skill tools are registered on session init (outside apply) and
-            # released by _cleanup_runtime on session close/unload.
-            cleanup="caller",
+            owner=self._owner,
         )
 
     async def _on_before_tool_schema(self, event: BeforeModelRequest):

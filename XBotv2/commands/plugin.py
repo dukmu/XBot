@@ -9,10 +9,10 @@ from __future__ import annotations
 
 from typing import Literal
 
-from functools import partial
 from pydantic import JsonValue
 
-from xcore import Context, bound_effect
+from xcore import bound_effect
+from xcore.api.context import Context
 from XBotv2.commands.contracts import (
     Command,
     CommandCatalog,
@@ -40,7 +40,7 @@ class CommandsService(CommandsPort):
     """Plugin-facing command registry with fiber-scoped auto-unregister."""
 
     def __init__(self, *, ownership: Literal["fiber", "caller"] = "fiber") -> None:
-        self._commands: dict[str, Command] = {}
+        self._commands: dict[str, tuple[object, Command]] = {}
         # Composition-level default for registrations made outside a plugin
         # apply: "fiber" stays loud, "caller" states the composer owns release.
         self._ownership = ownership
@@ -49,29 +49,41 @@ class CommandsService(CommandsPort):
         self,
         command: Command,
         *,
+        owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str:
         if command.name in self._commands:
             raise ValueError(f"Command {command.name!r} is already registered")
-        self._commands[command.name] = command
-        if bound_effect(partial(self.unregister, command.name)) is False:
-            if (cleanup or self._ownership) != "caller":
-                # No owner could ever release this command: undo it.
+        token = object()
+        self._commands[command.name] = (token, command)
+
+        def remove() -> None:
+            entry = self._commands.get(command.name)
+            if entry is not None and entry[0] is token:
                 self.unregister(command.name)
+
+        try:
+            if owner is not None:
+                owner.effect(lambda: remove)
+            elif bound_effect(remove) is False and (cleanup or self._ownership) != "caller":
                 raise RuntimeError(
                     f"Command {command.name!r} was registered outside a plugin "
-                    "apply(); pass cleanup='caller' when the caller owns release"
+                    "apply(); provide an owner or pass cleanup='caller' when the caller owns release"
                 )
+        except BaseException:
+            remove()
+            raise
         return command.name
 
     def unregister(self, name: str) -> bool:
         return self._commands.pop(name, None) is not None
 
     def get(self, name: str) -> Command | None:
-        return self._commands.get(name)
+        entry = self._commands.get(name)
+        return entry[1] if entry is not None else None
 
     def all(self) -> tuple[Command, ...]:
-        return tuple(self._commands.values())
+        return tuple(command for _, command in self._commands.values())
 
     def __len__(self) -> int:
         return len(self._commands)

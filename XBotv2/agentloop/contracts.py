@@ -14,7 +14,7 @@ from XBotv2.core.operations import EmptyRequest, Operation
 from XBotv2.core.messages import ConversationMessage
 from XBotv2.core.metadata import ThreadMetadataState
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-from xcore import Context
+from xcore.api.context import Context
 from xcore.service import Service
 
 from XBotv2.core.artifacts import ArtifactRef, ImageRef
@@ -307,9 +307,15 @@ class ToolsPort(Protocol):
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
+        owner: Context | None = None,
+        cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str: ...
     def unregister(self, name: str) -> bool: ...
-    def guard(self, guard: ToolGuard) -> bool: ...
+    def guard(
+        self, guard: ToolGuard, *, approval: bool = False,
+        owner: Context | None = None,
+        cleanup: Literal["fiber", "caller"] | None = None,
+    ) -> bool: ...
     def enabled(self) -> tuple[Tool, ...]: ...
     def resolve(self, name: str, *, include_disabled: bool = False) -> Tool | None: ...
     def names(self) -> tuple[str, ...]: ...

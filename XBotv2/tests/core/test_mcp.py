@@ -122,6 +122,7 @@ server.run("stdio")
         }],
     )
     pid = int(pid_file.read_text(encoding="utf-8"))
+    tools = context.tools
     try:
         context.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
@@ -141,6 +142,7 @@ server.run("stdio")
     finally:
         await context.destroy()
 
+    assert tools.resolve("mcp__local__echo", include_disabled=True) is None
     for _ in range(100):
         try:
             os.kill(pid, 0)

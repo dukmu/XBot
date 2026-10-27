@@ -8,7 +8,7 @@ from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
 from XBotv2.agentloop import Events
 from XBotv2.agentloop.events import SessionLifecycle
-from xcore import Context
+from xcore.api.context import Context
 from pydantic import JsonValue
 
 from .mcp_client import MCPClient
@@ -106,10 +106,11 @@ class MCPPlugin:
         self._client = MCPClient()
         self._config = MCPConfig()
         self._server_status: dict[str, dict[str, JsonValue]] = {}
-        self._server_tools: dict[str, list[str]] = {}
+        self._server_tools: dict[str, list[tuple[str, Tool]]] = {}
         self._initialized = False
 
     def apply(self, ctx: Context, config: MCPConfig) -> None:
+        self._owner = ctx
         self._tools = ctx.tools
         self._model = ctx.model
         self._interactions = ctx.interactions
@@ -183,7 +184,8 @@ class MCPPlugin:
         server_name: str,
         tools: list[dict[str, JsonValue]],
     ) -> list[str]:
-        registered_names = self._server_tools.setdefault(server_name, [])
+        self._server_tools.setdefault(server_name, [])
+        registered_names: list[str] = []
         for tool_def in tools:
             tool_name = f"mcp__{server_name}__{tool_def['name']}"
             mcp_tool = MCPTool(self._client, server_name, tool_def)
@@ -206,13 +208,13 @@ class MCPPlugin:
 
     def _register_tool(self, tool: Tool, server_name: str) -> str:
         """Register one MCP Tool through the public service."""
-        return self._tools.register(
+        name = self._tools.register(
             tool,
             namespace=f"mcp:{server_name}",
-            # Registration happens when the session announces itself, outside
-            # this plugin's apply; the plugin owns release via _rollback_all.
-            cleanup="caller",
+            owner=self._owner,
         )
+        self._server_tools[server_name].append((name, tool))
+        return name
 
     def _register_resource_bridge(
         self,
@@ -317,8 +319,9 @@ class MCPPlugin:
         self,
         server_name: str,
     ) -> None:
-        for registered_name in reversed(self._server_tools.pop(server_name, [])):
-            self._tools.unregister(registered_name)
+        for registered_name, tool in reversed(self._server_tools.pop(server_name, [])):
+            if self._tools.resolve(registered_name, include_disabled=True) is tool:
+                self._tools.unregister(registered_name)
         await self._client.disconnect(server_name)
 
     async def _rollback_all(self) -> None:
@@ -335,11 +338,7 @@ class MCPPlugin:
         }
 
     async def _dispose(self) -> None:
-        # Unload must undo the tool registrations too: _rollback_all
-        # unregisters every mcp:* tool this fiber registered, so an unload
-        # without SESSION_CLOSE (dependency restart, plugin reload) never
-        # leaves stale tools pointing at a disconnected client.
-        await self._rollback_all()
+        await self._client.disconnect_all()
         self._server_status.clear()
         self._server_tools.clear()
         self._initialized = False

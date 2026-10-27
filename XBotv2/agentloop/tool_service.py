@@ -31,6 +31,7 @@ from XBotv2.agentloop.tool_runtime import execute_tools
 from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.core.tools import Tool, ToolCall, ToolExecution
 from xcore import bound_effect, current_plugin_name
+from xcore.api.context import Context
 
 
 class ToolsService(ToolsPort):
@@ -57,14 +58,14 @@ class ToolsService(ToolsPort):
         # apply: "fiber" stays loud, "caller" says the composer owns release
         # (test harnesses, embedding hosts).
         self._ownership = ownership
-        self._guards: list[ToolGuard] = []
-        self._approval_guards: list[ToolGuard] = []
+        self._guards: list[tuple[object, ToolGuard, bool]] = []
 
     def guard(
         self,
         guard: ToolGuard,
         *,
         approval: bool = False,
+        owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> bool:
         """Register one monotonic execution guard.
@@ -74,37 +75,35 @@ class ToolsService(ToolsPort):
         closed: an escaped call without an approval-capable guard is denied
         before dispatch.
 
-        A guard registered outside a plugin ``apply`` has no owning fiber;
-        pass ``cleanup="caller"`` to state that the caller releases it.
+        Outside plugin ``apply``, pass the retained plugin context as ``owner``.
+        Embedding callers can instead explicitly own cleanup.
         """
-        if bound_effect(partial(self._remove_guard, guard)) is False:
-            if (cleanup or self._ownership) != "caller":
-                raise RuntimeError(
-                    "Tool guards must be registered from within a plugin "
-                    "apply(); pass cleanup='caller' when the caller owns release"
-                )
-        self._guards.append(guard)
-        if approval:
-            self._approval_guards.append(guard)
+        token = object()
+        remove = partial(self._remove_guard, token)
+        if owner is not None:
+            owner.effect(lambda: remove)
+        elif bound_effect(remove) is False and (cleanup or self._ownership) != "caller":
+            raise RuntimeError(
+                "Tool guards must be registered from within a plugin "
+                "apply() or with an owner; pass cleanup='caller' when the caller owns release"
+            )
+        self._guards.append((token, guard, approval))
         self._log.debug(
             "tool.guard.registered",
-            owner=current_plugin_name(),
+            owner=owner.fiber.name if owner is not None else current_plugin_name(),
             guard=getattr(guard, "__qualname__", type(guard).__qualname__),
             approval=approval,
         )
         return True
 
-    def _remove_guard(self, guard: ToolGuard) -> None:
-        if guard in self._guards:
-            self._guards.remove(guard)
-        if guard in self._approval_guards:
-            self._approval_guards.remove(guard)
+    def _remove_guard(self, token: object) -> None:
+        self._guards[:] = [entry for entry in self._guards if entry[0] is not token]
 
     def guards(self) -> tuple[ToolGuard, ...]:
-        return tuple(self._guards)
+        return tuple(guard for _, guard, _ in self._guards)
 
     def approval_layer_active(self) -> bool:
-        return bool(self._approval_guards)
+        return any(approval for _, _, approval in self._guards)
 
     def register(
         self,
@@ -113,15 +112,15 @@ class ToolsService(ToolsPort):
         model_visible: bool = True,
         timeout_seconds: float | None = None,
         namespace: str | None = None,
+        owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str:
         """Register one tool; undone automatically when the plugin unloads.
 
         ``namespace`` is only for functional name scoping (e.g. ``mcp:server``,
         ``skills:scope``); plugin ownership and cleanup are handled by the
-        XCore fiber. A registration made outside a plugin ``apply`` has no
-        owning fiber: it must declare ``cleanup="caller"`` and release itself,
-        otherwise the registration is rolled back and reported loudly.
+        XCore fiber. Outside plugin ``apply``, pass the retained plugin context
+        as ``owner``; embedding callers can explicitly own cleanup instead.
         """
         name = self._registry.register(
             tool,
@@ -129,22 +128,30 @@ class ToolsService(ToolsPort):
             timeout_seconds=timeout_seconds,
             namespace=namespace,
         )
+        entry = self._registry.get_registered(name)
+
+        def remove() -> None:
+            if self._registry.get_registered(name) is entry:
+                self.unregister(name)
+
+        try:
+            if owner is not None:
+                owner.effect(lambda: remove)
+            elif bound_effect(remove) is False and (cleanup or self._ownership) != "caller":
+                raise RuntimeError(
+                    f"Tool {name!r} was registered outside a plugin apply(); "
+                    "provide an owner or pass cleanup='caller' when the caller owns release"
+                )
+        except BaseException:
+            remove()
+            raise
         self._log.info(
             "tool.registered",
             name=name,
-            owner=current_plugin_name(),
+            owner=owner.fiber.name if owner is not None else current_plugin_name(),
             model_visible=model_visible,
             timeout_seconds=timeout_seconds,
         )
-        if bound_effect(partial(self.unregister, name)) is False:
-            if (cleanup or self._ownership) != "caller":
-                # No owner could ever release this tool: undo it instead of
-                # leaving an ownerless registration behind.
-                self.unregister(name)
-                raise RuntimeError(
-                    f"Tool {name!r} was registered outside a plugin apply(); "
-                    "pass cleanup='caller' when the caller owns release"
-                )
         return name
 
     def unregister(self, name: str) -> bool:

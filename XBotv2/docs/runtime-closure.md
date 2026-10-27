@@ -14,6 +14,13 @@ implementation map and verification index, not a second specification.
 | Interactions and permissions | `interactions.models` owns requests, resolutions, and notices. `interactions.protocol` owns HTTP request/response DTOs. The `ask_user` tool owns its two-or-more-options policy; generic interaction requests do not. Permission decisions remain a separate typed, fail-closed domain. | Ask-user schema/execution validation, generic-source request, exactly-once resolution, pending-before-publish HTTP, typed approval, unavailable approval, wrong resolution, and cancellation tests. Runtime publication accepts the open `SessionEvent` contract directly; its former private pass-through was removed. |
 | Usage | Provider observation owns actual consumed usage; session stats aggregate that fact independently of whether a later history append succeeds. | Streaming usage and provider failure/recovery tests. Usage is deliberately not reconstructed from, or rolled back with, conversation history. |
 
+Tool and command registrations made during plugin `apply()` bind to the current
+fiber. Later asynchronous registrations must pass the plugin's retained
+`owner` context to `tools.register`, `tools.guard`, or `commands.register`.
+Closing owners reject new registrations, and their effects release existing
+registrations on unload. An embedding host may explicitly take responsibility
+for cleanup with `cleanup="caller"` or its service's caller-owned mode.
+
 There are three deliberately distinct event categories: synchronous in-process
 hooks (`agentloop.events`), yielded loop outputs (`agentloop.outputs`), and live
 session events (`session.events`). They do not share a registry or a generic

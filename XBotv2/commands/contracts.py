@@ -10,6 +10,7 @@ from typing import Awaitable, Callable, Literal, Protocol
 from XBotv2.core.errors import OperationError
 from XBotv2.core.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field
+from xcore.api.context import Context
 
 CommandHandler = Callable[[str], Awaitable["CommandResult"]]
 CommandEffect = Literal[
@@ -60,6 +61,7 @@ class CommandsPort(Protocol):
         self,
         command: Command,
         *,
+        owner: Context | None = None,
         cleanup: Literal["fiber", "caller"] | None = None,
     ) -> str: ...
     def unregister(self, name: str) -> bool: ...
