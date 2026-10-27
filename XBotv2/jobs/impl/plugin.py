@@ -150,15 +150,21 @@ class JobHandlers:
 
 
 async def mount_thread(ctx, config):
+    registry = ctx.require(JOB_REGISTRY)
+    for field in config.model_fields_set:
+        if getattr(config, field) != getattr(registry, "_" + field):
+            raise ValueError(f"jobs.{field} is process-scoped and cannot be overridden per thread")
     await ctx.plugin(JobsRuntimeComponent(), config)
 
-mount_thread.inject = ()
+mount_thread.inject = (JOB_REGISTRY,)
 mount_thread.provide = (JOBS,)
 mount_thread.Config = JobsConfig
 
 
 def mount_process(ctx, config):
-    registry = JobRegistry()
+    registry = JobRegistry(
+        completed_limit=config.completed_limit, completed_bytes=config.completed_bytes,
+    )
     ctx.provide(JOB_REGISTRY, registry)
     ctx.dispose(registry.shutdown)
     ctx.inject(["server", "sessions"], mount_http)

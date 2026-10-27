@@ -481,3 +481,10 @@
 - [x] 短跑后增加当前RSS、active Context、subscriber、W/message_count、工具耗时、250ms磁盘/write监控等实际仪表；旧8轮未重跑/未补写这些新字段。受影响2轮真实provider工具/已提交compact聚焦退出0，日志`/tmp/xbot-product-focused-v16-3.log`、v16-5.log、最终v16-6.log（1项3.31s）；这些是实际代码修订后的相关证据，有重叠不累计。慢SSE本次未启用，不宣称socket回压或过期已测；200MB旧例亦未重复。
 - [x] 本轮职责提交：工况a11648a6、TUI537472db、Web021b86da；验收归档对应开发源码`021b86da6ff2cdfe2f8105deb29a9964761535d5`，各范围及中间资产/未验限制见上，非完整产品已验。只Terra，原用户文件未纳入，无bundle/运行数据/轮番hash快照；最后仅提交TODO，完整goal继续active。
 - [ ] 继续完整goal：指定长矩阵及todo/team/慢SSE工况、单条大正文的惰性读取（含跨页tool args恢复展示）、jobs终态目前100条但缺显式字节预算、ForkState大thread元数据驻留、配置一致性与预算实测定值、最终源码全相关检查与独立wheel安装启动/资源验收。上述缺口不能用短跑或中间wheel替代。
+
+### 迭代17：惰性正文、job字节预算与完整工况（进行中）
+
+- [x] 从源码021b86da/日志d1335299继续；上一轮确有源码提交与真实SSE终态证据，tracked clean，仅原用户设计稿/.worktrees未跟踪。仍只三名Terra，职责为TUI/display正文、jobs预算、产品工况。已过旧短跑/目录/媒体/MiniMax不重跑；长矩阵等源码稳定归档再逐档首次执行。
+- [ ] 展示记录与规范原文分开，历史/attach只取预览与正文引用；展开按record/field分页，折叠/退窗口释放，跨页tool args从原assistant索引定位，实时完成帧也不能留下无界全文；服务端单record解码峰值单独说明。
+- [x] jobs终态由100条单限额改count+byte LRU，owner结果声明retained_bytes，registry一次计入identity/label/state/error等，shell只计artifact引用元数据；wait pin可暂超预算，关闭清零；全局process配置100/8MiB为待测起点，差异线程覆盖清楚拒绝。首组9项0.34s（`/tmp/xbot-jobs-budget-17.log`）、真实loader/保守字符串估算修改后相关7项2.42s（`/tmp/xbot-jobs-budget-17-scope.log`）、估算器异常单项0.18s（`/tmp/xbot-jobs-budget-17-estimator.log`）actual exit0，有重叠不累计；真实BG shell20,001字节经artifact完整读回，不重复200MiB/全jobs。主代理已读代码及日志。
+- [ ] 完整工况补5条todo(1静置、4逐步完成)、team持续发布/范围读取及慢SSE，保持每轮实际8主模型请求；第一条team工况发现effective全局allow与实际check=ask矛盾，需修权限owner而非绕过，长档尚未启动。旧等待测试已依真实句柄退出后才重启，失败/诊断日志均保留。

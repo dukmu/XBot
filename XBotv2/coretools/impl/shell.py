@@ -17,6 +17,7 @@ import math
 import os
 import signal
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from functools import partial
@@ -112,6 +113,16 @@ class ShellJobSpec:
 class ShellJobResult:
     output_ref: ArtifactRef
     exit_code: int
+
+    def retained_bytes(self) -> int:
+        ref = self.output_ref
+        return (
+            sys.getsizeof(self) + sys.getsizeof(self.exit_code)
+            + sys.getsizeof(ref) + sys.getsizeof(ref.__dict__)
+            + sum(sys.getsizeof("") + 4 * len(value) for value in (
+                ref.id, ref.media_type, ref.name, ref.sha256,
+            )) + sys.getsizeof(ref.kind) + sys.getsizeof(ref.size)
+        )
 
 
 class ShellRunner:

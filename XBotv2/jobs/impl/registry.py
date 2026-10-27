@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 import time
-from collections import deque
+from collections import OrderedDict
 from dataclasses import dataclass
 from XBotv2.jobs.api.contracts import (
     JobExecutionError,
@@ -39,7 +40,6 @@ from XBotv2.agentloop.api.wait import wait_for_targets
 
 logger = logging.getLogger("xbotv2.jobs")
 _ALL_SCOPES = object()
-_COMPLETED_LIMIT = 100
 
 @dataclass(frozen=True, eq=False, slots=True)
 class _Binding:
@@ -59,10 +59,17 @@ class JobRegistry(JobsPort):
         limits: dict[str, int] | None = None,
         prefix: str = "job",
         publisher: EventEmitter | None = None,
+        completed_limit: int = 100,
+        completed_bytes: int = 8 * 1024 * 1024,
     ) -> None:
+        if completed_limit < 1 or completed_bytes < 1:
+            raise ValueError("completed job budgets must be positive")
         self._jobs: dict[JobId, Job] = {}
         self._completion_events: dict[JobId, asyncio.Event] = {}
-        self._completed: deque[JobId] = deque()
+        self._completed: OrderedDict[JobId, int] = OrderedDict()
+        self._completed_size = 0
+        self._completed_limit = completed_limit
+        self._completed_bytes = completed_bytes
         self._waiters: dict[JobId, int] = {}
         self._cancel_pending = set()
         self._runners: dict[JobId, JobRunner] = {}
@@ -142,7 +149,11 @@ class JobRegistry(JobsPort):
     def get_or_none(self, job_id: JobId, *, scope=_ALL_SCOPES) -> Job | None:
         self._authorize(scope)
         job = self._jobs.get(job_id)
-        return job if scope is _ALL_SCOPES or self._scopes.get(job_id) == scope else None
+        if job is None or (scope is not _ALL_SCOPES and self._scopes.get(job_id) != scope):
+            return None
+        if job_id in self._completed:
+            self._completed.move_to_end(job_id)
+        return job
 
     def all(self, *, scope=_ALL_SCOPES) -> list[Job]:
         self._authorize(scope)
@@ -272,10 +283,7 @@ class JobRegistry(JobsPort):
         self._completion_events.pop(job_id, None)
         self._runners.pop(job_id, None)
         self._tasks.pop(job_id, None)
-        try:
-            self._completed.remove(job_id)
-        except ValueError:
-            pass
+        self._completed_size -= self._completed.pop(job_id, 0)
 
     def remove_all(self, *, scope=_ALL_SCOPES) -> None:
         for job in self.all(scope=scope):
@@ -295,6 +303,7 @@ class JobRegistry(JobsPort):
     async def _execute(self, job: Job, runner: JobRunner) -> None:
         semaphore = self._limits.get(job.kind)
         acquired = False
+        result_bytes = 0
         try:
             if semaphore is not None:
                 await semaphore.acquire()
@@ -305,6 +314,7 @@ class JobRegistry(JobsPort):
             job.state = Running(started)
             await self._notify(job)
             result = await runner.run(job)
+            result_bytes = _result_bytes(result)
             job.state = Succeeded(started, time.time(), result)
         except asyncio.CancelledError:
             now = time.time()
@@ -314,11 +324,17 @@ class JobRegistry(JobsPort):
                 job.state = CancelledBeforeStart(now, "cancelled")
         except Exception as exc:
             now = time.time()
+            result = exc.result if isinstance(exc, JobExecutionError) else None
+            try:
+                result_bytes = _result_bytes(result)
+            except Exception as invalid_result:
+                exc = invalid_result
+                result = None
             error = normalize_error(exc)
             if isinstance(job.state, Running):
                 job.state = FailedRunning(
                     job.state.started_at, now, error,
-                    result=exc.result if isinstance(exc, JobExecutionError) else None,
+                    result=result,
                 )
             else:
                 job.state = FailedBeforeStart(now, error)
@@ -327,9 +343,9 @@ class JobRegistry(JobsPort):
                 semaphore.release()
             await self._notify(job)
             if job.terminal:
-                await self._complete(job)
+                await self._complete(job, result_bytes=result_bytes)
 
-    async def _complete(self, job: Job) -> None:
+    async def _complete(self, job: Job, *, result_bytes: int = 0) -> None:
         job.spec = _CompletedSpec(job.kind, _preview(job.spec.label, MAX_SUMMARY_CHARS))
         event = self._completion_events.pop(job.id, None)
         if event is not None:
@@ -337,15 +353,16 @@ class JobRegistry(JobsPort):
         await self._notify_complete(job)
         self._runners.pop(job.id, None)
         self._tasks.pop(job.id, None)
-        self._completed.append(job.id)
+        size = _completed_bytes(job) + result_bytes
+        self._completed[job.id] = size
+        self._completed_size += size
         self._evict_completed()
 
     def _evict_completed(self) -> None:
-        while len(self._completed) > _COMPLETED_LIMIT:
+        while len(self._completed) > self._completed_limit or self._completed_size > self._completed_bytes:
             evict = next((job_id for job_id in self._completed if job_id not in self._waiters), None)
             if evict is None:
                 break
-            self._completed.remove(evict)
             self.remove(evict)
 
     async def _notify(self, job: Job) -> None:
@@ -391,6 +408,42 @@ class JobRegistry(JobsPort):
         if job is None:
             raise JobNotFound(job_id)
         return job
+
+
+def _result_bytes(result) -> int:
+    if result is None:
+        return 0
+    measure = getattr(result, "retained_bytes", None)
+    if not callable(measure):
+        raise TypeError("job result must provide retained_bytes()")
+    size = measure()
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        raise ValueError("job result retained_bytes() must return a non-negative integer")
+    return size
+
+
+def _completed_bytes(job: Job) -> int:
+    # Fixed allowance covers the registry's per-entry maps and LRU bookkeeping.
+    identity, state = job.identity, job.state
+    size = 1024 + sum(_value_bytes(value) for value in (
+        job, identity, job.spec, state, identity.id, identity.owner,
+        identity.parent, identity.name, identity.created_at, job.spec.kind,
+        job.spec.label, job.started_at, job.finished_at, state.kind,
+    ))
+    if job.error is not None:
+        error = job.error
+        size += sum(_value_bytes(value) for value in (
+            error, error.code, error.message, error.detail,
+        ))
+    if isinstance(state, (CancelledBeforeStart, CancelledRunning)):
+        size += _value_bytes(state.reason)
+    return size
+
+
+def _value_bytes(value) -> int:
+    if isinstance(value, str):
+        return sys.getsizeof("") + 4 * len(value)
+    return sys.getsizeof(value)
 
 
 def normalize_error(exc: BaseException) -> JobError:

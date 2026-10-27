@@ -12,7 +12,7 @@ from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolCall, ToolFailed, ToolSucceeded
 from XBotv2.coretools.api.models import CoreToolsConfig
 from XBotv2.coretools.impl.shell import shell_tools, wait_shell
-from XBotv2.coretools.impl.shell import ShellJobResult, ShellJobSpec
+from XBotv2.coretools.impl.shell import ShellJobResult, ShellJobSpec, ShellRunner
 from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.jobs.impl.registry import JobRegistry
 
@@ -126,6 +126,19 @@ async def test_wait_returns_artifact_even_when_job_is_evicted_after_wait():
     ready = json.loads(result.output.parts[0].text)["ready"]
     assert ready[0]["output_artifact_id"] == ref.id
     assert ready[0]["exit_code"] == 7
+    await jobs.shutdown()
+
+
+async def test_shell_result_budget_counts_reference_not_artifact_content(tmp_path):
+    jobs = JobRegistry(completed_bytes=5_000)
+    artifacts = ArtifactStore(RuntimePaths.from_data_dir(tmp_path / "data").session("s").thread("t"))
+    spec = ShellJobSpec(f"{sys.executable} -c 'print(\"x\" * 20000)'", None, False, "output")
+    job = await jobs.create(spec=spec, owner="test")
+    jobs.start(job.id, ShellRunner(spec, artifacts=artifacts))
+    waited = await jobs.wait([job.id], timeout=5)
+    result = dict(waited.results)[job.id]
+    assert jobs.get_or_none(job.id) is job
+    assert await artifacts.read(result.output_ref) == b"x" * 20_000 + b"\n"
     await jobs.shutdown()
 
 

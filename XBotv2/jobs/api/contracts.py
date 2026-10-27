@@ -13,6 +13,8 @@ from xcore.api.events import EventKey
 
 class JobsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
+    completed_limit: int = Field(default=100, ge=1)
+    completed_bytes: int = Field(default=8 * 1024 * 1024, ge=1)
 
 JobId = str
 JobStateName = Literal[
@@ -28,6 +30,12 @@ class JobSpec(Protocol):
     label: str
 
 
+class JobResult(Protocol):
+    def retained_bytes(self) -> int:
+        """Estimate all memory retained by this result, including its references."""
+        ...
+
+
 @dataclass(frozen=True, slots=True)
 class OutputPage:
     data: str
@@ -39,7 +47,7 @@ class OutputPage:
 class JobExecutionError(RuntimeError):
     """An owner failure may retain a lightweight, readable terminal result."""
 
-    def __init__(self, message: str, *, result: object | None = None):
+    def __init__(self, message: str, *, result: JobResult | None = None):
         super().__init__(message)
         self.result = result
 
@@ -66,7 +74,7 @@ class Running:
 class Succeeded:
     started_at: float
     finished_at: float
-    result: object
+    result: JobResult | None
     kind: Literal["succeeded"] = "succeeded"
 
 
@@ -83,7 +91,7 @@ class FailedRunning:
     finished_at: float
     error: JobError
     kind: Literal["failed_running"] = "failed_running"
-    result: object | None = None
+    result: JobResult | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -147,7 +155,7 @@ class Job:
             return self.state.finished_at
         return None
     @property
-    def result(self) -> object | None: return self.state.result if isinstance(self.state, (Succeeded, FailedRunning)) else None
+    def result(self) -> JobResult | None: return self.state.result if isinstance(self.state, (Succeeded, FailedRunning)) else None
     @property
     def error(self) -> JobError | None:
         return self.state.error if isinstance(self.state, (FailedBeforeStart, FailedRunning)) else None
@@ -173,7 +181,7 @@ class WaitResult:
     ready: tuple[JobView, ...]
     pending: tuple[JobId, ...]
     timed_out: bool = False
-    results: tuple[tuple[JobId, object | None], ...] = ()
+    results: tuple[tuple[JobId, JobResult | None], ...] = ()
     reason: Literal["ready", "empty", "timeout", "steered"] = "ready"
 
 
@@ -189,7 +197,7 @@ class JobRegistryClosed(RuntimeError): pass
 
 
 class JobRunner(Protocol):
-    async def run(self, job: Job) -> object: ...
+    async def run(self, job: Job) -> JobResult | None: ...
     async def cancel(self, job: Job) -> None: ...
 
 
@@ -246,7 +254,7 @@ def parse_job_status(value: str | None) -> JobStateName | None:
 __all__ = [
     "JOBS", "CancelResult", "CancelledBeforeStart", "CancelledRunning", "FailedBeforeStart", "FailedRunning",
     "Job", "JobCatalog", "JobError", "JobExecutionError", "JobId", "JobIdentity", "JobNotFound",
-    "JobRegistryClosed", "JobRunner",
+    "JobRegistryClosed", "JobResult", "JobRunner",
     "JobSpec", "JobState", "JobStateName", "JobView", "JobsCommandPort", "JobsPort",
     "JOB_COMPLETED", "JOB_UPDATED", "LIST_JOBS", "MAX_SUMMARY_CHARS", "OutputPage", "Queued",
     "Running", "STOP_ALL_JOBS", "STOP_JOB", "StopJob", "StoppedJobs", "Succeeded",

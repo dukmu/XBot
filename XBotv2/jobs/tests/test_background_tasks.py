@@ -1,11 +1,12 @@
 """Owner-defined jobs use one explicit lifecycle state machine."""
 
 import asyncio
+import sys
 from dataclasses import dataclass
 
 import pytest
 
-from XBotv2.jobs.api.contracts import JOB_COMPLETED, JOB_UPDATED, JobNotFound, JobRegistryClosed
+from XBotv2.jobs.api.contracts import JOB_COMPLETED, JOB_UPDATED, JobExecutionError, JobNotFound, JobRegistryClosed
 from XBotv2.jobs.impl.registry import JobRegistry
 from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, RuntimeInput
 from XBotv2.core.api.domain import InboxTarget
@@ -20,6 +21,9 @@ class _Spec:
 @dataclass(frozen=True)
 class _Result:
     value: str
+
+    def retained_bytes(self):
+        return sys.getsizeof(self) + sys.getsizeof("") + 4 * len(self.value)
 
 
 class _Runner:
@@ -267,4 +271,141 @@ async def test_cancelling_wait_does_not_cancel_job():
     assert job.status == "running"
     runner.release.set()
     assert (await registry.wait([job.id], timeout=1)).reason == "ready"
+    await registry.shutdown()
+
+
+async def test_completed_byte_budget_uses_lru_and_accounts_for_result_sizes():
+    registry = JobRegistry(completed_limit=20, completed_bytes=35_000)
+    jobs = []
+    for size in (1_000, 2_000):
+        job = await registry.create(spec=_Spec(), owner="test")
+        runner = _Runner(_Result("x" * size))
+        registry.start(job.id, runner)
+        runner.release.set()
+        await registry.wait([job.id], timeout=1)
+        jobs.append(job)
+    assert registry.get_or_none(jobs[0].id) is jobs[0]
+
+    large = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner(_Result("x" * 6_000))
+    registry.start(large.id, runner)
+    runner.release.set()
+    await registry.wait([large.id], timeout=1)
+    assert registry.get_or_none(jobs[0].id) is jobs[0]
+    assert registry.get_or_none(jobs[1].id) is None
+    assert registry.get_or_none(large.id) is large
+
+    huge = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner(_Result("x" * 20_000))
+    registry.start(huge.id, runner)
+    runner.release.set()
+    result = await registry.wait([huge.id], timeout=1)
+    assert result.results == ((huge.id, runner.result),)
+    assert registry.get_or_none(huge.id) is None
+    await registry.shutdown()
+    assert registry.all() == []
+    assert registry._completed_size == 0
+
+
+async def test_byte_budget_pins_existing_waiters_and_keeps_active_jobs():
+    registry = JobRegistry(completed_bytes=3_000)
+    first = await registry.create(spec=_Spec(), owner="test")
+    second = await registry.create(spec=_Spec(), owner="test")
+    large_runner = _Runner(_Result("x" * 10_000))
+    pending_runner = _Runner()
+    registry.start(first.id, large_runner)
+    registry.start(second.id, pending_runner)
+    waiter = asyncio.create_task(registry.wait([first.id, second.id], mode="all", timeout=2))
+    await asyncio.sleep(0)
+    large_runner.release.set()
+    await large_runner.started.wait()
+    while not first.terminal:
+        await asyncio.sleep(0)
+    assert registry.get_or_none(first.id) is first
+    assert registry.get_or_none(second.id) is second
+    pending_runner.release.set()
+    result = await waiter
+    assert dict(result.results)[first.id] == large_runner.result
+    assert registry.get_or_none(first.id) is None
+    await registry.shutdown()
+    assert registry._completed_size == 0
+
+
+@pytest.mark.parametrize("large_field", ["owner", "name", "error"])
+async def test_large_identity_and_error_are_charged(large_field):
+    registry = JobRegistry(completed_bytes=3_000)
+    job = await registry.create(
+        spec=_Spec(), owner="x" * 10_000 if large_field == "owner" else "test",
+        name="x" * 10_000 if large_field == "name" else None,
+    )
+    runner = _Runner(error=ValueError("x" * 10_000) if large_field == "error" else None)
+    registry.start(job.id, runner)
+    runner.release.set()
+    await registry.wait([job.id], timeout=1)
+    assert registry.get_or_none(job.id) is None
+    await registry.shutdown()
+
+
+async def test_result_without_size_contract_fails_and_releases_waiter():
+    registry = JobRegistry()
+    job = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner(object())
+    registry.start(job.id, runner)
+    runner.release.set()
+    waited = await registry.wait([job.id], timeout=1)
+    assert waited.ready[0].state == "failed_running"
+    assert "retained_bytes" in job.error.message
+    await registry.shutdown()
+
+
+async def test_process_budget_configuration_and_rejected_thread_override(tmp_path, monkeypatch):
+    from XBotv2.core.api.paths import RuntimePaths
+    from XBotv2.llm.impl.mock import MockLLM
+    from XBotv2.loader.api.contracts import LoadError
+    from XBotv2.main import open_runtime
+    from XBotv2.session.api.contracts import OpenSession, SESSIONS
+
+    monkeypatch.setenv("MINIMAX_API_TOKEN", "test")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "test")
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    paths.config_dir.mkdir(parents=True)
+    (paths.config_dir / "plugins.yaml").write_text(
+        "- id: jobs\n  config:\n    completed_limit: 2\n    completed_bytes: 4096\n",
+        encoding="utf-8",
+    )
+    root = await open_runtime(paths=paths)
+    sessions = root.require(SESSIONS)
+    try:
+        def request(sid, configs=None):
+            return OpenSession(
+                sid, "main", str(tmp_path), "minimax", "new", True,
+                model_override=MockLLM(), plugin_configs=configs,
+            )
+
+        scope = await sessions.open(request("configured"))
+        jobs = scope.require("jobs")
+        for _ in range(3):
+            job = await jobs.create(spec=_Spec(), owner="test")
+            await jobs.cancel(job.id)
+        assert len(jobs.all()) == 2
+        with pytest.raises(LoadError, match="process-scoped"):
+            await sessions.open(request("override", {"jobs": {"completed_limit": 3}}))
+    finally:
+        await root.close()
+
+
+async def test_failed_result_estimator_error_still_completes():
+    class BadResult:
+        def retained_bytes(self):
+            raise RuntimeError("cannot measure result")
+
+    registry = JobRegistry()
+    job = await registry.create(spec=_Spec(), owner="test")
+    runner = _Runner(error=JobExecutionError("failed", result=BadResult()))
+    registry.start(job.id, runner)
+    runner.release.set()
+    waited = await registry.wait([job.id], timeout=1)
+    assert waited.ready[0].state == "failed_running"
+    assert job.error.message == "cannot measure result"
+    assert job.result is None
     await registry.shutdown()
