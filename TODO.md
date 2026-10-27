@@ -129,7 +129,8 @@
 - [x] 固定起点：`8d318ad8eea8bfeed24a1d9c5a1e94a5f1792009`，与设计审查基线一致；由当前基线创建 `refactor-all`。本地未跟踪设计稿和 `.worktrees/` 保留，不纳入实施提交。
 - [x] 阅读整体方案与仓库约束；按批次顺序推进，每批先确认业务 owner、依赖和可观察验收，再实施和删除旧路径。用户已授权按该方案推进，核心取舍采用稿中选择。
 - [x] 第 0 批：修复 accept/stress 启动参数漂移；网络 MockLLM 经生产 provider adapter；核验独立安装入口。先跑可定位问题的工况，保留精确提交和原始结果位置。
-- [ ] 第 1 批：XCore 类型化引用、独立 owner、服务/事件作用域与可等待卸载；两线程隔离、失败回滚和重复开关资源回收。
+- [x] 第 1 批基础能力：XCore 类型化引用、独立 owner、服务/事件作用域与可等待卸载；两线程隔离、失败回滚和重复开关资源回收。整仓 API/layout 接入继续见下文，不将框架原语通过等同所有业务生命周期已完成。
+- [ ] 插件 layout 与公开契约迁移：按第 5 节落实各 owner 的 api/impl/doc/tests，更新跨插件导入、loader、开发说明及检查脚本，移除旧包根转出口和实现混入 API。用户明确要求与整体重构一同推进；先于存储/TUI 扩展收口。
 - [ ] 第 2 批：loader 活跃根挂载及 session/thread 生命周期；退出旧 application、MountedAgentApplication 和单用途 factory。
 - [ ] 第 3 批：SQLite/JSONL/artifact、投影恢复、工作集与归档分离、流式大结果；退出全状态重写与完整归档常驻。
 - [ ] 第 4 批：连续 child thread、统一 wait、jobs 有界清退和可选 team；移除重复结果与通知路径。
@@ -152,3 +153,21 @@
 - [x] `git diff --check` 与受影响脚本编译检查通过。运行日志、wheel、缓存和临时环境留在 `/tmp`，不进入提交；用户设计稿与既有 worktree 未改动。
 - [ ] 第 2 批需修的已复现缺陷：新空 thread 的 `trajectory_page` 直接要求磁盘 thread 而返回 404；`delete_session` 先 close 清空空会话目录、随后再次 rmtree 抛 `FileNotFoundError`。原始失败 `/tmp/xbot-network-stress.json`，主代理核对了两个 owner 调用路径；未绕过失败或提前修补生产生命周期。
 - [ ] 未运行：全量 core/integration、Web/TUI/PTY、真实外部 provider/MiniMax、512 轮/4096 步长压测及后续批次验收。本批仅改评估基础设施和打包，尚未迁移运行关系/存储；正常进程重启通过不代表 scope 异步排空、故障恢复或历史驻留上界已验证。
+
+### 迭代 1：XCore 作用域与动态注册所有权
+
+- [x] 按用户指示创建持续 goal，覆盖整体方案剩余批次；goal 保持 active 直到实际交付完成。用户补充简单任务优先使用 6.1 Terra；当前复杂 XCore 改造仅委派一个 Sol，后续简单任务改用 Terra，不叠加 Sol 并发。
+- [x] 核对现状：`extend()` 沿用父 fiber，事件 bus 只按名字分发；独立关闭不清理父 effect 中的 child disposer，无法直接作为共享运行根的 session/thread 所有者。
+- [x] `20dc817`：唯一 Sol 实施 XCore 的 ServiceKey、EventKey、独立 scope owner、pre-stop/await close；共享唯一 ServiceStore/EventBus/Registry，事件桶按 `(scope,event)`、依赖按 `(label,name)` 索引。主代理审查并补查关闭期间的借用视图、state 属性及并发关闭。完整 XCore 117 passed（原107 + 新10项），涵盖排空失败保留 owner/重试、半激活回滚、兄弟隔离及20轮开关资源基线/弱引用释放。
+- [x] `75dbff2`：Terra 接入 tools/commands 显式动态 owner，Skills/MCP 不再使用生产 `cleanup="caller"`；删除 Skills 长期手工注册清单，保留初始化失败和 MCP 断开的必要回滚。注册身份保证旧 owner 不删除同名后续注册；关闭/排空期间拒绝迟到注册。最后 owner import/日志调整后的相关16项通过，含真实 MCP stdio 子进程退出和工具移除。
+- [x] `9379c81`：另一 Terra 收口空会话读取/删除边界。更正迭代0的归因：当时 `close_session` 没有调用 `_discard_empty_session`（只有 close_all 调用）；目录从未落盘也可导致显式删除失败。现在 close 清理空目录，delete 在锁内完成关闭/删除并处理未物化对象，保留有持久内容会话；活跃空 thread 轨迹返回空页，未知 thread 和非法 anchor 仍明确失败。聚焦生命周期/目录13项、占用锁10项通过。
+- [x] 本批最终代码 `9379c81`：所有代理结束修改后完整产品 core 为 714 passed / 105.16s（`/tmp/xbot-refactor-scopes-core-final.txt`）；完整 integration 为133 passed / 102.60s（`/tmp/xbot-refactor-scopes-integration.txt`），含网络 mock 经生产 adapter 的11项。整合前710项仅作为中间结果，不替代最终714项。
+- [x] 实际 CLI stress：`--scenario lifecycle,streaming,replay,tools --mock-tools --turns 2 --concurrency 1` 全部通过，主代理读取每项errors/invariants（`/tmp/xbot-refactor-scopes-cli.json`），上一批两个空会话失败已在同类入口消失。真实 console 重启恢复验收也通过（`/tmp/xbot-refactor-scopes-acceptance/report.json`，4次provider请求、4→8条历史、30字节附件原样恢复）。
+- [ ] 后续整合：通用 pre-stop 已可用，仍需各业务所有者在实际卸载路径停止/排空在途工具、命令、交互与 I/O；不以注册移除测试宣称所有在途调用已经回收。共享进程运行根、完整 API 导入、SQLite/历史驻留、真实外部provider及最终wheel/PTY仍按后续批次验证。
+
+### 迭代 2：插件 layout 与运行关系
+
+- [x] 用户再次强调插件 layout，当前将其作为明确实施项。目录按实际职责建立，不添加空模板或只做文件搬移；跨插件从 owner/api 导入，api 不承载初始化/路由实现，不保留旧根转出口作为兼容层。
+- [ ] 第一组由一个 Terra 实施 usage/token_manager/todolist：实际声明与业务实现分离、插件内测试和文档、loader 正规 impl/plugin 发现，以及测试发现/打包约定。其他 owner 尚未迁移，不将局部布局写成整仓完成。
+- [ ] 按同一约定完成其余插件、core 与 XCore 的公开入口消费，处理 LoopState 等混在 contracts 的实际实现，更新架构/导入检查及内置开发指南。
+- [ ] 在作用域/契约稳定后完成 loader/session/thread 单进程根接入，退出 application/host/factory 旧层；保留标准执行路径与必要行为验收。
