@@ -65,8 +65,13 @@ source = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["XBotv2*"]
-exclude = ["XBotv2.tests*"]
+exclude = ["XBotv2.tests*", "XBotv2.web*"]
 namespaces = true
 
 [tool.setuptools.package-data]
-XBotv2 = [".agents/skills/xbot-plugin-development/**"]
+XBotv2 = [
+    "xcore.yaml",
+    "py.typed",
+    "docs/**/*.md",
+    ".agents/skills/xbot-plugin-development/**",
+]
