@@ -14,7 +14,7 @@ from rich.text import Text
 from textual.containers import VerticalScroll
 from textual.widgets import Static
 
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 
 _UNFINISHED = frozenset({"queued", "running"})
 

@@ -15,7 +15,7 @@ from typing import Any
 import httpx
 
 from XBotv2.client import XBotClient, XBotClientError
-from XBotv2.protocol.models import ServerEvent
+from XBotv2.protocol.api.models import ServerEvent
 
 from .config import StressConfig
 from .models import ScenarioReport

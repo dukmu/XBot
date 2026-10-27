@@ -7,7 +7,7 @@ from XBotv2.config.api.contracts import ConfigPluginConfig, GET_POLICY, UPDATE_P
 from XBotv2.config.impl.service import ConfigService
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.impl.router import build_router
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 
 
 async def mount_http(ctx: Context) -> None:

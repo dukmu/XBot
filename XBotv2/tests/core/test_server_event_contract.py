@@ -21,14 +21,8 @@ from XBotv2.core.api.domain import (
 )
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
-from XBotv2.protocol.models import server_event
-from XBotv2.protocol.sse import (
-    SseDecodeError,
-    SseDecoder,
-    SseMessage,
-    decode_server_event,
-    encode_server_event,
-)
+from XBotv2.protocol.api.models import server_event
+from XBotv2.protocol.api.sse import SseDecodeError, SseDecoder, SseMessage, decode_server_event, encode_server_event
 from XBotv2.session.contracts import (
     HistoryMutation,
     OpenedThread,

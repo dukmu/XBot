@@ -37,7 +37,7 @@ async def test_client_profile_provides_one_api_client_and_textual_terminal(
     monkeypatch.setattr(TuiApp, "run_async", run_app)
 
     client_transport_module = importlib.import_module(
-        "XBotv2.client_transport.plugin"
+        "XBotv2.client_transport.impl.plugin"
     )
     monkeypatch.setattr(client_transport_module, "XBotClient", FakeClient)
     paths = RuntimePaths.from_data_dir(tmp_path / "state")

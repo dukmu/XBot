@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from textual.app import App, ComposeResult
 
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 from XBotv2.tui.view.jobs import JobPanel, job_row, order_jobs
 
 

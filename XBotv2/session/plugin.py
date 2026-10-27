@@ -6,6 +6,8 @@ hydration; persistence supplies its durable stores.
 """
 
 from __future__ import annotations
+
+from XBotv2.workspaces.api.contracts import WORKSPACE_EVENTS
 from XBotv2.commands.api.contracts import COMMANDS
 
 from XBotv2.agentloop.api.contracts import INBOX
@@ -17,6 +19,7 @@ from xcore.api.context import Context
 from xcore import StateService
 from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
@@ -24,7 +27,7 @@ from XBotv2.session.contracts import SessionNotFound, ThreadNotActive
 from XBotv2.session.manager import SessionManager
 from XBotv2.session.config import SessionConfig
 from XBotv2.session.protocol import _session_not_found, _thread_not_active, build_session_router
-from XBotv2.server import QUERY_STATUS, ServerStatus, contribute_router
+from XBotv2.server.api.contracts import QUERY_STATUS, ServerStatus, contribute_router
 
 
 _MANAGER_DEPENDENCIES = {
@@ -130,7 +133,7 @@ async def mount_http(ctx: Context, *, config: SessionConfig) -> None:
         router=build_session_router(
             sessions=ctx.sessions,
             options=config,
-            workspace_events=ctx.workspace_events,
+            workspace_events=ctx.require(WORKSPACE_EVENTS),
         ),
         exception_handlers=(
             (SessionNotFound, _session_not_found),
@@ -144,7 +147,7 @@ class SessionManagerStatus:
         self._manager = manager
         self._workspace_root = workspace_root
 
-    def status(self) -> ServerStatus:
+    def status(self, _request: EmptyRequest) -> ServerStatus:
         return ServerStatus(
             sessions=self._manager.size,
             threads=self._manager.thread_count,
@@ -164,7 +167,7 @@ class SessionPlugin:
         ctx.inject(SessionRuntimeComponent.inject, mount_runtime)
         ctx.inject(_MANAGER_DEPENDENCIES, partial(mount_manager, config=config))
         ctx.inject(
-            ["server", "sessions", "workspace_events"],
+            ["server", "sessions", WORKSPACE_EVENTS],
             partial(mount_http, config=config),
         )
 

@@ -63,7 +63,7 @@ from XBotv2.core.api.tools import (
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
 from XBotv2.interactions.api.models import Answered, ClientNotice as ClientNoticeModel, UserInputOption, UserInputRecorded, UserInputRequest
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import ActiveGoal, CompleteGoal, GoalSnapshot, GoalStats
 from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
@@ -1011,7 +1011,7 @@ def test_submitted_input_appears_immediately_as_pending() -> None:
 
 def test_consumed_input_retires_only_unconfirmed_matching_echo() -> None:
     from XBotv2.core.api.domain import SessionScope
-    from XBotv2.protocol import server_event
+    from XBotv2.protocol.api.models import server_event
     from XBotv2.tui.protocol import FrameTranslator
 
     state = session(
@@ -1298,7 +1298,7 @@ def test_terminal_jobs_do_not_count_as_running() -> None:
 
 
 def test_authoritative_job_snapshot_replaces_stale_thread_jobs() -> None:
-    from XBotv2.jobs.protocol import JobListResponse
+    from XBotv2.jobs.api.protocol import JobListResponse
 
     state = session(
         connected(),

@@ -9,7 +9,7 @@ import xcore
 from fastapi import APIRouter
 from XBotv2.application.logging import setup_logging
 from XBotv2.core.api.runtime_logging import RuntimeLog, push_log_context, reset_log_context
-from XBotv2.server.http import create_app
+from XBotv2.server.impl.http import create_app
 
 
 def test_runtime_log_redacts_credentials_but_keeps_usage(caplog) -> None:

@@ -34,7 +34,7 @@ from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.core.api.tools import ToolCallRef, ToolSucceeded, text_output
 from XBotv2.interactions.api.protocol import InteractionResponse
-from XBotv2.protocol import ServerEvent, server_event
+from XBotv2.protocol.api.models import ServerEvent, server_event
 from XBotv2.session.contracts import OpenedThread, SessionKey, ThreadSummary
 from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.session.protocol import OpenSessionResponse

@@ -13,7 +13,7 @@ from XBotv2.llm.api.contracts import (
     SelectEffort,
     SelectProvider,
 )
-from XBotv2.protocol.http_util import HttpServerError
+from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.session.contracts import SessionsPort
 from xcore.api.events import EventDispatch
 from XBotv2.llm.api.protocol import (

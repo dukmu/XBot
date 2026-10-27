@@ -35,7 +35,7 @@ from XBotv2.agentloop.api.outputs import (
     ToolCompleted,
 )
 from XBotv2.core.api.parts import TextPart
-from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
+from XBotv2.jobs.api.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.session.events import MessagePublishedEvent
 from XBotv2.session.runtime import start_regenerate_turn
 from XBotv2.usage.api.events import UsageUpdated
@@ -457,7 +457,7 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
     completion notice the TUI never applies); no terminal ``job_updated``
     reached live clients, so tasks stayed "running" forever."""
 
-    from XBotv2.coretools.shell import shell_tools
+    from XBotv2.coretools.impl.shell import shell_tools
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="task-panel",
@@ -518,7 +518,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
     foldin_app,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from XBotv2.coretools.shell import ShellCommandError, shell_tools
+    from XBotv2.coretools.impl.shell import ShellCommandError, shell_tools
 
     llm = MockLLM(responses=[{"content": "acknowledged"}])
     ctx = await foldin_app.state.manager.open_session(
@@ -541,7 +541,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
             await asyncio.Event().wait()
         return "completed"
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     tools = {
         tool.name: tool
         for tool in shell_tools(
@@ -607,7 +607,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     foldin_app,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from XBotv2.coretools.shell import shell_tools
+    from XBotv2.coretools.impl.shell import shell_tools
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="shell-output-pages",
@@ -623,7 +623,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     async def run(command: str, **_kwargs: object) -> str:
         return "" if command == "emit empty" else "abcdef"
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     tools = {
         tool.name: tool
         for tool in shell_tools(
@@ -684,7 +684,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
     foldin_app,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from XBotv2.coretools.shell import shell_tools
+    from XBotv2.coretools.impl.shell import shell_tools
 
     ctx = await foldin_app.state.manager.open_session(
         session_id="job-session-close",
@@ -707,7 +707,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
             command_cancelled.set()
             raise
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     shell_tool = next(
         tool
         for tool in shell_tools(

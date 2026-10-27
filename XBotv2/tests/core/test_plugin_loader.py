@@ -29,7 +29,7 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
     from xcore.api.context import Context
-    from XBotv2.jobs.registry import JobRegistry
+    from XBotv2.jobs.impl.registry import JobRegistry
     from XBotv2.core.api.variables import RuntimeVariables
     from XBotv2.agents.impl.catalog import AgentCatalog
     from XBotv2.context_builder.impl.builder import ContextBuilder

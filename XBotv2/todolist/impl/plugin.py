@@ -15,7 +15,7 @@ from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.operations import EmptyRequest
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.todolist.api.models import (
     DependencyEdge,

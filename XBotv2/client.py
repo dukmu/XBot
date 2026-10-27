@@ -12,18 +12,11 @@ from XBotv2.agentloop.api.protocol import ToolListResponse
 from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
 from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
 from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
-from XBotv2.jobs import JobListResponse, JobStopResponse
+from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
 from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
 from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.permissions.api.protocol import PermissionResponseRequest
-from XBotv2.protocol import (
-    ErrorResponse,
-    HealthResponse,
-    HelloRequest,
-    HelloResponse,
-    ServerEvent,
-    WireModel,
-)
+from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
 from XBotv2.session import (
     AttachmentInput,
     CloseResponse,
@@ -47,9 +40,9 @@ from XBotv2.session import (
     UndoRequest,
 )
 from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
-from XBotv2.workspaces import WorkspaceSnapshot
-from XBotv2.protocol.sse import SseDecoder, decode_server_event
-from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.workspaces.api.contracts import WorkspaceSnapshot
+from XBotv2.protocol.api.sse import SseDecoder, decode_server_event
+from XBotv2.protocol.api.version import PROTOCOL_VERSION
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.records import ConversationRecord

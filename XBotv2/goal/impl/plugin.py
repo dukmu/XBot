@@ -47,7 +47,7 @@ from XBotv2.goal.api.models import (
     NoGoal,
     PausedGoal,
 )
-from XBotv2.jobs import JOB_COMPLETED, JobView, JobsCommandPort
+from XBotv2.jobs.api.contracts import JOBS, JOB_COMPLETED, JobView, JobsCommandPort
 
 _CLEAR_ALIASES = frozenset({"clear", "stop", "off", "reset", "none", "cancel"})
 
@@ -585,7 +585,7 @@ def _tool_outcome_text(result: ToolOutcome) -> str:
 class GoalPlugin:
     inject = {
         "required": [COMMANDS, "engine", "state", TOOLS, "usage"],
-        "optional": ["jobs"],
+        "optional": [JOBS],
     }
     name = "goal"
     def apply(self, ctx: Context, config: object | None = None) -> None:
@@ -595,7 +595,7 @@ class GoalPlugin:
             ctx.state.namespace(self.name),
             ctx.engine,
             events=ctx,
-            jobs=ctx.get("jobs", strict=False),
+            jobs=ctx.get(JOBS, strict=False),
             usage=ctx.usage,
         )
         ctx.set("goal", service)

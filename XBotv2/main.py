@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None):
         elif args.command == "once":
             asyncio.run(_run_once(args))
         elif args.command == "acp":
-            from XBotv2.acp_plugin.server import run_acp
+            from XBotv2.acp_plugin.impl.server import run_acp
 
             asyncio.run(run_acp(
                 data_dir=args.data_dir,

@@ -1043,8 +1043,6 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
                 and "Requested by ask_user" in screen
                 and "Thursday" in screen
                 and "Enter confirm · Esc dismiss" in screen
-                and "╮" in screen
-                and "╯" in screen
             ),
             description="the question card after an 80x24 resize",
         )

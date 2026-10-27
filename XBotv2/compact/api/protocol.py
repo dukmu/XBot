@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 from pydantic import Field
-from XBotv2.protocol import WireModel
+from XBotv2.protocol.api.models import WireModel
 from XBotv2.core.api.messages import CompactionSummaryMessage
 from XBotv2.core.api.domain import TokenCounters
 

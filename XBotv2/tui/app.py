@@ -21,7 +21,7 @@ from textual.containers import Horizontal
 from textual import on
 from textual.widgets import Collapsible, TextArea
 
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
 from XBotv2.session.contracts import PendingInputData

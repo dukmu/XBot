@@ -39,8 +39,8 @@ AGENTS_SERVICE = PACKAGE / "agents" / "impl" / "service.py"
 APPLICATION_CONFIG_SEED = PACKAGE / "application" / "config_seed.py"
 APPLICATION_TREE = PACKAGE / "application" / "tree.py"
 SERVER_APP = PACKAGE / "application" / "server.py"
-HTTP_SERVER = PACKAGE / "server" / "http.py"
-ACP_AGENT = PACKAGE / "acp_plugin" / "xbot_agent.py"
+HTTP_SERVER = PACKAGE / "server" / "impl" / "http.py"
+ACP_AGENT = PACKAGE / "acp_plugin" / "impl" / "xbot_agent.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
     PACKAGE / "agentloop" / "impl" / "tool_service.py",

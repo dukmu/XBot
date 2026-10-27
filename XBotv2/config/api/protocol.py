@@ -2,7 +2,7 @@
 from __future__ import annotations
 from typing import Literal
 from pydantic import Field, JsonValue, StrictBool, field_validator, model_validator
-from XBotv2.protocol import WireModel
+from XBotv2.protocol.api.models import WireModel
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
 

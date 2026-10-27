@@ -18,7 +18,7 @@ from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config
-from XBotv2.protocol.http_util import HttpServerError
+from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.session.contracts import SessionsPort

@@ -1,7 +1,7 @@
 """Transport models owned by this plugin."""
 from __future__ import annotations
 from pydantic import Field
-from XBotv2.protocol import WireModel
+from XBotv2.protocol.api.models import WireModel
 
 class ProviderSelectionRequest(WireModel):
     name: str = Field(min_length=1)

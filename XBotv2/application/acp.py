@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from xcore.api.context import Context
-from XBotv2.acp_plugin import ACPLaunch
+from XBotv2.acp_plugin.api.contracts import ACPLaunch
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_acp_tree

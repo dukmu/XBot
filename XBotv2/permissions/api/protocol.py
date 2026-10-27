@@ -4,7 +4,7 @@ from typing import Literal
 
 from pydantic import Field
 
-from XBotv2.protocol import WireModel
+from XBotv2.protocol.api.models import WireModel
 from XBotv2.permissions.api.models import Approval
 
 

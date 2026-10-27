@@ -8,8 +8,8 @@ import yaml
 from fastapi import APIRouter, FastAPI
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
-from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution
-from XBotv2.server.plugin import WebServer, route_keys
+from XBotv2.server.api.contracts import REGISTER_ROUTE, RouteContribution
+from XBotv2.server.impl.plugin import WebServer, route_keys
 
 
 def test_web_server_register_is_an_effect() -> None:
@@ -90,7 +90,7 @@ def test_web_server_duplicate_path_is_rejected() -> None:
 async def test_server_tree_can_start_without_session_capabilities(tmp_path, enabled):
     from XBotv2.application.server import start_server_application
     from XBotv2.application.tree import load_server_tree
-    from XBotv2.protocol.version import PROTOCOL_VERSION
+    from XBotv2.protocol.api.version import PROTOCOL_VERSION
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     tree = load_server_tree(paths=paths)

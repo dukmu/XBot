@@ -35,8 +35,8 @@ import XBotv2.client as client_module
 import yaml
 from openai.types.chat import ChatCompletionChunk
 from pydantic import BaseModel, ValidationError
-from XBotv2.jobs import Running
-from XBotv2.jobs.protocol import JobCompletedEvent
+from XBotv2.jobs.api.contracts import Running
+from XBotv2.jobs.api.protocol import JobCompletedEvent
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.errors import OperationError
 from XBotv2.loader import PluginOverlay
@@ -50,7 +50,7 @@ from XBotv2.core.api.tools import (
     ToolSucceeded,
 )
 from XBotv2.client import XBotClient, XBotClientError
-from XBotv2.coretools.shell import ShellJobSpec, ShellRunner, start_shell
+from XBotv2.coretools.impl.shell import ShellJobSpec, ShellRunner, start_shell
 from httpx import ASGITransport
 from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.llm.impl.openai import OpenAICompatibleProvider
@@ -58,7 +58,7 @@ from XBotv2.interactions.api.models import Answered
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
-from XBotv2.protocol.version import PROTOCOL_VERSION
+from XBotv2.protocol.api.version import PROTOCOL_VERSION
 from XBotv2.session import InteractionReceipt, OpenSession, OpenThread, SendMessage
 from XBotv2.session.contracts import SessionEvent, SessionResourceChanged
 from XBotv2.agentloop.api.outputs import (
@@ -3902,7 +3902,7 @@ async def test_background_task_updates_and_completion_use_session_stream(
         return "task output"
 
     monkeypatch.setattr(
-        "XBotv2.coretools.shell.run_shell_command", run
+        "XBotv2.coretools.impl.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[
         {"content": "session title"},
@@ -3977,7 +3977,7 @@ async def test_multiple_completions_keep_distinct_inbox_messages(
         return "task output"
 
     monkeypatch.setattr(
-        "XBotv2.coretools.shell.run_shell_command", run
+        "XBotv2.coretools.impl.shell.run_shell_command", run
     )
     llm = MockLLM(responses=[
         {"content": "session title"},
@@ -4038,7 +4038,7 @@ async def test_typed_task_stop_is_idempotent(
     async def run(*args, **kwargs):
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "task-stop", "thread_id": "t"}
     )
@@ -4075,7 +4075,7 @@ async def test_jobs_command_lists_stops_and_reports_unknown_job(
         started.set()
         await asyncio.Event().wait()
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run)
     await client.post(
         "/sessions", json={"session_id": "jobs-command", "thread_id": "t"}
     )
@@ -4141,7 +4141,7 @@ async def test_http_interrupt_leaves_shared_background_shell_running(
         await asyncio.Event().wait()
 
     monkeypatch.setattr(
-        "XBotv2.coretools.shell.run_shell_command", run_shell_command
+        "XBotv2.coretools.impl.shell.run_shell_command", run_shell_command
     )
 
     ctx = await http_app.state.manager.open_session(
@@ -6747,7 +6747,7 @@ async def test_goal_waits_for_background_job_and_running_steer_then_continues_on
         await release_job.wait()
         return "job result"
 
-    monkeypatch.setattr("XBotv2.coretools.shell.run_shell_command", run_shell)
+    monkeypatch.setattr("XBotv2.coretools.impl.shell.run_shell_command", run_shell)
 
     class JobGoalLLM(MockLLM):
         goal_requests = 0

@@ -35,7 +35,7 @@ from XBotv2.core.api.domain import (
 )
 from XBotv2.interactions.api.models import UserInputRecorded, UserInputRequest
 from XBotv2.goal.api.models import NoGoal
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 from XBotv2.permissions.api.models import NamedPermission, PermissionRequest, ToolPermission
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.session.contracts import PendingInputData

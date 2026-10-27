@@ -31,7 +31,7 @@ from XBotv2.agentloop.api.contracts import (
 from XBotv2.agentloop.api.state import LoopState
 from XBotv2.config.api.contracts import RuntimeConfig, SettingsPort
 from XBotv2.config.api.contracts import ConfigPluginConfig
-from XBotv2.coretools.contracts import CoreToolsConfig
+from XBotv2.coretools.api.models import CoreToolsConfig
 from XBotv2.loader.contracts import PluginTree
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.artifacts import ArtifactStorePort

@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import pytest
 
-from XBotv2.jobs.contracts import JobView
+from XBotv2.jobs.api.contracts import JobView
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,

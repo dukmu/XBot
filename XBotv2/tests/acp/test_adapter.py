@@ -17,8 +17,8 @@ from acp.schema import (
     McpServerStdio,
     RequestPermissionResponse,
 )
-from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
-from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
+from XBotv2.acp_plugin.impl.xbot_agent import XBotACPAgent
+from XBotv2.acp_plugin.impl.events import ACPEventMapper, replay_history
 from XBotv2.session.contracts import (
     OpenedThread,
     SessionEventFrame,
@@ -82,8 +82,8 @@ from XBotv2.agentloop.api.outputs import (
     UsageObserved,
     is_loop_event,
 )
-from XBotv2.jobs.contracts import JobView
-from XBotv2.jobs.protocol import JobUpdatedEvent
+from XBotv2.jobs.api.contracts import JobView
+from XBotv2.jobs.api.protocol import JobUpdatedEvent
 from XBotv2.interactions.api.models import Answered, UserInputOption, UserInputRequest
 from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
 from XBotv2.llm.impl.mock import MockLLM
@@ -597,8 +597,8 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
 async def test_prompt_is_released_when_the_session_stream_ends() -> None:
     """A session stream that ends without a turn terminal frame must release
     the active prompt instead of hanging its waiter and the prompt slot."""
-    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
-    from XBotv2.acp_plugin.events import ACPEventMapper
+    from XBotv2.acp_plugin.impl.xbot_agent import ActivePrompt, XBotACPAgent
+    from XBotv2.acp_plugin.impl.events import ACPEventMapper
 
     class ThreadSummary:
         context_window = 4096
@@ -634,7 +634,7 @@ async def test_prompt_is_released_when_the_session_stream_ends() -> None:
 
 @pytest.mark.asyncio
 async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -> None:
-    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
+    from XBotv2.acp_plugin.impl.xbot_agent import ActivePrompt, XBotACPAgent
 
     class FailingConnection:
         async def session_update(self, **_):
@@ -682,7 +682,7 @@ async def test_prompt_notification_failure_closes_stream_and_releases_prompt() -
 
 @pytest.mark.asyncio
 async def test_cancelled_event_forwarding_closes_stream_and_releases_prompt() -> None:
-    from XBotv2.acp_plugin.xbot_agent import ActivePrompt, XBotACPAgent
+    from XBotv2.acp_plugin.impl.xbot_agent import ActivePrompt, XBotACPAgent
 
     class Sessions:
         async def thread_summary(self, session_id, thread_id):

@@ -15,8 +15,8 @@ import asyncio
 import time
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, Sequence
 
-from XBotv2.jobs.contracts import JobView
-from XBotv2.jobs.protocol import JobListResponse
+from XBotv2.jobs.api.contracts import JobView
+from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.session.contracts import PendingInputData

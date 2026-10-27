@@ -31,8 +31,8 @@ from XBotv2.agentloop.api.outputs import (
 from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
 from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.interactions.api.models import ClientNotice, UserInputRequest, UserInputRecorded
-from XBotv2.jobs.contracts import JobView
-from XBotv2.jobs.protocol import JobCompletedEvent, JobListResponse
+from XBotv2.jobs.api.contracts import JobView
+from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.session.contracts import ThreadSummary

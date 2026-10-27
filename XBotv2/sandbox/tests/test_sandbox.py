@@ -6,7 +6,7 @@ import shlex
 import sys
 from pathlib import Path
 import pytest
-from XBotv2.coretools.shell import run_shell_command
+from XBotv2.coretools.impl.shell import run_shell_command
 from XBotv2.sandbox.impl.policy import SandboxPolicy
 from XBotv2.sandbox.api.models import SandboxConfig, SandboxResourceConfig
 from XBotv2.sandbox.impl.bwrap import _build_args

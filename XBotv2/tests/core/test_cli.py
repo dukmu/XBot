@@ -216,7 +216,7 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from XBotv2.server import http
+    from XBotv2.server.impl import http
 
     class _FakeApp:
         def __init__(self) -> None:

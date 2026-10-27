@@ -52,7 +52,7 @@ pythonpath = [".", "XCore"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
-addopts = "-v --tb=short --strict-markers"
+addopts = "-v --tb=short --strict-markers --import-mode=importlib"
 markers = [
     "slow: marks tests as slow",
     "integration: marks tests as integration tests",

@@ -1,6 +1,6 @@
 """Tool catalog transport values shared by server and client."""
 from pydantic import Field, JsonValue
-from XBotv2.protocol import WireModel
+from XBotv2.protocol.api.models import WireModel
 
 class ToolInfo(WireModel):
     name: str = Field(min_length=1)

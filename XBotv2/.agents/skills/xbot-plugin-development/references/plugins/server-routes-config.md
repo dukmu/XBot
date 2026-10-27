@@ -98,7 +98,7 @@ entries. Both take a `scope: PluginConfigScope = Query(default="workspace")`
 and resolve the workspace through the thread summary, then delegate to
 `settings.plugin_config_catalog(...)` / `settings.update_plugin_config(...)`.
 A `ValueError` from the settings service is re-raised as
-`HttpServerError` (`XBotv2.protocol.http_util`) — `invalid_plugin_config` with
+`HttpServerError` (`XBotv2.protocol.api.http_util`) — `invalid_plugin_config` with
 `status=400` on read/patch validation, and `plugin_config_conflict` with
 `status=409` on a conflicting patch.
 

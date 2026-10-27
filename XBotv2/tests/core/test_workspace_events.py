@@ -9,7 +9,8 @@ from fastapi import FastAPI
 from XBotv2.session.contracts import SessionResourceChanged
 from XBotv2.session.protocol import build_session_router
 from XBotv2.session.contracts import SessionSummary
-from XBotv2.workspaces.events import WorkspaceCursorExpired, WorkspaceEventStream
+from XBotv2.workspaces.api.events import WorkspaceCursorExpired
+from XBotv2.workspaces.impl.events import WorkspaceEventStream
 
 
 @pytest.mark.asyncio

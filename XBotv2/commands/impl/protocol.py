@@ -1,7 +1,7 @@
 """Command HTTP routes."""
 
 from fastapi import APIRouter
-from XBotv2.protocol.http_util import HttpServerError
+from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand, LIST_COMMANDS
 from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.core.api.operations import EmptyRequest

@@ -7,11 +7,11 @@ import pytest
 from fastapi import FastAPI
 from xcore.state import StateService
 
-from XBotv2.workspaces import WorkspaceNotFound
-from XBotv2.workspaces.service import WorkspaceRegistry
-from XBotv2.workspaces.contracts import WORKSPACE_RESOURCE_CHANGED
-from XBotv2.workspaces.protocol import build_router
-from XBotv2.workspaces.directories import DirectoryBrowser
+from XBotv2.workspaces.api.contracts import WorkspaceNotFound
+from XBotv2.workspaces.impl.service import WorkspaceRegistry
+from XBotv2.workspaces.api.contracts import WORKSPACE_RESOURCE_CHANGED
+from XBotv2.workspaces.impl.protocol import build_router
+from XBotv2.workspaces.impl.directories import DirectoryBrowser
 
 
 class Sessions:

@@ -30,7 +30,7 @@ from XBotv2.tests.tui.factories import (
     tui_app,
 )
 from XBotv2.client import XBotClientError
-from XBotv2.protocol.models import ErrorResponse
+from XBotv2.protocol.api.models import ErrorResponse
 from XBotv2.session.records import AssistantRecord
 from textual.screen import Screen
 

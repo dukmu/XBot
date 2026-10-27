@@ -19,7 +19,7 @@ from XBotv2.llm.impl.commands import build_llm_commands
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.llm.api.contracts import LlmConfig, LIST_PROVIDERS, ProviderCatalog, LLM, MODEL
 from XBotv2.llm.impl.router import build_router
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 
 
 async def mount_http(ctx: Context) -> None:

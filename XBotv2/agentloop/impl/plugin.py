@@ -21,7 +21,7 @@ from XBotv2.agentloop.impl.protocol import build_tools_router
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_service import ToolsService
 from XBotv2.core.api.operations import EmptyRequest
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 
 
 async def mount_state(ctx: Context) -> None:

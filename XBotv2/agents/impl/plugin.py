@@ -28,7 +28,7 @@ from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.api.contracts import SETTINGS
 from XBotv2.llm.api.contracts import LLM, MODEL
 from XBotv2.llm.api.contracts import EffortSelection, ProviderSelection, SELECT_EFFORT, SELECT_PROVIDER, SelectEffort, SelectProvider
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 
 
 _CATALOG_DEPENDENCIES = [

@@ -34,11 +34,11 @@ from XBotv2.client import XBotClientError
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.interactions.api.protocol import InteractionResponse
-from XBotv2.jobs.protocol import JobListResponse
+from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.llm.api.protocol import EffortSelectionResponse, ProviderSelectionResponse
 from XBotv2.llm.api.contracts import ProviderCatalog
-from XBotv2.protocol import ServerEvent
-from XBotv2.protocol.models import HelloResponse
+from XBotv2.protocol.api.models import ServerEvent
+from XBotv2.protocol.api.models import HelloResponse
 from XBotv2.session import (
     AttachmentInput,
     ImageInput,

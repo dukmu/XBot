@@ -23,7 +23,7 @@ from XBotv2.commands.api.contracts import (
     describe_command,
 )
 from XBotv2.commands.impl.protocol import build_commands_router
-from XBotv2.server import contribute_router
+from XBotv2.server.api.contracts import contribute_router
 
 
 async def mount_http(ctx: Context) -> None:
