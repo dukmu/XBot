@@ -43,6 +43,7 @@ class PersistenceResources:
         self._uses = {}
         self._session_draining = set()
         self._locks = {}
+        self._publication_owners = {}
         self._claims = {}
         self._preparations = {}
         self._preparation_lock = asyncio.Lock()
@@ -215,6 +216,19 @@ class PersistenceResources:
                 del self._locks[key]
             else:
                 self._locks[key] = (lock, count - 1)
+
+    @asynccontextmanager
+    async def publication(self, root):
+        task = asyncio.current_task()
+        if self._publication_owners.get(root) is task:
+            yield
+            return
+        async with self.artifact_lock(root, "publication"):
+            self._publication_owners[root] = task
+            try:
+                yield
+            finally:
+                del self._publication_owners[root]
 
     def require_writer(self, session):
         if session.root not in self._claims:

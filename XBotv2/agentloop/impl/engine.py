@@ -346,10 +346,12 @@ class Engine:
         tool = self.tools.resolve(name) if name else None
         return tool.kind if tool is not None else "other"
 
-    async def submit_input(self, item: InboxItem, *, wake: bool) -> None:
+    async def submit_input(
+        self, item: InboxItem, *, wake: bool, resources: AsyncExitStack | None = None,
+    ) -> bool:
         if self.state.session.status != "active":
             raise OperationError("session_closing", "Thread is closing")
-        return await self.inbox.submit(item, wake=wake)
+        return await self.inbox.submit(item, wake=wake, resources=resources)
 
     @property
     def pending_input_count(self) -> int:

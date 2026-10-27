@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, nullcontext
 from XBotv2.persistence.api.models import CommitUncertain
 from collections import deque
 from collections.abc import Iterable, Iterator, Sequence
@@ -25,6 +25,7 @@ from XBotv2.agentloop.api.contracts import (
 )
 from xcore.api.events import EventDispatch
 from XBotv2.agentloop.api.events import Events, ObserveInbox, PrepareInput
+from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.domain import InboxTarget
 
 
@@ -37,6 +38,7 @@ class AgentInbox:
         events: EventDispatch,
         sink: InboxSink,
         items: Iterable[InboxItem] = (),
+        artifacts: ArtifactStorePort | None = None,
     ) -> None:
         self._next_turn: deque[InboxItem] = deque()
         self._next_step: deque[InboxItem] = deque()
@@ -44,6 +46,7 @@ class AgentInbox:
         self._claimed_ids: set[str] = set()
         self._observers: set[asyncio.Event] = set()
         self._lock = asyncio.Lock()
+        self._artifacts = artifacts
         self._sink = sink
         self._events = events
         for item in items:
@@ -94,7 +97,13 @@ class AgentInbox:
             raise ValueError("PREPARE_INPUT may only change content and artifacts")
         return candidate
 
-    async def submit(self, item: InboxItem, *, wake: bool) -> bool:
+    async def submit(
+        self, item: InboxItem, *, wake: bool, resources: AsyncExitStack | None = None,
+    ) -> bool:
+        async with self._artifacts.publication() if self._artifacts else nullcontext():
+            return await self._submit(item, wake=wake, resources=resources)
+
+    async def _submit(self, item, *, wake, resources):
         async with self._lock:
             restored = await self._synchronize()
             content_sha256 = content_digest(item.input.content)
@@ -104,7 +113,7 @@ class AgentInbox:
             if await self._sink.accepted(item.id, fingerprint):
                 return item.id in restored
             uncertain = None
-            async with AsyncExitStack() as resources:
+            async with resources.pop_all() if resources is not None else AsyncExitStack() as resources:
                 item = await self._prepare(item, resources)
                 change = Inserted(
                     item=item, wake=wake, request_fingerprint=fingerprint,
@@ -186,6 +195,10 @@ class AgentInbox:
                 await self._record(Consumed(ids=tuple(item.id for item in consumed)))
 
     async def edit(self, input_id: str, content: str) -> InboxItem:
+        async with self._artifacts.publication() if self._artifacts else nullcontext():
+            return await self._edit(input_id, content)
+
+    async def _edit(self, input_id: str, content: str) -> InboxItem:
         if not content.strip():
             raise ValueError("Inbox input content cannot be empty")
         async with self._lock:

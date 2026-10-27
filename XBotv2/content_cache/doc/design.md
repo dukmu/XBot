@@ -34,7 +34,6 @@ When this plugin is disabled, inputs retain their original text and are subject
 to persistence's configured record byte budget (8 MiB by default); an oversized
 record fails explicitly. Core has no implicit externalization policy.
 
-Image and attachment uploads in `submit_message` still publish before inbox
-acceptance. A conflicting request or later pre-log failure can leave an
-unreferenced upload object. The preparation cleanup above covers long text,
-not atomic publication of every uploaded media object.
+Image, attachment and externalized text publications are retained when inbox
+acceptance commits or is uncertain. A failure before acceptance removes only
+objects created by that input; existing objects are preserved.

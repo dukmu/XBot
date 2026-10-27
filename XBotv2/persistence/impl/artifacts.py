@@ -34,6 +34,7 @@ class ArtifactStore:
         self._resources = resources
         self._binding = binding
         self._local_lock = asyncio.Lock()
+        self._local_owner = None
         self._log = runtime_log.bind(
             "persistence", session_id=paths.session_id, thread_id=paths.thread_id,
         )
@@ -222,13 +223,23 @@ class ArtifactStore:
                 yield ref
 
     @asynccontextmanager
+    async def publication(self):
+        if self._resources is not None:
+            async with self._resources.publication(self._paths.session.root):
+                yield
+        elif self._local_owner is asyncio.current_task():
+            yield
+        else:
+            async with self._local_lock:
+                self._local_owner = asyncio.current_task()
+                try:
+                    yield
+                finally:
+                    self._local_owner = None
+
+    @asynccontextmanager
     async def _publication(self, temporary, ref):
-        lock = (
-            self._resources.artifact_lock(self._paths.session.root, ref.sha256)
-            if self._resources is not None
-            else self._local_lock
-        )
-        async with lock:
+        async with self.publication():
             target = self._paths.artifact_file(ref.id)
             created = not await run_file_io(target.exists)
             try:
@@ -356,7 +367,7 @@ class ArtifactStore:
             )
 
     async def import_file(self, source: Path, artifact: ArtifactRef) -> None:
-        async with self._use(write=True):
+        async with self._use(write=True), self.publication():
             await run_file_io(
                 _copy_verified, Path(source), self._paths.artifact_file(artifact.id),
                 _expected_digest(artifact), artifact.size,

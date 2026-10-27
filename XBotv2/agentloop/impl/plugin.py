@@ -65,6 +65,7 @@ async def mount_state(ctx: Context) -> None:
             events=ctx,
             sink=inbox_sink,
             items=pending_inputs,
+            artifacts=ctx.artifacts,
         ),
     )
 
@@ -139,7 +140,7 @@ class ToolsCatalogHandler:
 def mount_thread(ctx, config):
     mount_tools(ctx)
     ctx.inject(
-        ["thread_info", "variables", THREAD_REPOSITORY, PERSISTENCE], mount_state
+        ["thread_info", "variables", THREAD_REPOSITORY, PERSISTENCE, "artifacts"], mount_state
     )
     ctx.inject(
         [

@@ -67,6 +67,8 @@ class ArtifactStorePort(Protocol):
 
     def spool_file(self) -> AbstractAsyncContextManager[Path]: ...
 
+    def publication(self) -> AbstractAsyncContextManager[None]: ...
+
     def prepare_stream(
         self,
         kind: ArtifactKind,

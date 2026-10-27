@@ -7,7 +7,7 @@ import base64
 import binascii
 import time
 import uuid
-from contextlib import aclosing, asynccontextmanager, nullcontext
+from contextlib import AsyncExitStack, aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import AsyncIterator
 from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
@@ -358,6 +358,15 @@ class AgentLoop:
         artifacts: list[ArtifactRef] | None = None,
     ) -> None:
         """Submit input; output is delivered by the session event stream."""
+        async with self._submission_lock:
+            busy = await self._accept_message(
+                content, request_id, delivery=delivery, media=media, artifacts=artifacts,
+            )
+            await self._schedule_message(busy, request_id)
+
+    async def _accept_message(
+        self, content, request_id, *, delivery, media, artifacts, resources=None,
+    ):
         if delivery not in {"queue", "steer"}:
             raise ValueError(f"Unsupported input delivery mode: {delivery}")
         user_input = HumanInput(
@@ -365,30 +374,34 @@ class AgentLoop:
             media=tuple(media or ()),
             artifacts=tuple(artifacts or ()),
         )
-        async with self._submission_lock:
-            status = self._context.require(LOOP_STATE).session.status
-            if not self._context.is_active or status != "active":
-                raise OperationError(
-                    "session_closing",
-                    f"Cannot accept input while the session is {status}.",
-                )
-            busy = self._turn_lock.locked()
-            item = InboxItem(
-                id=request_id or f"input-{uuid.uuid4().hex}",
-                target=InboxTarget.NEXT_STEP
-                if busy and delivery == "steer"
-                else InboxTarget.NEXT_TURN,
-                input=user_input,
+        status = self._context.require(LOOP_STATE).session.status
+        if not self._context.is_active or status != "active":
+            raise OperationError(
+                "session_closing",
+                f"Cannot accept input while the session is {status}.",
             )
-            # Durable acceptance happens in this caller before any model task
-            # or successful HTTP response can escape. Retry keeps the same ID.
-            if not await self._engine.submit_input(item, wake=False):
-                return
-            if not busy:
-                await start_turn(self, item=None, request_id=request_id)
-            if self._engine.pending_input_count:
-                self._request_wakeup()
-            self.touch()
+        busy = self._turn_lock.locked()
+        item = InboxItem(
+            id=request_id or f"input-{uuid.uuid4().hex}",
+            target=InboxTarget.NEXT_STEP
+            if busy and delivery == "steer"
+            else InboxTarget.NEXT_TURN,
+            input=user_input,
+        )
+        # Durable acceptance precedes any model task or successful response.
+        if not await self._engine.submit_input(item, wake=False, resources=resources):
+            return None
+        return busy
+
+    async def _schedule_message(self, busy, request_id):
+        if busy is None:
+            self.resume_pending_inputs()
+            return
+        if not busy:
+            await start_turn(self, item=None, request_id=request_id)
+        if self._engine.pending_input_count:
+            self._request_wakeup()
+        self.touch()
 
     async def submit_message(self, request) -> None:
         if (
@@ -396,28 +409,31 @@ class AgentLoop:
             or self._context.require(LOOP_STATE).session.status != "active"
         ):
             raise OperationError("session_closing", "Thread is closing")
-        media, attachments = [], []
-        for item in request.media:
-            ref = await self._context.artifacts.put(
-                ArtifactKind.MEDIA, _upload_bytes(item.data), media_type=item.media_type, name=item.name
-            )
-            media.append(ref)
-        for item in request.attachments:
-            attachments.append(
-                await self._context.artifacts.put(
-                    ArtifactKind.ATTACHMENT,
-                    _upload_bytes(item.data),
-                    media_type=item.media_type,
-                    name=item.name,
+        async with self._submission_lock:
+            async with self._context.artifacts.publication(), AsyncExitStack() as resources:
+                media, attachments = [], []
+                for item in request.media:
+                    async def chunks():
+                        yield _upload_bytes(item.data)
+                    media.append(await resources.enter_async_context(
+                        self._context.artifacts.prepare_stream(
+                            ArtifactKind.MEDIA, chunks(), media_type=item.media_type, name=item.name
+                        )
+                    ))
+                for item in request.attachments:
+                    async def chunks():
+                        yield _upload_bytes(item.data)
+                    attachments.append(await resources.enter_async_context(
+                        self._context.artifacts.prepare_stream(
+                            ArtifactKind.ATTACHMENT, chunks(), media_type=item.media_type, name=item.name
+                        )
+                    ))
+                busy = await self._accept_message(
+                    request.content, request.request_id, delivery=request.delivery,
+                    media=media, artifacts=attachments, resources=resources,
                 )
-            )
-        await self.send_message(
-            request.content,
-            request.request_id,
-            delivery=request.delivery,
-            media=media,
-            artifacts=attachments,
-        )
+
+            await self._schedule_message(busy, request.request_id)
 
     async def clear_history(self, *, history_limit=None):
         return await self._change_history(None, history_limit)

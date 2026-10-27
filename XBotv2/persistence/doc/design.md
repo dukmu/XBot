@@ -51,8 +51,10 @@ rename; a cross-filesystem source is copied in bounded chunks first.
 `prepare_stream` is a publication context for one object. Normal exit retains
 it; exceptional exit removes an object created by that scope. The domain owner
 decides whether a durable-but-unconfirmed record must retain it. Publications
-share a session/object lock across thread stores, and active lock entries retire
-when the last holder or waiter exits. This is not a multi-object transaction.
+share a session lock across thread stores, reentrant only for the current task.
+This lets an input hold several publication scopes until its
+acceptance boundary without deadlocking on duplicate objects or differing order.
+Active lock entries retire when the last holder or waiter exits.
 
 `spool_file` owns temporary producer output under the session's `.spool`
 directory. Its producer must stop before leaving the scope. Immutable object

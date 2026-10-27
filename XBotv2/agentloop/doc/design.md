@@ -59,9 +59,13 @@ messages per download. Fork and canonical export/import preserve those refs;
 recovery rebuilds the index from owner records. Downloads stream physical
 chunks and close readers on completion, send failure or disconnect.
 
-Uploaded media/attachment objects are still written before inbox acceptance;
-failed/conflicting uploads can leave unreferenced objects. Message requests use `media` entries containing base64 `data`, `media_type`, and optional `name`; accepted messages retain complete artifact references rather than the encoded bytes. The TUI currently attaches image files only, and provider adapters reject unsupported modalities. Long-text
-preparation cleanup does not claim atomicity for that separate upload path.
+Media and attachment objects are published before inbox acceptance. If acceptance
+fails, objects created by that input are removed while existing objects are
+preserved. A committed or uncertain acceptance retains its objects for recovery;
+retry uses the same input ID. Message requests use `media` entries containing
+base64 `data`, `media_type`, and optional `name`; accepted messages retain
+artifact references rather than encoded bytes. The TUI currently attaches image
+files only, and provider adapters reject unsupported modalities.
 
 `archive_records(after_seq=0, through_seq=None, record_ids=None)` is an ordinary
 registered read tool for the current thread's canonical JSONL. It returns a
