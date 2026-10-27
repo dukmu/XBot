@@ -7,7 +7,8 @@ It holds transient one-shot grants and persists session grants in the thread's
 `permissions` state namespace; closing a session cancels pending approvals.
 
 `PermissionPolicy` configures regular-expression rules and a default decision.
-An explicit deny wins; parent policies remain restrictive. The guard consumes a
+The merged plugin configuration is evaluated once; Agent and parent thread
+policies remain separate restrictive boundaries. An explicit deny wins. The guard consumes a
 one-shot grant only on allow. `/permission` inspects and updates session policy
 and grants. `request_permission` is available in interactive sessions and asks
 for authorization of future calls. Approvals never widen sandbox policy.

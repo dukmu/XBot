@@ -43,6 +43,13 @@ mappings; later scalar/list values replace earlier values. Agent
 `permission_policy` frontmatter is also expanded by the shared variable
 service before it is validated as a policy.
 
+The resulting permission configuration is evaluated once. In particular, a
+later `rules` list replaces the earlier list completely, including any deny
+rules it contained; retain those rules explicitly if they should still apply.
+Changing one session rule through `/permission set` creates a session `rules`
+list and therefore replaces the lower-priority list under the same merge rule.
+Removing the last session rule restores the lower-priority list.
+
 Use `$${NAME}` for a runtime variable and `$${env:NAME}` for an environment
 variable. Environment references resolve while configuration files are read;
 runtime references resolve when the session configuration is assembled.
@@ -111,8 +118,8 @@ error; they are never treated as a non-match that grants access.
 
 Within one policy, a matching explicit deny wins. Otherwise a matching allow
 wins over a matching ask; if neither matches, `default_decision` applies.
-Across policies, deny wins, then ask, and the call is allowed only when all
-policy layers allow it. Parent Agent policy is another restrictive layer.
+The selected Agent's policy and the parent thread's permissions are separate
+restrictive boundaries: deny wins, then ask, and all must allow a call.
 Matching once/session grants can satisfy a call unless an explicit deny rule
 matches; a parent layer can still reject it. A one-shot grant is consumed only
 after the execution guard reaches a final allow. A session grant is persisted
@@ -170,6 +177,9 @@ The `/permission` command accepts:
 policy; `revoke` removes one indexed session grant; `clear-grants` removes all
 session grants. This command is human-facing and is separate from the Agent
 Tool and the permission-response route.
+
+The policy API's `effective_permissions` is the merged configuration policy;
+it does not include the selected Agent, parent thread, or transient grants.
 
 ## Plugin guidance
 

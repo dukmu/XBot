@@ -86,34 +86,12 @@ class ConfigService(SettingsPort):
         )
 
     def permission_policies(self) -> tuple[PermissionPolicy, ...]:
-        """Resolve every applicable permission layer for security meet."""
-        stages = (
-            (False, False, False, None),
-            (True, False, False, None),
-            (True, True, False, None),
-            (True, True, True, None),
-            (True, True, True, self._extra_plugins),
-        )
-        policies: list[PermissionPolicy] = []
-        for include_global, include_workspace, include_session, extra in stages:
-            tree = resolve_plugin_tree(
-                self.paths,
-                self.workspace_root,
-                self.session_id,
-                extra_plugins=extra,
-                plugin_dirs=self._plugin_dirs,
-                    no_plugins=self._no_plugins,
-                include_global=include_global,
-                include_workspace=include_workspace,
-                include_session=include_session,
-            )
-            entry = tree.entry("permissions")
-            if entry is None or entry.disabled:
-                continue
-            policy = PermissionPolicy.model_validate(entry.config)
-            if not policies or policy != policies[-1]:
-                policies.append(policy)
-        return tuple(policies)
+        """Resolve the final configuration policy once before Agent restrictions."""
+        tree = self.load_plugin_tree(self.workspace_root, self.session_id)
+        entry = tree.entry("permissions")
+        if entry is None or entry.disabled:
+            return ()
+        return (PermissionPolicy.model_validate(entry.config),)
 
     def memory(self) -> str:
         if not self.paths.memory_file.exists():

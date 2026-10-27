@@ -49,7 +49,10 @@ def patch_session_policy(
                 "decision": decision,
             },
         )
-    permission_config = {"rules": rules} if rules else {}
+    if rules:
+        permission_config["rules"] = rules
+    else:
+        permission_config.pop("rules", None)
     sandbox_config = dict(_plugin_config(rows, "sandbox"))
     for key in remove_sandbox:
         sandbox_config.pop(key, None)
