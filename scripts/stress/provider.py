@@ -87,6 +87,7 @@ class NetworkMockLLM:
         self.tool_calls = 0
         self.agent_requests = 0
         self.auxiliary_requests = 0
+        self.product_notice_requests = 0
         self.fault = fault
         self.chunk_delay_ms = chunk_delay_ms
         self.jitter_ms = jitter_ms
@@ -152,33 +153,38 @@ class NetworkMockLLM:
             return
         yield await frame({"reasoning_content": "reasoning"})
         recent_tools = 0
+        number = None
+        turn_text = ""
+        saw_notice = False
         for message in reversed(payload["messages"]):
-            if message.get("role") == "user":
-                break
-            if message.get("role") == "tool":
+            role = message.get("role")
+            if role == "tool":
                 recent_tools += 1
+            if role != "user":
+                continue
+            if not self.product_workload:
+                break
+            content = message.get("content", "")
+            if isinstance(content, list):
+                content = " ".join(
+                    part.get("text", "") for part in content if isinstance(part, dict)
+                )
+            match = re.search(r"Product workload turn (\d+)", str(content))
+            if match:
+                number = int(match.group(1))
+                turn_text = str(content)
+                break
+            saw_notice = True
+        if self.product_workload and payload.get("tools"):
+            if number is None:
+                raise ValueError("product turn marker missing from provider request")
+            if saw_notice:
+                self.product_notice_requests += 1
         if self.mock_tools and payload.get("tools") and recent_tools < self.tool_steps:
             self.tool_calls += 1
             name = "shell"
             arguments_data = {"command": self.shell_command}
             if self.product_workload:
-                number = None
-                turn_text = ""
-                for message in reversed(payload["messages"]):
-                    if message.get("role") != "user":
-                        continue
-                    content = message.get("content", "")
-                    if isinstance(content, list):
-                        content = " ".join(
-                            part.get("text", "") for part in content if isinstance(part, dict)
-                        )
-                    match = re.search(r"Product workload turn (\d+)", str(content))
-                    if match:
-                        number = int(match.group(1))
-                        turn_text = str(content)
-                        break
-                if number is None:
-                    raise ValueError("product turn marker missing from provider request")
                 actions = []
                 if number == 1:
                     actions.extend(("task_create", {"subject": f"Workload task {i}"}) for i in range(1, 6))

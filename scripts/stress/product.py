@@ -417,6 +417,7 @@ async def run(args):
                 "auxiliary_model_requests": harness.provider.auxiliary_requests,
                 "provider_tool_calls": harness.provider.tool_calls,
                 "provider_tool_responses": harness.provider.tool_responses,
+                "provider_requests_with_runtime_notice": harness.provider.product_notice_requests,
                 "compactions_committed": completed_compactions,
                 "child_lifecycles_closed": completed_children,
                 "events": dict(events),
@@ -476,6 +477,7 @@ async def run(args):
                 "auxiliary_model_requests": harness.provider.auxiliary_requests,
                 "provider_tool_calls": harness.provider.tool_calls,
                 "provider_tool_responses": harness.provider.tool_responses,
+                "provider_requests_with_runtime_notice": harness.provider.product_notice_requests,
             })
     finally:
         tracemalloc.stop()

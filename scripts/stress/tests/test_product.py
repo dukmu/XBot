@@ -61,6 +61,13 @@ async def test_product_todo_team_and_range_artifact(tmp_path):
             tasks = first.json()["tasks"]
             assert len(tasks) == 5
             target = next(task["id"] for task in tasks if task["subject"] == "Workload task 2")
+            for number in (2, 3, 4):
+                await client.send_message(
+                    "s", "main", f"Product workload turn {number}", request_id=f"r{number}",
+                )
+                cursor = await asyncio.wait_for(
+                    consume_until(client, "s", cursor, "turn_ended", events), 30,
+                )
             await client.send_message(
                 "s", "main", f"Product workload turn 8 complete_task={target} read_board=1",
                 request_id="second",
@@ -70,13 +77,14 @@ async def test_product_todo_team_and_range_artifact(tmp_path):
             assert result.json()["completed_count"] == 1
             assert len(result.json()["tasks"]) == 4
             board = await observer.get("/sessions/s/threads/main/teams/stress/count")
-            assert board.json()["count"] == 2
-        assert harness.provider.agent_requests == 16
+            assert board.json()["count"] == 5
+        assert harness.provider.agent_requests == 40
+        assert harness.provider.product_notice_requests > 0
         assert events["tool.task_create"] == 5
         assert events["tool.task_update"] == 1
-        assert events["tool.team_publish"] == 2
+        assert events["tool.team_publish"] == 5
         assert events["tool.team_latest"] == 1
-        assert events["team_range_artifacts"] == 3
+        assert events["team_range_artifacts"] == 6
 
 
 @pytest.mark.asyncio
