@@ -1,4 +1,4 @@
-import type { ServerEvent } from "./types";
+import type { ServerEvent } from "./wire";
 
 interface SseFrame {
   event: string;
@@ -52,7 +52,11 @@ export async function* decodeSseStream(
       }
     }
   } finally {
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } finally {
+      reader.releaseLock();
+    }
   }
 }
 
@@ -62,7 +66,7 @@ function emptyFrame(): SseFrame {
 
 function parseFrame(frame: SseFrame): ServerEvent {
   const parsed = JSON.parse(frame.data) as ServerEvent;
-  if (!parsed || typeof parsed !== "object" || typeof parsed.type !== "string") {
+  if (!parsed || typeof parsed !== "object" || typeof parsed.kind !== "string") {
     throw new Error("Invalid XBot SSE event");
   }
   return parsed;

@@ -43,7 +43,7 @@ const items: TrajectoryItem[] = [
   { position: 1, kind: "event", event: "turn_started", data: { turn: 1 }, timestamp: "" } as unknown as TrajectoryItem,
   message(2, "user", "Use the read tool twice"),
   message(3, "assistant", "I will read both files", {
-    tool_calls: [{ name: "read", arguments: { path: "a.txt" } }],
+    tool_calls: [{ name: "read", args: { path: "a.txt" } }],
     timing: { llm_ms: 1542, ttft_ms: 368, decode_ms: 1174 },
   }),
   message(4, "tool", "alpha", { tool_call_id: "call-1" }),

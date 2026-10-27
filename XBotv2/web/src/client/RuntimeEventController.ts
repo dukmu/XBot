@@ -1,11 +1,12 @@
+import { projectEvent } from "../state/wireProjection";
 import type { XBotApi } from "../api/client";
-import type { OpenSessionResponse, ServerEvent, ThreadSummary } from "../api/types";
+import type { SessionView, ViewEvent, ThreadSummary } from "../api/types";
 import { SessionEventConnection } from "./SessionEventConnection";
 
-type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
+type SessionAddress = Pick<SessionView, "session_id" | "thread_id" | "event_cursor">;
 
 export interface RuntimeEventListener {
-  onEvents(events: ServerEvent[]): void;
+  onEvents(events: ViewEvent[]): void;
   onThreads(threads: ThreadSummary[]): void;
   onJobExpired(jobId: string): void;
   onConnection(connected: boolean): void;
@@ -15,7 +16,7 @@ export interface RuntimeEventListener {
 
 export class RuntimeEventController {
   private readonly connection: SessionEventConnection;
-  private events: ServerEvent[] = [];
+  private events: ViewEvent[] = [];
   private flushTimer: number | null = null;
   private threadRefreshTimer: number | null = null;
   private liveRefreshTimer: number | null = null;
@@ -24,7 +25,7 @@ export class RuntimeEventController {
   private generation: number | null = null;
 
   constructor(
-    private readonly api: Pick<XBotApi, "streamEvents" | "listThreads">,
+    private readonly api: Pick<XBotApi, "streamEvents" | "listThreads" | "artifactUrl">,
     private readonly listener: RuntimeEventListener,
   ) {
     this.connection = new SessionEventConnection(api);
@@ -34,7 +35,7 @@ export class RuntimeEventController {
     this.generation = generation;
     let resetRequested = false;
     this.connection.start(session, {
-      onEvent: (event) => this.handle(event, generation),
+      onEvent: (event) => this.handle(projectEvent(event, (id) => this.api.artifactUrl(event.session_id, event.thread_id, id)), generation),
       onConnection: (connected) => {
         if (this.isCurrent(generation)) this.listener.onConnection(connected);
       },
@@ -73,7 +74,7 @@ export class RuntimeEventController {
     else this.stopLiveRefresh();
   }
 
-  handle(event: ServerEvent, generation: number): void {
+  handle(event: ViewEvent, generation: number): void {
     if (!this.isCurrent(generation)) return;
     if (event.type === "assistant_message_delta" || event.type === "tool_call_delta") {
       this.events.push(event);
@@ -130,24 +131,17 @@ export class RuntimeEventController {
     if (this.isCurrent(generation)) this.listener.onEvents(events);
   }
 
-  private handleJob(event: ServerEvent, generation: number): void {
-    const jobId = String(event.data.job_id || "");
-    const status = String(event.data.status || "");
+  private handleJob(event: ViewEvent, generation: number): void {
+    const jobId = String(event.data.id || "");
+    const status = String(event.data.state || "");
     const existing = this.jobTimers.get(jobId);
     if (existing !== undefined) window.clearTimeout(existing);
-    if (jobId && (status === "completed" || status === "stopped")) {
+    if (jobId && status !== "queued" && status !== "running") {
       this.jobTimers.set(jobId, window.setTimeout(() => {
         if (this.isCurrent(generation)) this.listener.onJobExpired(jobId);
         this.jobTimers.delete(jobId);
       }, 4000));
     }
-    if (!event.session_id || (event.data.kind !== "agent" && !event.data.thread_id)) return;
-    if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
-    this.threadRefreshTimer = window.setTimeout(() => {
-      this.threadRefreshTimer = null;
-      if (!this.isCurrent(generation)) return;
-      void this.refreshThreads(event.session_id, generation);
-    }, 250);
   }
 
   private isCurrent(generation: number): boolean {

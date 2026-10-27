@@ -5,12 +5,6 @@ XBot protocol v3 HTTP/SSE API. It does not import Python runtime code. Typed
 resources own machine operations; the separately discovered human command
 catalog is used only for server-owned slash commands.
 
-Protocol alignment is in progress: media fields use the current artifact
-contract, while history and event DTOs still need alignment with the Python
-server's `kind`, `history.items`, and SSE envelopes. The focused media tests
-cover those field mappings; complete browser/server interoperability remains
-to be verified after the DTO migration.
-
 ## Development
 
 Start the existing XBot server:
@@ -71,9 +65,12 @@ Message uploads use `media` entries with base64 data, MIME type and name;
 ordinary files use `attachments`. Media references in history retain artifact
 metadata and resolve through the artifact download endpoint.
 
-The reducer is the only place that converts `ServerEvent` envelopes into UI
-state. Tool execution stays inside the Agent runtime; the browser only answers
-interactions and calls typed resource mutations.
+The client consumes the server’s `kind`, `scope`, and `payload` event envelopes.
+The state projection converts canonical conversation records and trajectory
+messages into UI entries; reconnect starts from the snapshot event cursor.
+The browser uses the thread summary for running state and statistics. Tool
+execution stays inside the Agent runtime; the browser only answers interactions
+and calls typed resource mutations.
 
 The plugin configuration editor is schema-driven: `components/schemaForm.ts`
 projects the catalog's pydantic JSON Schema (`$defs`/`$ref`, `anyOf` null
@@ -87,6 +84,11 @@ change (with `Discard` to drop it), so a plugin layer is never edited from two
 places on the same page.
 
 ## Verification
+
+The local Playwright real-server scenarios use the production loader and a
+MockLLM. They cover streaming, tool results, media history and reattachment
+while a turn is active, approval recovery and response, and undo/clear against
+service history. They do not exercise an external model provider.
 
 ```bash
 npm test

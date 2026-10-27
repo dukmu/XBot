@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
+import { EMPTY_SESSION_STATS, EMPTY_USAGE, type SessionView, type ViewEvent, type ThreadSummary } from "../api/types";
 import {
   MAX_TIMELINE_ENTRIES,
   MAX_TRAJECTORY_WINDOW,
@@ -10,11 +10,12 @@ import {
   type TimelineEntry,
 } from "./runtime";
 
-const opened: OpenSessionResponse = {
+const opened: SessionView = {
   session_id: "session-1",
   thread_id: "agent",
   title: "session-1",
   status: "ready",
+  turn_status: "idle",
   agent_name: "default",
   workspace_root: "/workspace",
   provider: "minimax",
@@ -30,7 +31,7 @@ const opened: OpenSessionResponse = {
   pending_interactions: [],
 };
 
-function event(type: string, data: Record<string, unknown>): ServerEvent {
+function event(type: string, data: Record<string, unknown>): ViewEvent {
   return {
     protocol_version: "xbotv2.v3",
     session_id: "session-1",
@@ -131,7 +132,7 @@ describe("runtimeReducer", () => {
       model_mode: opened.model_mode,
       context_window: opened.context_window,
       message_count: 0,
-      usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10, context_tokens: 400 },
+      usage: wireUsage(10, 0, 400),
       session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: {},
@@ -310,8 +311,7 @@ describe("runtimeReducer", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "event",
       event: event("todo_updated", {
-        kind: "todo_snapshot",
-        schema_version: 2,
+        edges: [{ prerequisite: "1", dependent: "2" }],
         next_id: 3,
         tasks: [
           { id: "1", subject: "implement", status: "in_progress", activeForm: "Implementing", owner: "default", blocks: ["2"], blockedBy: [] },
@@ -338,8 +338,8 @@ describe("runtimeReducer", () => {
       type: "event",
       event: event("goal_updated", {
         objective: "ship the API",
-        status: "active",
-        stats: { turns: 1, tool_calls: 0, total_tokens: 10, todo_items: 0, todo_completed: 0 },
+        kind: "active",
+        stats: { rounds_started: 1, tool_calls: 0, input_tokens: 10, output_tokens: 0 },
       }),
     });
     expect(active.entries).toEqual(initialRuntimeState.entries);
@@ -348,14 +348,14 @@ describe("runtimeReducer", () => {
       type: "event",
       event: event("goal_updated", {
         objective: "ship the API",
-        status: "complete",
-        stats: { turns: 3, tool_calls: 4, total_tokens: 1200, todo_items: 2, todo_completed: 2 },
+        kind: "complete",
+        stats: { rounds_started: 3, tool_calls: 4, input_tokens: 1000, output_tokens: 200 },
       }),
     });
     expect(complete.entries.at(-1)).toMatchObject({
       kind: "notice",
       level: "info",
-      content: "Goal complete · ship the API · 3 turns, 4 tool calls, 1200 tokens, 2/2 todos",
+      content: "Goal complete · ship the API · 3 turns, 4 tool calls, 1200 tokens",
     });
   });
 
@@ -363,12 +363,11 @@ describe("runtimeReducer", () => {
     // The ported list shows settled rows beside live ones, so the snapshot must
     // not be the path that silently drops them.
     const settled = {
-      job_id: "job-1", kind: "shell" as const, command: "sleep 45", cwd: "/workspace",
-      status: "stopped" as const, created_at: 0, started_at: 0, finished_at: 45_000,
-      output: "", error: "", agent: "", thread_id: "", usage: {},
+      id: "job-1", kind: "shell", label: "sleep 45", state: "cancelled_running" as const,
+      elapsed_ms: 45_000, summary: null,
     };
     const state = runtimeReducer(initialRuntimeState, { type: "jobs", jobs: [settled] });
-    expect(state.jobs["job-1"]?.status).toBe("stopped");
+    expect(state.jobs["job-1"]?.state).toBe("cancelled_running");
   });
 
   it("shows a slash-invoked skill as an injected context row, live and replayed", () => {
@@ -420,7 +419,7 @@ describe("runtimeReducer", () => {
   it("projects accepted, claimed, and consumed delivery phases", () => {
     const item = {
       message_id: "queued-1", content: "continue later", target: "next-turn" as const,
-      source: "user", media_count: 0, artifact_count: 0,
+      media_count: 0, artifact_count: 0,
     };
     let state = runtimeReducer(initialRuntimeState, {
       type: "user_message",
@@ -444,10 +443,10 @@ describe("runtimeReducer", () => {
     const state = runtimeReducer(
       runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
         message_id: "queued-1", content: "continue later", target: "next-turn",
-        source: "user", media_count: 0, artifact_count: 0,
+        media_count: 0, artifact_count: 0,
       }, {
         message_id: "queued-2", content: "keep this", target: "next-turn",
-        source: "user", media_count: 0, artifact_count: 0,
+        media_count: 0, artifact_count: 0,
       }] }),
       { type: "pending_input_failed", messageId: "queued-1" },
     );
@@ -457,7 +456,7 @@ describe("runtimeReducer", () => {
   it("removes a steered input when its delivery message reaches the transcript", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
       message_id: "steer-1", content: "interrupt with this", target: "next-step",
-      source: "user", media_count: 0, artifact_count: 0,
+      media_count: 0, artifact_count: 0,
     }] });
     state = runtimeReducer(state, {
       type: "event",
@@ -501,7 +500,7 @@ describe("runtimeReducer", () => {
       model_mode: "high",
       context_window: 2000,
       message_count: 4,
-      usage: { ...EMPTY_USAGE, total_tokens: 25, context_tokens: 20 },
+      usage: wireUsage(25, 0, 20),
       session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: { goal: "active" },
@@ -524,7 +523,7 @@ describe("runtimeReducer", () => {
       session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
       kind: "main" as const, turn_status: "running" as const, parent_thread_id: "",
       agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
-      context_window: 1000, message_count: 2, usage: opened.usage,
+      context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
       session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
     };
 
@@ -537,7 +536,7 @@ describe("runtimeReducer", () => {
       session_id: "session-1", title: "Reviewer", thread_id: "agent-reviewer-1", status: "active" as const,
       kind: "subagent" as const, turn_status: "idle" as const, parent_thread_id: "agent",
       agent: "reviewer", provider: "minimax", model: "MiniMax-M2", model_mode: "",
-      context_window: 1000, message_count: 2, usage: opened.usage,
+      context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
       session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
     };
     const state = runtimeReducer(current, { type: "thread_synced", thread: subagent });
@@ -637,7 +636,6 @@ describe("runtimeReducer", () => {
         input_tokens: 40,
         output_tokens: 5,
         total_tokens: 45,
-        requests: 1,
         context_tokens: 250,
         cache_read_input_tokens: 30,
         cache_creation_input_tokens: 10,
@@ -649,7 +647,6 @@ describe("runtimeReducer", () => {
       input_tokens: 50,
       output_tokens: 5,
       total_tokens: 55,
-      requests: 1,
       context_tokens: 250,
       cache_read_input_tokens: 30,
       cache_creation_input_tokens: 10,
@@ -662,7 +659,6 @@ describe("runtimeReducer", () => {
         input_tokens: 0,
         output_tokens: 1,
         total_tokens: 1,
-        requests: 1,
         context_tokens: 0,
       }),
     });
@@ -1027,6 +1023,18 @@ describe("runtimeReducer", () => {
       (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
       && entry.content === "arrived during baseline"
     ))).toBe(true);
+  });
+
+  it("removes live entries replaced by an undo before the trajectory refresh", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "trajectory", items: [], nextCursor: null });
+    state = runtimeReducer(state, { type: "user_message", id: "removed", content: "second", images: [] });
+    state = runtimeReducer(state, { type: "event", event: event("history_updated", {
+      operation: "undo", history: [{ id: "kept", role: "user", content: "first", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], media: [] }],
+    }) });
+    expect(state.entries.filter((entry) => entry.kind === "message").map((entry) => entry.content)).toEqual(["first"]);
+    state = runtimeReducer(state, { type: "trajectory", items: [], nextCursor: null });
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "second")).toBe(false);
   });
 
   it("reprojects a compact marker when history is replaced", () => {
@@ -1514,7 +1522,7 @@ describe("turn status reconciliation", () => {
     session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
     kind: "main" as const, turn_status, parent_thread_id: "",
     agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
-    context_window: 1000, message_count: 2, usage: opened.usage,
+    context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
     session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
   });
 
@@ -1536,3 +1544,7 @@ describe("turn status reconciliation", () => {
     expect(state.turnRunning).toBe(true);
   });
 });
+
+function wireUsage(input: number, output: number, context: number): import("../api/wire").UsageSnapshot {
+  return { total_counters: { input, output, cache_read: 0, cache_create: 0, prompt_cache_write: 0 }, latest_turn_observation: { estimated_input_tokens: 0, observed_context: { kind: "provider_measured", tokens: context } } };
+}

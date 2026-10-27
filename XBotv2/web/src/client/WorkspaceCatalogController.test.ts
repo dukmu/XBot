@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ServerEvent, SessionSummary, WorkspaceData } from "../api/types";
+import type { ViewEvent, SessionSummary, WorkspaceData } from "../api/types";
 import { WorkspaceCatalogController } from "./WorkspaceCatalogController";
 import { SessionCatalog } from "./SessionCatalog";
 import { WorkspaceManager } from "./WorkspaceManager";
@@ -19,9 +19,9 @@ describe("WorkspaceCatalogController", () => {
       reorderWorkspace: async () => [workspace.workspace_id],
       reorderWorkspaceSession: async () => workspace,
       setSessionArchived: async () => [],
-      async *streamWorkspaceEvents(after: number): AsyncGenerator<ServerEvent> {
+      async *streamWorkspaceEvents(after: number): AsyncGenerator<import("../api/wire").ServerEvent> {
         cursors.push(after);
-        yield catalogSessionFrame(5, "After");
+        yield { protocol_version: "xbotv2.v3", session_id: "", thread_id: "", sequence: 5, scope: { kind: "session" }, kind: "catalog/session-changed", payload: catalogSessionFrame(5, "After").data };
         await new Promise(() => undefined);
       },
     };
@@ -54,7 +54,7 @@ describe("WorkspaceCatalogController", () => {
       reorderWorkspace: async () => [workspace.workspace_id],
       reorderWorkspaceSession: async () => workspace,
       setSessionArchived: async () => [],
-      async *streamWorkspaceEvents(): AsyncGenerator<ServerEvent> {
+      async *streamWorkspaceEvents(): AsyncGenerator<import("../api/wire").ServerEvent> {
         await new Promise(() => undefined);
       },
     };
@@ -99,7 +99,7 @@ function workspaceData(): WorkspaceData {
   };
 }
 
-function catalogSessionFrame(sequence: number, title: string): ServerEvent {
+function catalogSessionFrame(sequence: number, title: string): ViewEvent {
   return {
     protocol_version: "xbotv2.v3",
     session_id: "",

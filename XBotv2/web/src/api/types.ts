@@ -38,8 +38,8 @@ export interface UsageData {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  requests: number;
   context_tokens: number;
+  context_estimated?: boolean;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   prompt_cache_write_tokens: number;
@@ -114,7 +114,7 @@ export interface ThreadSummary {
   model_mode: string;
   context_window: number;
   message_count: number;
-  usage: UsageData;
+  usage: import("./wire").UsageSnapshot;
   session_stats: SessionStatsData;
   pending_interactions: string[];
   status_slots: Record<string, string>;
@@ -122,7 +122,7 @@ export interface ThreadSummary {
   title: string;
 }
 
-export interface HistoryItem {
+export interface HistoryViewItem {
   role: "user" | "assistant" | "tool";
   id?: string;
   content: string;
@@ -139,11 +139,12 @@ export interface HistoryItem {
   timing?: Record<string, number> | null;
 }
 
-export interface OpenSessionResponse {
+export interface SessionView {
   session_id: string;
   thread_id: string;
   title: string;
   status: "ready";
+  turn_status: "idle" | "running";
   agent_name: string;
   workspace_root: string;
   provider: string;
@@ -152,7 +153,7 @@ export interface OpenSessionResponse {
   context_window: number;
   usage: UsageData;
   session_stats: SessionStatsData;
-  history: HistoryItem[];
+  history: HistoryViewItem[];
   history_cursor?: string | null;
   event_cursor: number;
   status_slots: Record<string, string>;
@@ -173,7 +174,6 @@ export interface PendingInput {
   message_id: string;
   content: string;
   target: "next-turn" | "next-step";
-  source: string;
   media_count: number;
   artifact_count: number;
 }
@@ -216,16 +216,11 @@ export interface PluginConfigCatalog {
   plugins: PluginConfigDescriptor[];
 }
 
-export interface MessagePage {
-  messages: HistoryItem[];
-  next_cursor: string | null;
-}
-
 export interface TrajectoryMessageItem {
   position: number;
   kind: "message";
   message_id: string;
-  message: HistoryItem;
+  message: HistoryViewItem;
 }
 
 export interface TrajectorySurfaceReplaceItem {
@@ -234,7 +229,7 @@ export interface TrajectorySurfaceReplaceItem {
   operation: string;
   transcript: "preserve" | "replace";
   source_node_ids: string[];
-  messages: HistoryItem[];
+  messages: HistoryViewItem[];
   summary: string;
 }
 
@@ -273,16 +268,16 @@ export interface ModelInfo {
   reasoning_effort: string;
   effort: string[];
   thinking: string;
-  input_modalities: ("text" | "image")[];
+  input_modalities: ("text" | "image" | "audio" | "video")[];
 }
 
 export interface AgentInfo {
   name: string;
   description: string;
   mode: "primary" | "subagent" | "all";
-  provider: string;
-  model: string;
-  context_window: number;
+  model_policy: JsonObject;
+  limits: JsonObject;
+  tool_policy: JsonObject;
 }
 
 /** One entry of the agent-loop tool catalog (`GET .../tools`). */
@@ -320,19 +315,12 @@ export interface CommandResult {
 }
 
 export interface JobData {
-  job_id: string;
-  kind: "shell" | "agent";
-  command: string;
-  cwd: string;
-  status: "pending" | "running" | "completed" | "failed" | "stopped";
-  created_at: number;
-  started_at: number;
-  finished_at: number;
-  output: string;
-  error: string;
-  agent: string;
-  thread_id: string;
-  usage: Record<string, unknown>;
+  id: string;
+  kind: string;
+  label: string;
+  state: "queued" | "running" | "succeeded" | "failed_before_start" | "failed_running" | "cancelled_before_start" | "cancelled_running";
+  elapsed_ms: number;
+  summary: string | null;
 }
 
 export interface TodoItemData {
@@ -380,7 +368,7 @@ export interface UserInputRequest {
 
 export type InteractionRequest = PermissionRequest | UserInputRequest;
 
-export interface ServerEvent {
+export interface ViewEvent {
   protocol_version: string;
   session_id: string;
   thread_id: string;
@@ -401,7 +389,6 @@ export const EMPTY_USAGE: UsageData = {
   input_tokens: 0,
   output_tokens: 0,
   total_tokens: 0,
-  requests: 0,
   context_tokens: 0,
   cache_read_input_tokens: 0,
   cache_creation_input_tokens: 0,

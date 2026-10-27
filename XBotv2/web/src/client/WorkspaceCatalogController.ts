@@ -1,5 +1,6 @@
+import { projectEvent } from "../state/wireProjection";
 import type { XBotApi } from "../api/client";
-import type { ServerEvent } from "../api/types";
+import type { ViewEvent } from "../api/types";
 import type { SessionSummary } from "../api/types";
 import { WorkspaceEventConnection } from "./WorkspaceEventConnection";
 import type { SessionCatalog } from "./SessionCatalog";
@@ -69,7 +70,7 @@ export class WorkspaceCatalogController {
         this.workspaces.getSnapshot().eventCursor,
       );
       this.connection.start(cursor, {
-        onEvent: (event) => this.handle(event),
+        onEvent: (event) => this.handle(projectEvent(event, () => "")),
         onConnection: this.listener.onConnection,
         onResetRequired: () => void this.resetBaseline(),
         onError: this.listener.onError,
@@ -85,7 +86,7 @@ export class WorkspaceCatalogController {
     await Promise.all([this.sessions.refresh(), this.workspaces.refresh()]);
   }
 
-  private handle(event: ServerEvent): void {
+  private handle(event: ViewEvent): void {
     this.sessions.handleCatalogEvent(event);
     this.workspaces.handleCatalogEvent(event);
   }

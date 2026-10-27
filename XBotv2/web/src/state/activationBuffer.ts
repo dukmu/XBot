@@ -1,13 +1,13 @@
-import type { ServerEvent } from "../api/types";
+import type { ViewEvent } from "../api/types";
 
 export const MAX_ACTIVATION_BUFFERED_EVENTS = 512;
 
 /** Bounded hand-off used while a session baseline is being assembled. */
 export class ActivationEventBuffer {
-  private events: ServerEvent[] = [];
+  private events: ViewEvent[] = [];
   private _overflowed = false;
 
-  append(events: readonly ServerEvent[]): void {
+  append(events: readonly ViewEvent[]): void {
     if (this._overflowed) return;
     if (this.events.length + events.length > MAX_ACTIVATION_BUFFERED_EVENTS) {
       this.events = [];
@@ -17,7 +17,7 @@ export class ActivationEventBuffer {
     this.events.push(...events);
   }
 
-  take(): { events: ServerEvent[]; overflowed: boolean } {
+  take(): { events: ViewEvent[]; overflowed: boolean } {
     const result = { events: this.events, overflowed: this._overflowed };
     this.events = [];
     this._overflowed = false;

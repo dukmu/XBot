@@ -16,7 +16,7 @@ function thread(over: Partial<ThreadSummary> & { thread_id: string }): ThreadSum
     model_mode: "",
     context_window: 1000,
     message_count: 1,
-    usage: { input_tokens: 10, output_tokens: 5, total_tokens: 15, context_tokens: 0, cached_tokens: 0, reasoning_tokens: 0 },
+    usage: { total_counters: { input: 10, output: 5, cache_read: 0, cache_create: 0, prompt_cache_write: 0 }, latest_turn_observation: null },
     session_stats: {
       turns: 0, steps: 0, llm_ms: 0, tool_ms: 0, ttft_ms: 0, ttft_steps: 0, decode_ms: 0, decode_tokens: 0,
     },
@@ -24,7 +24,7 @@ function thread(over: Partial<ThreadSummary> & { thread_id: string }): ThreadSum
     status_slots: {},
     title: over.thread_id,
     ...over,
-  } as unknown as ThreadSummary;
+  };
 }
 
 describe("subagentTree", () => {
@@ -44,7 +44,7 @@ describe("subagentTree", () => {
 
 describe("SubagentSessions", () => {
   const threads = [
-    thread({ thread_id: "reviewer", turn_status: "running", usage: { total_tokens: 7900 } as never }),
+    thread({ thread_id: "reviewer", turn_status: "running", usage: { total_counters: { input: 7000, output: 900, cache_read: 0, cache_create: 0, prompt_cache_write: 0 }, latest_turn_observation: null } }),
     thread({ thread_id: "editor", parent_thread_id: "reviewer" }),
   ];
 

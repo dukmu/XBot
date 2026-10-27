@@ -1,15 +1,16 @@
+import { projectUsage } from "./wireProjection";
 import {
   EMPTY_USAGE,
   EMPTY_SESSION_STATS,
   type AgentInfo,
-  type HistoryItem,
+  type HistoryViewItem,
   type ArtifactRef,
   type InteractionRequest,
   type JsonObject,
-  type OpenSessionResponse,
+  type SessionView,
   type PendingInput,
   type ProviderInfo,
-  type ServerEvent,
+  type ViewEvent,
   type JobData,
   type TodoItemData,
   type ThreadSummary,
@@ -155,8 +156,8 @@ export interface RuntimeState {
 }
 
 export type RuntimeSession = Omit<
-  OpenSessionResponse,
-  "history" | "history_cursor" | "status" | "usage" | "session_stats" | "pending_inputs" | "pending_interactions"
+  SessionView,
+  "history" | "history_cursor" | "status" | "turn_status" | "usage" | "session_stats" | "pending_inputs" | "pending_interactions"
 >;
 
 export type RuntimeAction =
@@ -167,13 +168,13 @@ export type RuntimeAction =
   | { type: "threads"; threads: ThreadSummary[] }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "agents"; agents: AgentInfo[] }
-  | { type: "opened"; session: OpenSessionResponse }
+  | { type: "opened"; session: SessionView }
   | { type: "session_deleted"; sessionId: string }
   | { type: "thread_synced"; thread: ThreadSummary }
-  | { type: "history"; history: HistoryItem[]; nextCursor?: string | null }
-  | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null; expectedCursor: string }
+  | { type: "history"; history: HistoryViewItem[]; nextCursor?: string | null }
+  | { type: "history_prepend"; history: HistoryViewItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
-  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ServerEvent[] }
+  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ViewEvent[] }
   | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedAnchor: number | null }
   | { type: "jobs"; jobs: JobData[] }
   | { type: "todos"; todos: TodoItemData[] }
@@ -181,8 +182,8 @@ export type RuntimeAction =
   | { type: "pending_input_failed"; messageId: string }
   | { type: "user_message"; id: string; content: string; images: MessageImage[] }
   | { type: "user_message_failed"; id: string }
-  | { type: "event"; event: ServerEvent }
-  | { type: "events"; events: ServerEvent[] }
+  | { type: "event"; event: ViewEvent }
+  | { type: "events"; events: ViewEvent[] }
   | { type: "turn_error"; message: string }
   | { type: "interaction_resolved"; requestId: string }
   | { type: "remove_job"; jobId: string }
@@ -335,7 +336,7 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
         interactions: pendingInteractions(action.session.pending_interactions),
         jobs: {},
         todos: [],
-        turnRunning: false,
+        turnRunning: action.session.turn_status === "running",
         pendingInputs: action.session.pending_inputs || [],
         error: "",
       };
@@ -380,7 +381,7 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
           context_window: action.thread.context_window,
           status_slots: action.thread.status_slots,
         },
-        usage: normalizeUsage(action.thread.usage),
+        usage: projectUsage(action.thread.usage),
         sessionStats: normalizeSessionStats(action.thread.session_stats),
         turnRunning: action.thread.turn_status === "running",
         viewingSubagent: action.thread.kind === "subagent",
@@ -461,7 +462,7 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
       // (this snapshot or a `job_updated` event) last reported it.
       return {
         ...state,
-        jobs: Object.fromEntries(action.jobs.map((job) => [job.job_id, job])),
+        jobs: Object.fromEntries(action.jobs.map((job) => [job.id, job])),
       };
     case "todos":
       return { ...state, todos: action.todos };
@@ -548,7 +549,7 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
   }
 }
 
-function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
+function applyEvent(state: RuntimeState, event: ViewEvent): RuntimeState {
   const data = event.data;
   switch (event.type) {
     case "turn_started":
@@ -660,6 +661,8 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       };
     case "compaction_failed":
       return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.message) || stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
+    case "usage_snapshot":
+      return { ...state, usage: normalizeUsage(objectValue(data.usage)) };
     case "usage":
       return {
         ...state,
@@ -690,14 +693,14 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
     }
     case "job_updated": {
       const job = data as unknown as JobData;
-      return { ...state, jobs: { ...state.jobs, [job.job_id]: job } };
+      return { ...state, jobs: { ...state.jobs, [job.id]: job } };
     }
     case "todo_updated":
       return { ...state, todos: todoProjection(data) };
     case "goal_updated": {
       // Terminal Goal transitions carry the consumption recorded while the
       // goal was active. Intermediate transitions only update the status slot.
-      const status = stringValue(data.status);
+      const status = stringValue(data.kind);
       if (status !== "complete" && status !== "blocked") return state;
       const objective = stringValue(data.objective);
       const consumption = goalConsumption(data.stats);
@@ -761,7 +764,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       };
     }
     case "history_updated": {
-      const history = arrayValue(data.history) as HistoryItem[];
+      const history = arrayValue(data.history) as HistoryViewItem[];
       const operation = stringValue(data.operation);
       const entries = historyEntries(history);
       if (operation.startsWith("compact:")) {
@@ -771,6 +774,17 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           "Conversation history compacted",
           eventIdentity(event),
         ));
+      }
+      if (operation === "undo" || operation === "clear") {
+        return {
+          ...state,
+          entries,
+          trajectoryLoaded: false,
+          historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
+          sessionStats: Object.hasOwn(data, "session_stats")
+            ? normalizeSessionStats(data.session_stats)
+            : state.sessionStats,
+        };
       }
       if (state.trajectoryLoaded) {
         // The durable trajectory is the authoritative surface once it has been
@@ -870,7 +884,7 @@ function viewToolLine(data: JsonObject, event: string): string {
 /** Map one thread's live frame onto its view entries. */
 export function applyViewEvent(
   entries: TimelineEntry[],
-  event: ServerEvent,
+  event: ViewEvent,
   rolling: ThreadViewRolling,
 ): TimelineEntry[] {
   const data = event.data;
@@ -927,7 +941,7 @@ export function applyViewEvent(
   }
 }
 
-export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
+export function historyEntries(history: HistoryViewItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
     if (item.role === "user") {
@@ -1114,7 +1128,7 @@ function isEmptyObject(value: unknown): boolean {
  * The durable summary is a `historical_context`/`conversation_summary` prompt
  * container; pull its text out so a reloaded view can show what was kept.
  */
-function compactionSummaryText(message: HistoryItem | undefined): string {
+function compactionSummaryText(message: HistoryViewItem | undefined): string {
   if (!message || typeof message.content !== "string") return "";
   const match = message.content.match(
     /<conversation_summary[^>]*>([\s\S]*?)<\/conversation_summary>/,
@@ -1141,7 +1155,7 @@ function upsertCompactionGroup(
   else groups.push({ nodeId, entries: [entry] });
 }
 
-function positionedEntries(position: number, history: HistoryItem[], suffix = "message"): TimelineEntry[] {
+function positionedEntries(position: number, history: HistoryViewItem[], suffix = "message"): TimelineEntry[] {
   return historyEntries(history).map((entry, index) => ({
     ...entry,
     id: `trajectory:${position}:${suffix}:${index}`,
@@ -1454,7 +1468,7 @@ export function runtimeEntry(source: string, event: string, content: string, id?
   return { id: id || nextId("runtime"), kind: "runtime", source, event, content, messageId: "" };
 }
 
-function eventIdentity(event: ServerEvent): string {
+function eventIdentity(event: ViewEvent): string {
   return `event:${event.sequence}:${event.type}`;
 }
 
@@ -1520,7 +1534,6 @@ function addUsage(current: UsageData, data: JsonObject): UsageData {
     input_tokens: current.input_tokens + numberValue(data.input_tokens),
     output_tokens: current.output_tokens + numberValue(data.output_tokens),
     total_tokens: current.total_tokens + numberValue(data.total_tokens),
-    requests: current.requests + numberValue(data.requests),
     context_tokens: Object.hasOwn(data, "context_tokens")
       ? numberValue(data.context_tokens)
       : current.context_tokens,
@@ -1566,8 +1579,8 @@ function normalizeUsage(usage: Partial<UsageData>): UsageData {
     input_tokens: numberValue(usage.input_tokens),
     output_tokens: numberValue(usage.output_tokens),
     total_tokens: numberValue(usage.total_tokens),
-    requests: numberValue(usage.requests),
     context_tokens: numberValue(usage.context_tokens),
+    ...(usage.context_estimated === undefined ? {} : { context_estimated: usage.context_estimated }),
     cache_read_input_tokens: numberValue(usage.cache_read_input_tokens),
     cache_creation_input_tokens: numberValue(usage.cache_creation_input_tokens),
     prompt_cache_write_tokens: numberValue(usage.prompt_cache_write_tokens),
@@ -1619,7 +1632,7 @@ function currentThreadProjection(
       context_window: thread.context_window,
       status_slots: thread.status_slots,
     },
-    usage: mergeLiveUsage(state.usage, thread.usage),
+    usage: mergeLiveUsage(state.usage, projectUsage(thread.usage)),
     sessionStats: mergeLiveStats(state.sessionStats, thread.session_stats),
   };
 }
@@ -1630,10 +1643,10 @@ function mergeLiveUsage(current: UsageData, snapshot: UsageData): UsageData {
     input_tokens: Math.max(current.input_tokens, next.input_tokens),
     output_tokens: Math.max(current.output_tokens, next.output_tokens),
     total_tokens: Math.max(current.total_tokens, next.total_tokens),
-    requests: Math.max(current.requests, next.requests),
     // Context is a point-in-time value. Do not let a concurrently returned
     // snapshot move a newer stream event backwards during a running turn.
     context_tokens: Math.max(current.context_tokens, next.context_tokens),
+    ...((next.context_tokens >= current.context_tokens ? next.context_estimated : current.context_estimated) === undefined ? {} : { context_estimated: next.context_tokens >= current.context_tokens ? next.context_estimated : current.context_estimated }),
     cache_read_input_tokens: Math.max(current.cache_read_input_tokens, next.cache_read_input_tokens),
     cache_creation_input_tokens: Math.max(current.cache_creation_input_tokens, next.cache_creation_input_tokens),
     prompt_cache_write_tokens: Math.max(current.prompt_cache_write_tokens, next.prompt_cache_write_tokens),
@@ -1654,7 +1667,7 @@ function mergeLiveStats(current: SessionStatsData, snapshot: SessionStatsData): 
   };
 }
 
-function runtimeSession(session: OpenSessionResponse): RuntimeSession {
+function runtimeSession(session: SessionView): RuntimeSession {
   return {
     session_id: session.session_id,
     thread_id: session.thread_id,
@@ -1710,15 +1723,14 @@ function pendingInputs(value: unknown): PendingInput[] {
       message_id: messageId,
       content: stringValue(item.content),
       target,
-      source: stringValue(item.source) || "user",
       media_count: numberValue(item.media_count),
       artifact_count: numberValue(item.artifact_count),
     }];
   });
 }
 
-function todoProjection(data: JsonObject): TodoItemData[] {
-  if (data.kind !== "todo_snapshot") return [];
+export function todoProjection(data: JsonObject): TodoItemData[] {
+  const edges = arrayValue(data.edges).map(objectValue);
   return arrayValue(data.tasks).flatMap((value) => {
     const item = objectValue(value);
     const id = stringValue(item.id);
@@ -1732,8 +1744,8 @@ function todoProjection(data: JsonObject): TodoItemData[] {
       id,
       subject,
       status: status as TodoItemData["status"],
-      blocks: arrayValue(item.blocks).map(stringValue).filter(Boolean),
-      blockedBy: arrayValue(item.blockedBy).map(stringValue).filter(Boolean),
+      blocks: edges.filter((edge) => edge.prerequisite === id).map((edge) => stringValue(edge.dependent)),
+      blockedBy: edges.filter((edge) => edge.dependent === id).map((edge) => stringValue(edge.prerequisite)),
       ...(description ? { description } : {}),
       ...(activeForm ? { activeForm } : {}),
       ...(owner ? { owner } : {}),
@@ -1744,9 +1756,9 @@ function todoProjection(data: JsonObject): TodoItemData[] {
 function goalConsumption(value: unknown): string {
   const stats = objectValue(value);
   const parts = [
-    `${numberValue(stats.turns)} turns`,
+    `${numberValue(stats.rounds_started)} turns`,
     `${numberValue(stats.tool_calls)} tool calls`,
-    `${numberValue(stats.total_tokens)} tokens`,
+    `${numberValue(stats.input_tokens) + numberValue(stats.output_tokens)} tokens`,
   ];
   const todoItems = numberValue(stats.todo_items);
   if (todoItems) parts.push(`${numberValue(stats.todo_completed)}/${todoItems} todos`);

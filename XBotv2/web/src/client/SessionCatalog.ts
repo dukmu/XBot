@@ -1,5 +1,5 @@
 import type { XBotApi } from "../api/client";
-import type { ServerEvent, SessionSummary } from "../api/types";
+import type { ViewEvent, SessionSummary } from "../api/types";
 
 export interface SessionCatalogSnapshot {
   items: readonly SessionSummary[];
@@ -16,7 +16,7 @@ export class SessionCatalog {
   private snapshot = this.buildSnapshot();
   private readonly listeners = new Set<() => void>();
   private refreshPromise: Promise<void> | null = null;
-  private refreshEvents: ServerEvent[] | null = null;
+  private refreshEvents: ViewEvent[] | null = null;
   private revision = 0;
 
   constructor(private readonly api: Pick<XBotApi, "listSessions" | "renameSession">) {}
@@ -31,7 +31,7 @@ export class SessionCatalog {
   refresh(): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
     const revision = this.revision;
-    const refreshEvents: ServerEvent[] = [];
+    const refreshEvents: ViewEvent[] = [];
     this.refreshEvents = refreshEvents;
     this.state = "loading";
     this.error = null;
@@ -76,13 +76,13 @@ export class SessionCatalog {
     this.publish();
   }
 
-  handleCatalogEvent(event: ServerEvent): void {
+  handleCatalogEvent(event: ViewEvent): void {
     this.refreshEvents?.push(event);
     this.applyCatalogEvent(event);
     this.publish();
   }
 
-  private applyCatalogEvent(event: ServerEvent): void {
+  private applyCatalogEvent(event: ViewEvent): void {
     this.eventCursor = Math.max(this.eventCursor, event.sequence);
     if (event.type === "catalog/session-added" || event.type === "catalog/session-changed") {
       this.upsert(sessionFrame(event), false);
@@ -117,7 +117,7 @@ export class SessionCatalog {
   }
 }
 
-function sessionFrame(event: ServerEvent): SessionSummary {
+function sessionFrame(event: ViewEvent): SessionSummary {
   const value = event.data.session;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${event.type} has no session object`);

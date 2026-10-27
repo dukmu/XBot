@@ -1,8 +1,9 @@
+import { projectEvent, projectOpened, projectTrajectory } from "./wireProjection";
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState, useSyncExternalStore } from "react";
 import { clearOpenSession, readOpenSession, writeOpenSession } from "./openSession";
 import { XBotApi, XBotApiError, isMissingSessionError } from "../api/client";
 import type { SessionPolicy, SessionPolicyPatch } from "../api/types";
-import type { CommandInfo, CommandResultData, InteractionRequest, OpenSessionResponse, PluginConfigScope, ServerEvent, JobData, ThreadSummary } from "../api/types";
+import type { CommandInfo, CommandResultData, InteractionRequest, SessionView, PluginConfigScope, ViewEvent, JobData, ThreadSummary } from "../api/types";
 import type { PendingAttachment } from "../components/Composer";
 import { WorkspaceManager } from "../client/WorkspaceManager";
 import { SessionCatalog } from "../client/SessionCatalog";
@@ -17,6 +18,7 @@ import {
   runtimeEntry,
   runtimeReducer,
   trajectoryEntries,
+  todoProjection,
 } from "./runtime";
 import { ActivationEventBuffer } from "./activationBuffer";
 import { skillToolNames } from "./skillTools";
@@ -43,7 +45,7 @@ export function useXBot() {
   const navigationGeneration = useRef(0);
   const commandInFlight = useRef(false);
   const sessionMutationInFlight = useRef(false);
-  const currentSessionRef = useRef<OpenSessionResponse | null>(null);
+  const currentSessionRef = useRef<SessionView | null>(null);
   const latestEventSequenceRef = useRef(0);
   const reconcileSessionRef = useRef<(() => void) | null>(null);
   const refreshTrajectoryRef = useRef<(() => void) | null>(null);
@@ -60,7 +62,7 @@ export function useXBot() {
   // each time.  Actions resolve the current session when invoked instead.
   const liveStateRef = useRef(state);
   liveStateRef.current = state;
-  const trajectoryEventsBuffer = useRef<ServerEvent[]>([]);
+  const trajectoryEventsBuffer = useRef<ViewEvent[]>([]);
   const trajectoryRefreshInFlight = useRef(false);
   const reconcileInFlight = useRef(false);
   const activationEventsBuffer = useRef<ActivationEventBuffer | null>(null);
@@ -155,14 +157,14 @@ export function useXBot() {
   const resetStreamingState = useCallback(() => runtimeEvents.stop(), [runtimeEvents]);
 
   const startEventStream = useCallback((
-    session: Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">,
+    session: Pick<SessionView, "session_id" | "thread_id" | "event_cursor">,
     generation: number,
     running = false,
   ) => {
     runtimeEvents.start(session, generation, running);
   }, [runtimeEvents]);
 
-  const activate = useCallback(async (session: OpenSessionResponse, generation: number) => {
+  const activate = useCallback(async (session: SessionView, generation: number) => {
     if (generation !== navigationGeneration.current) return;
     currentSessionRef.current = session;
     writeOpenSession({
@@ -184,8 +186,8 @@ export function useXBot() {
     const activationBuffer = new ActivationEventBuffer();
     activationEventsBuffer.current = activationBuffer;
     dispatch({ type: "opened", session });
-    startEventStream(session, generation);
-    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, JobData[], CommandInfo[], Awaited<ReturnType<XBotApi["listTodos"]>>, Awaited<ReturnType<XBotApi["listTrajectory"]>>];
+    startEventStream(session, generation, session.turn_status === "running");
+    let resources: [ThreadSummary[], Awaited<ReturnType<XBotApi["listAgents"]>>, JobData[], CommandInfo[], import("../api/types").TodoItemData[], import("../api/types").TrajectoryPage];
     try {
       resources = await Promise.all([
         api.listThreads(session.session_id),
@@ -194,8 +196,8 @@ export function useXBot() {
         api.listAgents(session.session_id, session.thread_id).catch(() => []),
         api.listJobs(session.session_id, session.thread_id).catch(() => []),
         api.listCommands(session.session_id, session.thread_id).catch(() => []),
-        api.listTodos(session.session_id, session.thread_id).catch(() => []),
-        api.listTrajectory(session.session_id, session.thread_id, { limit: 160 }),
+        listViewTodos(api, session.session_id, session.thread_id).catch(() => []),
+        listViewTrajectory(api, session.session_id, session.thread_id, { limit: 160 }),
       ]);
     } catch (error) {
       if (activationEventsBuffer.current === activationBuffer) {
@@ -257,7 +259,7 @@ export function useXBot() {
     const eventSequence = latestEventSequenceRef.current;
     trajectoryRefreshInFlight.current = true;
     trajectoryEventsBuffer.current = [];
-    void api.listTrajectory(current.session_id, current.thread_id, { limit: 160 })
+    void listViewTrajectory(api, current.session_id, current.thread_id, { limit: 160 })
       .then((page) => {
         if (generation !== navigationGeneration.current) return;
         const bufferedEvents = trajectoryEventsBuffer.current.splice(0);
@@ -290,7 +292,7 @@ export function useXBot() {
     if (!current || reconcileInFlight.current) return;
     const generation = navigationGeneration.current;
     reconcileInFlight.current = true;
-    void api.openSession({
+    void openViewSession(api, {
       sessionId: current.session_id,
       threadId: current.thread_id,
       workspaceRoot: current.workspace_root,
@@ -333,7 +335,7 @@ export function useXBot() {
         // unanswered interactions, so an approval dialog survives a reload.
         const generation = ++navigationGeneration.current;
         try {
-          const session = await api.openSession({
+          const session = await openViewSession(api, {
             sessionId: saved.session_id,
             threadId: saved.thread_id,
             workspaceRoot: saved.workspace_root || undefined,
@@ -375,7 +377,7 @@ export function useXBot() {
       if (generation !== navigationGeneration.current) return;
       const mainThread = threads.find((thread) => thread.kind === "main") || threads[0];
       if (!mainThread) throw new Error(`Session ${id} has no resumable threads`);
-      const session = await api.openSession({
+      const session = await openViewSession(api, {
         sessionId: id,
         threadId: mainThread.thread_id,
         workspaceRoot: workspaceRoot?.trim() || mainThread.workspace_root,
@@ -418,7 +420,7 @@ export function useXBot() {
     try {
       if (targetWorkspace) await workspaceManager.create(targetWorkspace);
       if (generation !== navigationGeneration.current) return;
-      const session = await api.openSession({
+      const session = await openViewSession(api, {
         workspaceRoot: targetWorkspace || undefined,
         mode: "new",
       });
@@ -516,7 +518,7 @@ export function useXBot() {
     dispatch({ type: "loading", value: true });
     try {
       const session = thread.kind === "main"
-        ? await api.openSession({
+        ? await openViewSession(api, {
           sessionId: state.current.session_id,
           threadId: thread.thread_id,
           workspaceRoot: thread.workspace_root,
@@ -552,7 +554,7 @@ export function useXBot() {
     viewRef.current = { ...active, loadingOlder: true };
     setView({ ...viewRef.current });
     try {
-      const trajectory = await api.listTrajectory(current.session_id, active.threadId, {
+      const trajectory = await listViewTrajectory(api, current.session_id, active.threadId, {
         cursor: active.olderCursor,
         limit: 160,
       });
@@ -596,7 +598,7 @@ export function useXBot() {
     setView({ ...viewRef.current });
     const reconcile = async (cursorAfter: number) => {
       try {
-        const trajectory = await api.listTrajectory(sessionId, thread.thread_id, { limit: 160 });
+        const trajectory = await listViewTrajectory(api, sessionId, thread.thread_id, { limit: 160 });
         if (step !== viewStepRef.current) return;
         viewRollingRef.current = { reasoning: "", content: "" };
         viewRef.current = {
@@ -621,31 +623,41 @@ export function useXBot() {
         }
       }
     };
-    await reconcile(0);
+    const opened = await openViewThread(api, sessionId, thread);
+    await reconcile(opened.event_cursor);
     if (step !== viewStepRef.current) return;
     const controller = new AbortController();
     viewAbortRef.current = controller;
-    let cursor = 0;
+    let cursor = opened.event_cursor;
     try {
-      for await (const event of api.streamEvents(sessionId, thread.thread_id, cursor, controller.signal)) {
-        if (step !== viewStepRef.current) return;
-        if (event.sequence <= cursor) continue;
-        if (event.sequence !== cursor + 1) {
-          // A replay gap means the view cursor is stale; rebase from history.
-          cursor = event.sequence;
+      while (step === viewStepRef.current && !controller.signal.aborted) {
+        try {
+          for await (const event of api.streamEvents(sessionId, thread.thread_id, cursor, controller.signal)) {
+            if (step !== viewStepRef.current) return;
+            if (event.sequence <= cursor) continue;
+            if (event.sequence !== cursor + 1) {
+              const snapshot = await openViewThread(api, sessionId, thread);
+              cursor = snapshot.event_cursor;
+              await reconcile(cursor);
+              break;
+            }
+            cursor = event.sequence;
+            viewRef.current = {
+              ...viewRef.current!,
+              cursor,
+              entries: boundTranscriptEntries(
+                applyViewEvent(viewRef.current!.entries, projectEvent(event, (id) => api.artifactUrl(sessionId, thread.thread_id, id)), viewRollingRef.current),
+                viewRef.current!.atTail,
+              ),
+            };
+            setView({ ...viewRef.current });
+          }
+        } catch (error) {
+          if (!(error instanceof XBotApiError) || error.code !== "session_event_cursor_expired") throw error;
+          const snapshot = await openViewThread(api, sessionId, thread);
+          cursor = snapshot.event_cursor;
           await reconcile(cursor);
-          continue;
         }
-        cursor = event.sequence;
-        viewRef.current = {
-          ...viewRef.current!,
-          cursor,
-          entries: boundTranscriptEntries(
-            applyViewEvent(viewRef.current!.entries, event, viewRollingRef.current),
-            viewRef.current!.atTail,
-          ),
-        };
-        setView({ ...viewRef.current });
       }
     } catch (error) {
       if (step === viewStepRef.current) {
@@ -701,7 +713,6 @@ export function useXBot() {
             message_id: requestId,
             content,
             target: "next-turn",
-            source: "user",
             media_count: attachments.filter((item) => item.media_type.startsWith("image/")).length,
             artifact_count: attachments.filter((item) => !item.media_type.startsWith("image/")).length,
           },
@@ -819,7 +830,7 @@ export function useXBot() {
     const generation = navigationGeneration.current;
     dispatch({ type: "history_loading", value: true });
     try {
-      const page = await api.listTrajectory(current.session_id, current.thread_id, { limit: 160 });
+      const page = await listViewTrajectory(api, current.session_id, current.thread_id, { limit: 160 });
       if (generation !== navigationGeneration.current) return;
       dispatch({
         type: "trajectory",
@@ -855,7 +866,7 @@ export function useXBot() {
     try {
       // The window's own anchor is authoritative: trimming invalidates the
       // cursor offset, and paging from a stale offset would skip records.
-      const page = await api.listTrajectory(current.session_id, current.thread_id, {
+      const page = await listViewTrajectory(api, current.session_id, current.thread_id, {
         before: anchor ?? undefined,
         cursor: anchor === null ? cursor ?? undefined : undefined,
         limit: 80,
@@ -1155,7 +1166,7 @@ export function useXBot() {
       const effects = new Set(result.data.effects);
       try {
         const [trajectory, thread, agents, jobs, availableCommands] = await Promise.all([
-          effects.has("history") ? api.listTrajectory(
+          effects.has("history") ? listViewTrajectory(api,
             current.session_id,
             current.thread_id,
             { limit: 160 },
@@ -1343,9 +1354,29 @@ async function openSubagentThread(
   currentThreadId: string,
   sessionId: string,
   thread: ThreadSummary,
-): Promise<OpenSessionResponse> {
+): Promise<SessionView> {
   if (currentThreadId !== thread.parent_thread_id) {
-    await api.openSession({ sessionId, threadId: thread.parent_thread_id, mode: "resume" });
+    await openViewSession(api, { sessionId, threadId: thread.parent_thread_id, mode: "resume" });
   }
-  return api.openThread(sessionId, thread);
+  return openViewThread(api, sessionId, thread);
+}
+
+async function openViewSession(api: XBotApi, options: Parameters<XBotApi["openSession"]>[0]): Promise<SessionView> {
+  const opened = await api.openSession(options);
+  const summary = await api.getThread(opened.key.session_id, opened.key.thread_id);
+  return projectOpened(opened, summary, (id) => api.artifactUrl(opened.key.session_id, opened.key.thread_id, id));
+}
+
+async function openViewThread(api: XBotApi, sessionId: string, thread: ThreadSummary): Promise<SessionView> {
+  const opened = await api.openThread(sessionId, thread);
+  const summary = await api.getThread(opened.key.session_id, opened.key.thread_id);
+  return projectOpened(opened, summary, (id) => api.artifactUrl(opened.key.session_id, opened.key.thread_id, id));
+}
+
+async function listViewTrajectory(api: XBotApi, sessionId: string, threadId: string, options: Parameters<XBotApi["listTrajectory"]>[2]) {
+  return projectTrajectory(await api.listTrajectory(sessionId, threadId, options), (id) => api.artifactUrl(sessionId, threadId, id));
+}
+
+async function listViewTodos(api: XBotApi, sessionId: string, threadId: string) {
+  return todoProjection(await api.listTodos(sessionId, threadId) as unknown as import("../api/types").JsonObject);
 }

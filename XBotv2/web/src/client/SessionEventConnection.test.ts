@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import type { OpenSessionResponse, ServerEvent } from "../api/types";
+import type { SessionView } from "../api/types";
+import type { ServerEvent } from "../api/wire";
 import { XBotApiError } from "../api/client";
 import { SessionEventConnection, type SessionEventListener } from "./SessionEventConnection";
 
@@ -7,13 +8,13 @@ const session = {
   session_id: "session-1",
   thread_id: "agent",
   event_cursor: 4,
-} as OpenSessionResponse;
+} as SessionView;
 
 describe("SessionEventConnection", () => {
   it("reconnects after a transport failure and delivers the next stream", async () => {
     let calls = 0;
     const cursors: number[] = [];
-    const event = { type: "usage", data: {}, sequence: 5 } as ServerEvent;
+    const event = { kind: "usage", payload: {}, sequence: 5 } as ServerEvent;
     const transport = {
       async *streamEvents(_sessionId: string, _threadId: string, after: number) {
         calls += 1;
@@ -112,7 +113,7 @@ describe("SessionEventConnection", () => {
     const disconnected: boolean[] = [];
     const transport = {
       async *streamEvents() {
-        yield { ...({ type: "usage", data: {} } as ServerEvent), sequence: 6 };
+        yield { ...({ kind: "usage", payload: {} } as ServerEvent), sequence: 6 };
       },
     };
     const listener: SessionEventListener = {

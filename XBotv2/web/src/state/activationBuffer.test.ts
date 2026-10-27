@@ -1,13 +1,13 @@
 import { describe, expect, it } from "vitest";
-import type { ServerEvent } from "../api/types";
+import type { ViewEvent } from "../api/types";
 import {
   ActivationEventBuffer,
   MAX_ACTIVATION_BUFFERED_EVENTS,
 } from "./activationBuffer";
 import { initialRuntimeState, runtimeReducer } from "./runtime";
 
-function event(type: ServerEvent["type"], sequence: number): ServerEvent {
-  return { type, sequence, data: {} } as ServerEvent;
+function event(type: ViewEvent["type"], sequence: number): ViewEvent {
+  return { type, sequence, data: {} } as ViewEvent;
 }
 
 describe("ActivationEventBuffer", () => {

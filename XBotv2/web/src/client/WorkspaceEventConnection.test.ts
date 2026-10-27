@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { XBotApiError } from "../api/client";
-import type { ServerEvent } from "../api/types";
+import type { ServerEvent } from "../api/wire";
 import { WorkspaceEventConnection, type WorkspaceEventListener } from "./WorkspaceEventConnection";
 
 describe("WorkspaceEventConnection", () => {
@@ -60,9 +60,9 @@ function frame(sequence: number): ServerEvent {
     protocol_version: "xbotv2.v3",
     session_id: "",
     thread_id: "workspaces",
-    request_id: "",
+    scope: { kind: "session" },
     sequence,
-    type: "catalog/session-changed",
-    data: {},
+    kind: "catalog/session-changed",
+    payload: {},
   };
 }

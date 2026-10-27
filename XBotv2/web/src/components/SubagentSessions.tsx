@@ -35,7 +35,7 @@ function stateLabel(thread: ThreadSummary): string {
 }
 
 function tokenLabel(thread: ThreadSummary): string {
-  return `${thread.usage.total_tokens.toLocaleString()} tok`;
+  return `${(thread.usage.total_counters.input + thread.usage.total_counters.output).toLocaleString()} tok`;
 }
 
 function NodeRow({

@@ -22,6 +22,7 @@ async def main() -> None:
         workspace = root / "workspace"
         config_dir.mkdir(parents=True)
         workspace.mkdir()
+        (workspace / "sample.txt").write_text("browser tool result", encoding="utf-8")
         (config_dir / "plugins.yaml").write_text(
             yaml.safe_dump(
                 [
@@ -40,6 +41,7 @@ async def main() -> None:
                                         {
                                             "model": "test",
                                             "max_context_tokens": 4096,
+                                            "max_output_tokens": 1024,
                                             "input_modalities": ["text", "image"],
                                         }
                                     ],
@@ -72,12 +74,12 @@ async def main() -> None:
 
         application = await open_runtime(
             paths=RuntimePaths.from_data_dir(data_dir),
-            overrides=PluginOverlay.parse([{"id": "session", "config": {
+            overrides=PluginOverlay.parse([{"id": "permissions", "config": {"default_decision": "allow"}}, {"id": "session", "config": {
                 "provider_name": "default", "workspace_root": str(workspace), "no_plugins": True,
             }}]),
         )
         application.require(LLM).unregister("openai")
-        application.require(LLM).register("openai", lambda *_: MockLLM(responses=[{'content': 'A real MockLLM response through the XBot HTTP stream.', 'reasoning': 'I am checking the real transport before replying.', 'chunks': [{'reasoning': 'I am checking the real '}, {'reasoning': 'transport before replying. '}, {'content': 'A real MockLLM response '}, {'content': 'through the XBot HTTP stream.'}], 'chunk_delay_ms': 90, 'usage_metadata': {'input_tokens': 12, 'output_tokens': 10, 'total_tokens': 22}}, {'content': 'The clipboard image reached the real MockLLM.', 'chunks': [{'content': 'The clipboard image reached '}, {'content': 'the real MockLLM.'}], 'chunk_delay_ms': 90}, {'content': 'The second real turn stayed aligned with the first.', 'reasoning': 'I am comparing both persisted turns.', 'chunks': [{'reasoning': 'I am comparing both persisted turns. '}, {'content': 'The second real turn stayed '}, {'content': 'aligned with the first.'}], 'chunk_delay_ms': 90}], input_modalities=['text', 'image']))
+        application.require(LLM).register("openai", lambda *_: MockLLM(responses=[{'tool_calls': [{'id': 'browser-read', 'name': 'read', 'args': {'path': str(workspace / 'sample.txt')}}]}, {'content': 'A real MockLLM response through the XBot HTTP stream.', 'reasoning': 'I am checking the real transport before replying.', 'chunks': [{'reasoning': 'I am checking the real '}, {'reasoning': 'transport before replying. '}, {'content': 'A real MockLLM response '}, {'content': 'through the XBot HTTP stream.'}], 'chunk_delay_ms': 1500, 'usage_metadata': {'input_tokens': 12, 'output_tokens': 10, 'total_tokens': 22}}, {'content': 'The clipboard image reached the real MockLLM.', 'chunks': [{'content': 'The clipboard image reached '}, {'content': 'the real MockLLM.'}], 'chunk_delay_ms': 90}, {'content': 'The second real turn stayed aligned with the first.', 'reasoning': 'I am comparing both persisted turns.', 'chunks': [{'reasoning': 'I am comparing both persisted turns. '}, {'content': 'The second real turn stayed '}, {'content': 'aligned with the first.'}], 'chunk_delay_ms': 90}], input_modalities=['text', 'image']))
         server = uvicorn.Server(
             uvicorn.Config(
                 application.server,

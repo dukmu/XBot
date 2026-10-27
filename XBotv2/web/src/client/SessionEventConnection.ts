@@ -1,7 +1,8 @@
 import { XBotApi, XBotApiError } from "../api/client";
-import type { OpenSessionResponse, ServerEvent } from "../api/types";
+import type { SessionView } from "../api/types";
+import type { ServerEvent } from "../api/wire";
 
-type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
+type SessionAddress = Pick<SessionView, "session_id" | "thread_id" | "event_cursor">;
 
 export interface SessionEventListener {
   onEvent(event: ServerEvent): void;

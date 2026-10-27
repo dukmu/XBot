@@ -1,6 +1,6 @@
 import { ArrowDown, ArrowUp, Bot, Check, ChevronDown, ChevronRight, Circle, Folder, GitBranch, GitFork, MoreHorizontal, PanelLeftClose, PanelLeftOpen, Pencil, Plus, RefreshCw, Search, Settings, TerminalSquare, Trash2, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { OpenSessionResponse, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
+import type { SessionView, SessionSummary, ThreadSummary, WorkspaceData } from "../api/types";
 
 interface SessionSidebarProps {
   open: boolean;
@@ -10,7 +10,7 @@ interface SessionSidebarProps {
   workspaces: readonly WorkspaceData[];
   archivedSessionIds: readonly string[];
   threads: ThreadSummary[];
-  current: Pick<OpenSessionResponse, "session_id" | "thread_id"> | null;
+  current: Pick<SessionView, "session_id" | "thread_id"> | null;
   onClose: () => void;
   onToggle: () => void;
   onSettings: () => void;

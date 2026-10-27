@@ -339,7 +339,6 @@ describe("pending steering rows", () => {
             message_id: "steer-1",
             content: "Interjection: include the word BANANA in your final reply.",
             target: "next-step",
-            source: "user",
             media_count: 0,
             artifact_count: 0,
           }]}

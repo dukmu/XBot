@@ -1,3 +1,4 @@
+import type { OpenedThread, TrajectoryRead, ServerEvent } from "./wire";
 import { decodeSseStream } from "./sse";
 import {
   PROTOCOL_VERSION,
@@ -6,25 +7,19 @@ import {
   type CommandInfo,
   type CommandResult,
   type DirectoryListingData,
-  type HistoryItem,
   type MediaInput,
   type JsonObject,
-  type MessagePage,
   type MessageRequest,
-  type OpenSessionResponse,
   type PendingInput,
   type PluginConfigCatalog,
   type PluginConfigScope,
   type ProviderInfo,
   type RegenerateRequest,
-  type ServerEvent,
   type SessionListData,
   type SessionPolicy,
   type SessionPolicyPatch,
   type SessionSummary,
   type JobData,
-  type TrajectoryPage,
-  type TodoItemData,
   type ThreadSummary,
   type ToolInfo,
   type WorkspaceData,
@@ -57,7 +52,7 @@ export function isMissingSessionError(error: unknown): boolean {
 export class XBotApi {
   constructor(private readonly baseUrl = "/api") {}
 
-  hello(sessionId?: string, threadId = "agent") {
+  hello(sessionId?: string, threadId = "main") {
     return this.request<{ server_name: string; protocol_version: string }>(
       "POST",
       "/hello",
@@ -150,16 +145,16 @@ export class XBotApi {
     mode: "new" | "resume";
     agent?: string;
     historyLimit?: number;
-  }): Promise<OpenSessionResponse> {
-    const result = await this.request<OpenSessionResponse>("POST", "/sessions", {
+  }): Promise<OpenedThread> {
+    const result = await this.request<{ data: OpenedThread }>("POST", "/sessions", {
       session_id: options.sessionId || null,
-      thread_id: options.threadId || "agent",
+      thread_id: options.threadId || "main",
       workspace_root: options.workspaceRoot || null,
       mode: options.mode,
       agent: options.agent || null,
       history_limit: options.historyLimit ?? 160,
     });
-    return this.withArtifactUrls(result);
+    return result.data;
   }
 
   async listThreads(sessionId: string): Promise<ThreadSummary[]> {
@@ -208,16 +203,16 @@ export class XBotApi {
     return this.request("GET", `${threadPath(sessionId, threadId)}`);
   }
 
-  async openThread(sessionId: string, thread: ThreadSummary): Promise<OpenSessionResponse> {
-    const result = await this.request<OpenSessionResponse>("POST", `/sessions/${segment(sessionId)}/threads`, {
+  async openThread(sessionId: string, thread: ThreadSummary): Promise<OpenedThread> {
+    const result = await this.request<{ data: OpenedThread }>("POST", `/sessions/${segment(sessionId)}/threads`, {
       thread_id: thread.thread_id,
-      parent_thread_id: thread.parent_thread_id || "agent",
+      parent_thread_id: thread.parent_thread_id || "main",
       workspace_root: null,
       mode: "resume",
       agent: null,
       history_limit: 160,
     });
-    return this.withArtifactUrls(result);
+    return result.data;
   }
 
   async listAgents(sessionId: string, threadId: string): Promise<AgentInfo[]> {
@@ -256,55 +251,27 @@ export class XBotApi {
     }>("PUT", `${threadPath(sessionId, threadId)}/effort`, { effort });
   }
 
-  async listMessages(
+  listMessages(
     sessionId: string,
     threadId: string,
     options: { cursor?: string; limit?: number } = {},
-  ): Promise<MessagePage> {
+  ): Promise<import("./wire").HistoryPage<import("./wire").ConversationRecord>> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
-    const result = await this.request<MessagePage>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/messages${query.size ? `?${query}` : ""}`,
-    );
-    return {
-      ...result,
-      messages: this.decorateHistory(sessionId, threadId, result.messages),
-    };
+    return this.request("GET", `${threadPath(sessionId, threadId)}/messages${query.size ? `?${query}` : ""}`);
   }
 
-  async listTrajectory(
+  listTrajectory(
     sessionId: string,
     threadId: string,
     options: { cursor?: string; before?: number; limit?: number } = {},
-  ): Promise<TrajectoryPage> {
+  ): Promise<TrajectoryRead> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.before) query.set("before", String(options.before));
     if (options.limit) query.set("limit", String(options.limit));
-    const result = await this.request<TrajectoryPage>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/trajectory${query.size ? `?${query}` : ""}`,
-    );
-    return {
-      ...result,
-      items: result.items.map((item) => {
-        if (item.kind === "message") {
-          return {
-            ...item,
-            message: {
-              ...this.decorateHistory(sessionId, threadId, [item.message])[0],
-              id: item.message_id,
-            },
-          };
-        }
-        if (item.kind === "surface_replace") {
-          return { ...item, messages: this.decorateHistory(sessionId, threadId, item.messages) };
-        }
-        return item;
-      }),
-    };
+    return this.request("GET", `${threadPath(sessionId, threadId)}/trajectory${query.size ? `?${query}` : ""}`);
   }
 
   async listJobs(sessionId: string, threadId: string): Promise<JobData[]> {
@@ -315,12 +282,8 @@ export class XBotApi {
     return result.jobs;
   }
 
-  async listTodos(sessionId: string, threadId: string): Promise<TodoItemData[]> {
-    const result = await this.request<{ tasks: TodoItemData[] }>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/todos`,
-    );
-    return result.tasks;
+  listTodos(sessionId: string, threadId: string): Promise<import("./wire").TaskList> {
+    return this.request("GET", `${threadPath(sessionId, threadId)}/todos`);
   }
 
   async listCommands(sessionId: string, threadId: string): Promise<CommandInfo[]> {
@@ -331,23 +294,23 @@ export class XBotApi {
     return result.commands;
   }
 
-  runCommand(sessionId: string, threadId: string, command: string, raw: string) {
+  runCommand(sessionId: string, threadId: string, _command: string, raw: string) {
     return this.request<CommandResult>(
       "POST",
       `${threadPath(sessionId, threadId)}/commands`,
-      { command, raw, kind: "server" },
+      { raw },
     );
   }
 
   clearHistory(sessionId: string, threadId: string) {
-    return this.request<{ messages: HistoryItem[] }>(
+    return this.request<import("./wire").HistoryMutation>(
       "POST",
       `${threadPath(sessionId, threadId)}/history/clear`,
     );
   }
 
   undoHistory(sessionId: string, threadId: string, count = 1) {
-    return this.request<{ messages: HistoryItem[]; removed_turns: number; history_cursor?: string | null }>(
+    return this.request<import("./wire").HistoryMutation>(
       "POST",
       `${threadPath(sessionId, threadId)}/history/undo`,
       { count, history_limit: 160 },
@@ -500,7 +463,7 @@ export class XBotApi {
       undefined,
       signal,
     )) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
+      yield event;
     }
   }
 
@@ -543,103 +506,12 @@ export class XBotApi {
     if (!response.body) throw new Error("XBot returned an empty event stream");
     for await (const event of decodeSseStream(response.body)) {
       yield event;
-      if (event.type === "end") return;
+      if (event.kind === "end") return;
     }
     throw new Error("XBot event stream ended before its terminal event");
   }
 
-  private withArtifactUrls(session: OpenSessionResponse): OpenSessionResponse {
-    return {
-      ...session,
-      history: this.decorateHistory(session.session_id, session.thread_id, session.history),
-    };
-  }
 
-  private decorateHistory(
-    sessionId: string,
-    threadId: string,
-    history: HistoryItem[],
-  ): HistoryItem[] {
-    return history.map((item) => ({
-      ...item,
-      outcome: item.outcome ? this.decorateOutcome(sessionId, threadId, item.outcome) : undefined,
-      media: (item.media ?? []).map((artifact) => ({
-        ...artifact,
-        url: this.artifactUrl(sessionId, threadId, artifact.id),
-      })),
-      artifacts: item.artifacts.map((artifact) => ({
-        ...artifact,
-        url: typeof artifact.id === "string"
-          ? this.artifactUrl(sessionId, threadId, artifact.id)
-          : undefined,
-      })),
-    }));
-  }
-
-  private decorateOutcome(sessionId: string, threadId: string, outcome: JsonObject): JsonObject {
-    const output = outcome.output as JsonObject | undefined;
-    if (!output) return outcome;
-    const parts = Array.isArray(output.parts) ? output.parts : [];
-    return {
-      ...outcome,
-      output: {
-        ...output,
-        parts: parts.map((value) => {
-          const part = value as JsonObject;
-          if (part.kind !== "media") return part;
-          const artifact = part.artifact as JsonObject;
-          return { ...part, artifact: { ...artifact, url: this.artifactUrl(sessionId, threadId, String(artifact.id)) } };
-        }),
-      },
-    };
-  }
-
-  private withEventArtifactUrls(
-    sessionId: string,
-    threadId: string,
-    event: ServerEvent,
-  ): ServerEvent {
-    if (event.type === "history_updated") {
-      const history = Array.isArray(event.data.history)
-        ? event.data.history as unknown as HistoryItem[]
-        : [];
-      return {
-        ...event,
-        data: {
-          ...event.data,
-          history: this.decorateHistory(sessionId, threadId, history),
-        },
-      };
-    }
-    if (!["message", "tool_result"].includes(event.type)) return event;
-    const media = Array.isArray(event.data.media) ? event.data.media : [];
-    const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
-    return {
-      ...event,
-      data: {
-        ...event.data,
-        outcome: event.data.outcome ? this.decorateOutcome(sessionId, threadId, event.data.outcome as JsonObject) : undefined,
-        media: media.map((value) => {
-          const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
-          return {
-            ...image,
-            url: typeof image.id === "string"
-              ? this.artifactUrl(sessionId, threadId, image.id)
-              : undefined,
-          };
-        }),
-        artifacts: artifacts.map((value) => {
-          const artifact = value && typeof value === "object" ? value as Record<string, unknown> : {};
-          return {
-            ...artifact,
-            url: typeof artifact.id === "string"
-              ? this.artifactUrl(sessionId, threadId, artifact.id)
-              : undefined,
-          };
-        }),
-      },
-    };
-  }
 }
 
 async function throwResponse(response: Response): Promise<never> {

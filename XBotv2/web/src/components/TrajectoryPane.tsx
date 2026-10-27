@@ -57,7 +57,7 @@ function toolCallSummary(calls: unknown): string {
     .map((call) => {
       const value = typeof call === "object" && call !== null ? call as Record<string, unknown> : {};
       const name = typeof value.name === "string" ? value.name : "tool";
-      const args = value.arguments ?? value.args ?? {};
+      const args = value.args ?? {};
       return `${name}${JSON.stringify(args)}`;
     })
     .join(" ");

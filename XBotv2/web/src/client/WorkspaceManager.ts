@@ -1,5 +1,5 @@
 import type { XBotApi } from "../api/client";
-import type { ServerEvent, WorkspaceData } from "../api/types";
+import type { ViewEvent, WorkspaceData } from "../api/types";
 
 export interface WorkspaceSnapshot {
   items: readonly WorkspaceData[];
@@ -24,7 +24,7 @@ export class WorkspaceManager {
   private readonly listeners = new Set<() => void>();
   private readonly removedIds = new Set<string>();
   private refreshPromise: Promise<void> | null = null;
-  private refreshEvents: ServerEvent[] | null = null;
+  private refreshEvents: ViewEvent[] | null = null;
   private revision = 0;
   private orderGeneration = 0;
 
@@ -40,7 +40,7 @@ export class WorkspaceManager {
   refresh(): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
     const revision = this.revision;
-    const refreshEvents: ServerEvent[] = [];
+    const refreshEvents: ViewEvent[] = [];
     this.refreshEvents = refreshEvents;
     this.state = "loading";
     this.error = null;
@@ -148,13 +148,13 @@ export class WorkspaceManager {
     this.upsert(updated);
   }
 
-  handleCatalogEvent(event: ServerEvent): void {
+  handleCatalogEvent(event: ViewEvent): void {
     this.refreshEvents?.push(event);
     this.applyCatalogEvent(event);
     this.publish();
   }
 
-  private applyCatalogEvent(event: ServerEvent): void {
+  private applyCatalogEvent(event: ViewEvent): void {
     this.eventCursor = Math.max(this.eventCursor, event.sequence);
     if (event.type === "catalog/workspace-changed") {
       const workspace = workspaceFrame(event);
@@ -211,7 +211,7 @@ export class WorkspaceManager {
   }
 }
 
-function workspaceFrame(event: ServerEvent): WorkspaceData {
+function workspaceFrame(event: ViewEvent): WorkspaceData {
   const value = event.data.workspace;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`${event.type} has no workspace object`);
