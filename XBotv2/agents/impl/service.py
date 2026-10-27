@@ -180,13 +180,11 @@ class AgentsService(AgentRuntimePort):
         else:
             await state.metadata.replace(metadata)
 
-        model = (
-            options.model_override
-            if options.model_override is not None
-            else self._providers.create(provider, model_config)
-        )
         self._model_is_override = options.model_override is not None
-        self._model.replace(model)
+        if options.model_override is not None:
+            await self._model.replace_override(options.model_override)
+        else:
+            await self._model.replace(self._providers.acquire(provider, model_config))
         self._log.info(
             "agent.created",
             session_id=launch.session_id,
@@ -322,8 +320,15 @@ class AgentsService(AgentRuntimePort):
         )
         provider = self._providers.provider_config(provider_name)
         model_config = self._resolve_model_config(provider, definition)
+        # After handoff, finish recording the new selection before reporting
+        # an error or cancellation from releasing the previous client.
+        replace_error = None
         if not self._model_is_override:
-            self._model.replace(self._providers.create(provider, model_config))
+            use = self._providers.acquire(provider, model_config)
+            try:
+                await self._model.replace(use)
+            except BaseException as exc:
+                replace_error = exc
 
         self._restrict_tools(self._tools, config, definition)
         engine.configure(
@@ -348,6 +353,8 @@ class AgentsService(AgentRuntimePort):
                 }
             )
         )
+        if replace_error is not None:
+            raise replace_error
         await self._events.emit(
             AGENT_CONFIGURED,
             AgentConfigured(
@@ -394,8 +401,13 @@ class AgentsService(AgentRuntimePort):
                 f"Model {name}/{model_config.model} must declare "
                 "max_output_tokens before it can become a runtime selection"
             )
+        replace_error = None
         if not self._model_is_override:
-            self._model.replace(self._providers.create(provider, model_config))
+            use = self._providers.acquire(provider, model_config)
+            try:
+                await self._model.replace(use)
+            except BaseException as exc:
+                replace_error = exc
         engine.configure(
             model_client=self._model,
         )
@@ -411,6 +423,8 @@ class AgentsService(AgentRuntimePort):
                 "effort_override": None,
             },
         )
+        if replace_error is not None:
+            raise replace_error
         await self._events.emit(
             AGENT_CONFIGURED,
             AgentConfigured(
@@ -461,8 +475,13 @@ class AgentsService(AgentRuntimePort):
                 f"Model {provider_name}/{model_name} must declare "
                 "max_output_tokens before it can become a runtime selection"
             )
+        replace_error = None
         if not self._model_is_override:
-            self._model.replace(self._providers.create(entry, model_config))
+            use = self._providers.acquire(entry, model_config)
+            try:
+                await self._model.replace(use)
+            except BaseException as exc:
+                replace_error = exc
         engine.configure(
             model_client=self._model,
         )
@@ -474,6 +493,8 @@ class AgentsService(AgentRuntimePort):
             max_output_tokens=model_config.max_output_tokens,
             overrides={"effort_override": value},
         )
+        if replace_error is not None:
+            raise replace_error
         self._log.info(
             "model.effort.selected",
             provider=provider_name,

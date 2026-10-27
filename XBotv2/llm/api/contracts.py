@@ -155,10 +155,18 @@ class LlmCatalogPort(Protocol):
     def catalog(self) -> ProviderCatalog: ...
 
 
+class ProviderUse(Protocol):
+    """A client use owned by the caller; streams retain it until completion."""
+
+    async def close(self) -> None: ...
+    def astream(self, request: ModelRequest) -> AsyncIterator[ModelStreamEvent]: ...
+
+
 class ModelPort(Protocol):
     """Mutable thread model binding consumed by the Agent loop."""
 
-    def replace(self, provider: Provider) -> None: ...
+    async def replace(self, provider: ProviderUse) -> None: ...
+    async def replace_override(self, provider: Provider) -> None: ...
 
     def astream(
         self,
@@ -178,13 +186,9 @@ class LlmServicePort(LlmCatalogPort, Protocol):
     def default_name(self) -> str: ...
     def names(self) -> tuple[str, ...]: ...
     def provider_config(self, name: str) -> ProviderConfig: ...
-    def create(
-        self,
-        provider_config: ProviderConfig,
-        model_config: ModelConfig | None = None,
-        *,
-        model: str | None = None,
-    ) -> Provider: ...
+    def acquire(
+        self, provider_config: ProviderConfig, model_config: ModelConfig | None = None,
+    ) -> ProviderUse: ...
 
 
 @dataclass(frozen=True, slots=True)

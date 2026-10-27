@@ -38,7 +38,7 @@ class TestProviderConfig:
     def _create(config: ProviderConfig):
         from XBotv2.llm.impl.plugin import build_llm_service
 
-        return build_llm_service().create(config, config.resolve())
+        return build_llm_service().acquire(config, config.resolve())
 
     def _config(self, **overrides) -> ProviderConfig:
         base = {
@@ -49,7 +49,7 @@ class TestProviderConfig:
         base.update(overrides)
         return ProviderConfig(**base)
 
-    def test_create_llm_openai_protocol(self):
+    async def test_create_llm_openai_protocol(self):
         """An openai-protocol config creates an OpenAI client."""
         config = ProviderConfig(
             protocol="openai",
@@ -64,12 +64,14 @@ class TestProviderConfig:
                 )
             ],
         )
-        llm = self._create(config)
+        lease = self._create(config)
+        llm = lease._entry.provider
         from XBotv2.llm.impl.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
+        await lease.close()
 
-    def test_create_llm_anthropic_protocol(self):
+    async def test_create_llm_anthropic_protocol(self):
         """An anthropic-protocol config creates an Anthropic client."""
         config = ProviderConfig(
             protocol="anthropic",
@@ -84,12 +86,14 @@ class TestProviderConfig:
                 )
             ],
         )
-        llm = self._create(config)
+        lease = self._create(config)
+        llm = lease._entry.provider
         from XBotv2.llm.impl.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
+        await lease.close()
 
-    def test_create_llm_env_var_expansion(self, monkeypatch):
+    async def test_create_llm_env_var_expansion(self, monkeypatch):
         """Env vars in config are expanded."""
         monkeypatch.setenv("TEST_KEY", "expanded-key")
 
@@ -99,10 +103,12 @@ class TestProviderConfig:
             models=[ModelConfig(model="gpt-4")],
             api_key="expanded-key",
         )
-        llm = self._create(config)
+        lease = self._create(config)
+        llm = lease._entry.provider
         assert llm.client.api_key == "expanded-key"
+        await lease.close()
 
-    def test_create_llm_from_mock_provider_config(self):
+    async def test_create_llm_from_mock_provider_config(self):
         """Provider config can select deterministic MockLLM."""
         from XBotv2.llm.impl.mock import MockLLM
 
@@ -111,10 +117,12 @@ class TestProviderConfig:
             default_model="mock",
             models=[ModelConfig(model="mock", mock_responses=[{"content": "mocked"}])],
         )
-        llm = self._create(config)
+        lease = self._create(config)
+        llm = lease._entry.provider
 
         assert isinstance(llm, MockLLM)
         assert llm.responses == [{"content": "mocked"}]
+        await lease.close()
 
     def test_unknown_protocol_raises(self):
         """Unknown protocol implementations fail closed instead of silently

@@ -5,11 +5,13 @@ directory (``LlmService``); this plugin registers the built-in provider
 adapters (openai-compatible / anthropic / mock) and loads the configured
 provider definitions (``default`` + ``providers``) from its tree config —
 there is no separate ``providers.yaml`` document. Application composition
-creates the model client through ``ctx.llm.create(...)`` and passes the
+acquires the model client through the provider directory and passes the
 provider-neutral port to the loop.
 """
 
 from __future__ import annotations
+
+import asyncio
 from XBotv2.commands.api.contracts import COMMANDS
 
 from xcore.api.context import Context
@@ -62,20 +64,58 @@ class ProviderDirectories:
     def __init__(self):
         self._catalogs = {}
         self._factories = None
+        self._close_task = None
+        self._releasing = set()
 
-    def resolve(self, config):
+    def acquire(self, config):
+        if self._close_task is not None:
+            raise RuntimeError("provider directories are closed")
         key = config.model_dump_json()
-        if key not in self._catalogs:
+        item = self._catalogs.get(key)
+        if item is None:
             catalog = build_llm_service(config, factories=self._factories)
             self._factories = catalog._factories
-            self._catalogs[key] = catalog
-        return self._catalogs[key]
+            item = [catalog, 0]
+            self._catalogs[key] = item
+        item[1] += 1
+        return item[0]
 
+    async def release(self, config, service):
+        key = config.model_dump_json()
+        item = self._catalogs.get(key)
+        if item is None or item[0] is not service:
+            return
+        item[1] -= 1
+        if item[1] == 0:
+            del self._catalogs[key]
+            task = asyncio.create_task(service.close())
+            self._releasing.add(task)
+            try:
+                await asyncio.shield(task)
+            except asyncio.CancelledError:
+                await task
+                raise
+            finally:
+                self._releasing.discard(task)
 
     async def close(self):
-        for catalog in self._catalogs.values():
-            await catalog.close()
-        self._catalogs.clear()
+        if self._close_task is None:
+            catalogs = [item[0] for item in self._catalogs.values()]
+            self._catalogs.clear()
+            releasing = list(self._releasing)
+
+            async def close_catalogs():
+                results = await asyncio.gather(*(catalog.close() for catalog in catalogs), *releasing, return_exceptions=True)
+                for result in results:
+                    if isinstance(result, BaseException):
+                        raise result
+
+            self._close_task = asyncio.create_task(close_catalogs())
+        try:
+            await asyncio.shield(self._close_task)
+        except asyncio.CancelledError:
+            await self._close_task
+            raise
 
 
 PROVIDER_DIRECTORY = ServiceKey[ProviderDirectories]("llm.directory")
@@ -85,7 +125,7 @@ def mount_process(ctx, config):
     directory = ProviderDirectories()
     ctx.dispose(directory.close)
     ctx.provide(PROVIDER_DIRECTORY, directory)
-    service = directory.resolve(config)
+    service = directory.acquire(config)
     ctx.provide(LLM, service)
     ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
     ctx.inject(["server", "sessions"], mount_http)
@@ -96,9 +136,19 @@ mount_process.Config = LlmConfig
 
 
 def mount_thread(ctx, config):
-    service = ctx.require(PROVIDER_DIRECTORY).resolve(config)
+    directory = ctx.require(PROVIDER_DIRECTORY)
+    service = directory.acquire(config)
+    model = ModelService()
+
+    async def close():
+        try:
+            await model.close()
+        finally:
+            await directory.release(config, service)
+
+    ctx.dispose(close)
     ctx.provide(LLM, service)
-    ctx.provide(MODEL, ModelService())
+    ctx.provide(MODEL, model)
     ctx.on(LIST_PROVIDERS.name, ProviderCatalogHandler(service).list_providers)
     ctx.inject([LLM, AGENT_RUNTIME, COMMANDS], mount_commands)
 
