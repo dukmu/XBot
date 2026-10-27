@@ -335,3 +335,10 @@
 - [x] 安装版模型/后台关闭进程906248/906340均实际-15、约0.136/0.232秒、pin文件及进程缓存目录清退。200MiB进程906661保留209715200B原始非法UTF8/NUL与慢下载完整一致，log11347B、模型tool body8628B、maxevent8755B；RSS启动145682432B、kernel峰150523904B；活跃下载SIGTERM约0.214秒、锁可重取。实际日志均见application.destroyed。此为本地provider及对应工具/生命周期证据，不称外部provider或全产品工况。
 - [x] 用户最新约束覆盖此前代理计划：后续只允许GPT-6.1 Terra，不启动或续派Sol；不重复验证，不过度设计、校验或hash。本批结果已充分，停止追加全套/复跑/hash；后续只对实际修改做必要定向验证，文档日志修改不重复验代码。
 - [ ] 本切片已交付；整体goal保持active。接续收口现有3处workspace filesystem跨实现依赖和中央replay字节预算，随后推进工作集其他集合、jobs/wait/team、媒体/provider/权限、TUI及指定产品工况；不以这轮缓存/安装验收替代上述剩余要求。
+
+### 迭代 8：公共文件操作边界与事件窗口预算（实施中）
+
+- [x] 从已验收cce37b15及日志04f6d6e0继续，遵从最新约束只启动两个明确指定GPT-6.1 Terra的实施代理：分别收口3处filesystem跨实现导入、给现有session/workspace replay加字节预算。两者文件范围分开，无Sol运行或续派；主代理负责边界审查、TODO和提交。
+- [x] 文件操作共享实现通过最小公共边界提供；工具模式映射归coretools owner，permissions/sandbox沿公开契约工作。保留标准工具/权限/bwrap路径，不将workspace业务移入persistence、不造新executor或框架。
+- [ ] 事件窗口沿现有中央replay和cursor/单槽唤醒实现帧数与字节双预算；越界明确要求重取快照，保留业务原文。只做必要定向验证，不再次全套、wheel、压测或hash。
+- [x] filesystem Terra公开core.api.filesystem的PATH_ACCESS/execute/WORKER_PATH及coretools.api.filesystem的工具模式映射，删除worker内的工具业务映射与旧私有导出，3处消费者改用公共契约，文档同步。一次相关47项测试含真实bwrap通过，未加测试；首次受限环境运行停滞后已中止并确认退出，授权环境完成。主代理本轮唯一架构脚本实际exit0、architecture boundaries: ok（`/tmp/xbot-iteration8-architecture.txt`及`.exit`），原登记3项解除；不重复contract audit、全套、wheel或hash。

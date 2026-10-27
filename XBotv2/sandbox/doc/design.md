@@ -4,8 +4,8 @@ The thread-scoped sandbox registers a monotonic tool guard, provides `SANDBOX`,
 and executes shell and filesystem operations through bubblewrap. It depends on
 thread paths, settings, runtime variables, commands, the tool registry and the
 permissions approval service. Its policy tracks the effective configuration;
-processes and mounts exist for the duration of execution. Physical filesystem
-I/O helpers remain in `core.filesystem` and have not been migrated.
+processes and mounts exist for the duration of execution. Physical filesystem operations and the worker entry point are provided by
+`core.api.filesystem`; tool-to-operation mapping belongs to `coretools.api.filesystem`.
 
 `SandboxConfig` controls enabled, network, workspace and external read/write
 access, and resource rules. `/sandbox` inspects and updates session policy.

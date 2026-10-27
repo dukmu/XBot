@@ -82,7 +82,7 @@ and the artifact store.
   adds allow/deny and approval decisions but does not replace sandbox policy.
 - Background shell jobs belong to the active session and are not durable
   history.
-- See [permissions](../../permissions/README.md) and [sandbox](../../sandbox/README.md) for their contracts. Physical filesystem worker I/O remains in `core.filesystem` and has not migrated.
+- See [permissions](../../permissions/README.md) and [sandbox](../../sandbox/README.md) for their contracts. Physical filesystem operations and the sandbox worker entry point are exposed by `core.api.filesystem`; coretools owns the tool-to-operation mapping in `coretools.api.filesystem`.
 
 For example, an Agent can call `read` with `{"path":"README.md"}` or `shell` with `{"command":"git status"}` through the normal Tool registry and guards.
 

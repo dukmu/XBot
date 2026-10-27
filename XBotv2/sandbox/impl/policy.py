@@ -18,7 +18,8 @@ from pydantic import JsonValue
 from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.core.api.tools import GuardDecision, ToolCall
 from XBotv2.agentloop.api.contracts import ToolRegistration
-from XBotv2.core.filesystem import operations as filesystem_ops
+from XBotv2.core.api.filesystem import PATH_ACCESS, WORKER_PATH
+from XBotv2.coretools.api.filesystem import resolve_operation
 from XBotv2.sandbox.impl.bwrap import (
     BubblewrapBackend,
     SandboxMountSpec,
@@ -138,7 +139,7 @@ class SandboxPolicy(SandboxPort):
             {"operation": operation, "args": resolved}, ensure_ascii=False
         )
         return await self._backend.run(
-            ["python3", str(Path(filesystem_ops.__file__).resolve())],
+            ["python3", str(WORKER_PATH)],
             self._filesystem_mount_specs(operation, resolved),
             cwd="/",
             stdin=request,
@@ -261,7 +262,7 @@ class SandboxPolicy(SandboxPort):
                     )
                 )
 
-        worker = Path(filesystem_ops.__file__).resolve()
+        worker = WORKER_PATH
         if not worker.is_relative_to(self.workspace_root):
             mounts.append(SandboxMountSpec(worker, worker, "readonly", "file"))
 
@@ -286,7 +287,7 @@ class SandboxPolicy(SandboxPort):
         trusted filesystem worker and do not expand shell access.
         """
         mounts = self._mount_specs()
-        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+        for field, access in PATH_ACCESS.get(operation, ()):
             value = args.get(field)
             if not isinstance(value, str):
                 continue
@@ -347,7 +348,7 @@ class SandboxPolicy(SandboxPort):
         args: dict[str, JsonValue],
     ) -> dict[str, JsonValue]:
         resolved = dict(args)
-        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+        for field, access in PATH_ACCESS.get(operation, ()):
             value = args.get(field)
             if not isinstance(value, str):
                 continue
@@ -369,7 +370,7 @@ class SandboxPolicy(SandboxPort):
     ) -> list[dict[str, JsonValue]]:
         resolved = self.resolve_filesystem_args(operation, args)
         decisions = []
-        for field, access in filesystem_ops.PATH_ACCESS.get(operation, ()):
+        for field, access in PATH_ACCESS.get(operation, ()):
             value = resolved.get(field)
             if not isinstance(value, str):
                 continue
@@ -391,7 +392,7 @@ class SandboxPolicy(SandboxPort):
         tool_name: str,
         args: dict[str, JsonValue],
     ) -> list[dict[str, JsonValue]]:
-        operation = filesystem_ops.resolve_operation(tool_name, args)
+        operation = resolve_operation(tool_name, args)
         return self.check_filesystem_access(operation, args) if operation else []
 
     def make_guard(
