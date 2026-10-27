@@ -51,6 +51,24 @@ async def test_child_limit_applies_to_direct_open_and_resume(tmp_path):
         await root.close()
 
 
+async def test_default_unlimited_and_clearing_child_limit(tmp_path):
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(tmp_path / "data"))
+    sessions = root.require(SESSIONS)
+    try:
+        await sessions.open(OpenSession("unlimited", "main", str(tmp_path), None, "new", True, model_override=MockLLM()))
+        for index in range(5):
+            parent = "main" if index < 4 else "child-0"
+            await sessions.open_thread(OpenThread("unlimited", f"child-{index}", parent, None, None, "new", True, model_override=MockLLM()))
+        sessions.set_child_limit("unlimited", 5)
+        with pytest.raises(OperationError, match="limit reached"):
+            await sessions.open_thread(OpenThread("unlimited", "blocked", "main", None, None, "new", True, model_override=MockLLM()))
+        sessions.set_child_limit("unlimited", None)
+        await sessions.open_thread(OpenThread("unlimited", "allowed", "main", None, None, "new", True, model_override=MockLLM()))
+        assert await sessions.locate("unlimited", "allowed")
+    finally:
+        await root.close()
+
+
 @pytest.mark.parametrize("close_parent", [False, True])
 async def test_close_closes_running_descendants_before_parents(tmp_path, close_parent):
     from XBotv2.core.api.stream import ModelCompleted

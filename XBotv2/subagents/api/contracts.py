@@ -8,7 +8,7 @@ class SubagentsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     timeout_seconds: float = Field(default=600.0, gt=0)
-    max_live_threads: int = Field(default=4, ge=1)
+    max_live_threads: int | None = Field(default=None, ge=1)
 
 
 class SubagentAgentError(RuntimeError):

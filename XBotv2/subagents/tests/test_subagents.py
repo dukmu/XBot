@@ -4,8 +4,13 @@ import pytest
 
 from XBotv2.agents.api.contracts import AgentDefinition
 from XBotv2.session.api.contracts import ThreadSummary
-from XBotv2.subagents.api.contracts import SubagentAgentError
+from XBotv2.subagents.api.contracts import SubagentAgentError, SubagentsConfig
 from XBotv2.subagents.impl.service import SubagentLauncher, SubagentCoordinator
+
+
+def test_max_live_threads_defaults_to_unlimited_and_accepts_none():
+    assert SubagentsConfig().max_live_threads is None
+    assert SubagentsConfig.model_validate({"max_live_threads": None}).max_live_threads is None
 
 
 class _Catalog:

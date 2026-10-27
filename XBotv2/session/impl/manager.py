@@ -187,12 +187,15 @@ class SessionManager(SessionsPort):
             ):
                 return thread_id
 
-    def set_child_limit(self, session_id: str, limit: int) -> None:
-        if limit < 1:
+    def set_child_limit(self, session_id: str, limit: int | None) -> None:
+        if limit is not None and limit < 1:
             raise ValueError("child thread limit must be positive")
         if session_id not in self._owners and session_id not in self._session_opening:
             raise SessionNotFound(session_id)
-        self._child_limits[session_id] = limit
+        if limit is None:
+            self._child_limits.pop(session_id, None)
+        else:
+            self._child_limits[session_id] = limit
 
     def _admit_child(self, key: tuple[str, str]) -> None:
         session_id, _ = key
