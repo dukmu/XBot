@@ -113,8 +113,17 @@ class NetworkMockLLM:
             return JSONResponse({"error": {"message": "expected model, messages and stream=true"}}, status_code=400)
         if self.capture_requests:
             self.requests.append(payload)
-        if payload["messages"][-1].get("role") == "tool":
-            self.tool_responses += 1
+        for message in reversed(payload["messages"]):
+            role = message.get("role")
+            if role == "tool":
+                self.tool_responses += 1
+                break
+            if role == "assistant":
+                break
+            if role == "user":
+                content = message.get("content", "")
+                if not self.product_workload or "Product workload turn " in str(content):
+                    break
         if payload.get("tools"):
             self.agent_requests += 1
         else:

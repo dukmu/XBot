@@ -157,7 +157,10 @@ open/close lifecycles in batches of four. The mock issues ordinary shell, todo,
 and team tool calls through the production registry: each session creates five
 tasks, keeps one pending and completes four gradually, and publishes a board
 message each turn. Every eighth turn also requests a bounded record-range
-artifact. The harness enables the optional team plugin and declares explicit
+artifact. The runner waits for the matching input's `execution_ended` event
+before issuing a manual compact command. Provider requests carrying a tool
+result count requests, including any retries; successful tool completions are
+counted separately from the public event stream. The harness enables the optional team plugin and declares explicit
 permissions for the exercised team tools in its isolated configuration. `--concurrency` is the
 number of independent sessions (1, 4, or 16), not a product limit. The compact
 configuration retains one recent turn for this workload; the mock's recent
@@ -197,6 +200,16 @@ bounded at 2 GiB after server startup. The running-turn monitor checks both
 budgets every 250 ms; override them with `--max-disk-mib` or `--max-write-mib`
 when a larger workload is intentional. Results and runtime data
 remain local; reports must not be committed.
+
+The measurement context separately counts catalog construction, agent-file
+parsing, function parameter schemas, common tool schemas and provider schema
+mapping. It measures thread CPU spent in the installed OpenAI SDK's synchronous
+model-request JSON encoder, including auxiliary requests. In concurrency 1 it
+compares only the first system message's `core_instructions` element; other
+concurrency levels leave that comparison disabled because requests do not carry
+a proven session identity. These wrappers add observer overhead. That element
+is not the complete provider cache prefix, and mock usage does not establish
+real provider cache hits. All wrapped functions are restored on exit.
 
 The separate large-output case generates 200 MiB through the normal shell tool,
 then streams its artifact over HTTP and checks each chunk without retaining the

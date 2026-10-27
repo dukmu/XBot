@@ -121,3 +121,47 @@ async def test_slow_socket_connects_before_first_turn(tmp_path):
                     consume_until(client, "s", opened.data.event_cursor, "turn_ended", events), 15,
                 )
                 assert events["turn_ended"] == 1
+
+
+@pytest.mark.asyncio
+async def test_matching_execution_end_before_compaction_with_todo_reminder(tmp_path):
+    import asyncio
+    import httpx
+
+    from scripts.stress.measure import WorkloadMeasurements
+    with WorkloadMeasurements(single_session=True) as measurements:
+        async with LiveMockServerHarness(
+            30, data_dir=tmp_path / "data", mock_tools=True, tool_steps=1,
+            compact_recent=1, capture_requests=False, chunk_delay_ms=0,
+            product_workload=True,
+        ) as harness:
+            client = harness.client
+            opened = await client.open_session(session_id="s", thread_id="main", mode="new")
+            cursor = opened.data.event_cursor
+            events = Counter()
+            async with httpx.AsyncClient(base_url=harness.base_url) as observer:
+                member = await observer.put("/sessions/s/threads/main/teams/stress/members/main")
+                member.raise_for_status()
+                for number in range(1, 5):
+                    input_id = f"input-{number}"
+                    await client.send_message(
+                        "s", "main", f"Product workload turn {number}", request_id=input_id,
+                    )
+                    cursor = await asyncio.wait_for(
+                        consume_until(
+                            client, "s", cursor, "execution_ended", events, input_id=input_id,
+                        ), 30,
+                    )
+                result = await client.run_command("s", "main", raw="/compact")
+                assert result.data.status == "ok" and "history" in result.data.effects
+                await asyncio.wait_for(
+                    consume_until(client, "s", cursor, "compaction_completed", events), 30,
+                )
+            assert events["turn_ended"] == events["execution_ended"] == 4
+            assert events["tool_succeeded"] == 4
+            assert events["compaction_completed"] >= 1
+            assert harness.provider.product_notice_requests > 0
+            assert harness.provider.tool_responses == 4
+        report = measurements.report()
+        assert report["counts"]["model_json_encodes"] >= 8
+        assert report["model_json_cpu_ns"] > 0

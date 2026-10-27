@@ -22,6 +22,7 @@ import tracemalloc
 import httpx
 from xcore.api.context import Context
 
+from .measure import WorkloadMeasurements
 from .models import percentile
 from .resources import snapshot
 from .server import LiveMockServerHarness
@@ -129,7 +130,10 @@ def sample(label: str, data_dir: Path | None) -> dict:
     }
 
 
-async def consume_until(client, session_id, cursor, terminal, counts, tool_latencies=None):
+async def consume_until(
+    client, session_id, cursor, terminal, counts, tool_latencies=None, *, input_id=None,
+):
+    last_turn_end = None
     async with aclosing(client.stream_events(session_id, "main", after=cursor)) as stream:
         async for event in stream:
             cursor = max(cursor, event.sequence)
@@ -162,7 +166,17 @@ async def consume_until(client, session_id, cursor, terminal, counts, tool_laten
                 raise RuntimeError(f"turn failed: {event.payload}")
             if event.kind == "compaction_failed":
                 raise RuntimeError(f"compaction failed: {event.payload}")
+            if event.kind == "turn_ended" and event.scope.kind == "turn":
+                last_turn_end = event.scope.turn_id
             if event.kind == terminal:
+                if terminal == "execution_ended" and input_id is not None:
+                    execution = event.payload.get("execution", {})
+                    if input_id not in execution.get("input_ids", []):
+                        continue
+                    if execution.get("status") != "completed":
+                        raise RuntimeError(f"execution did not complete: {execution}")
+                    if execution.get("turn_id") != last_turn_end:
+                        raise RuntimeError("execution completed without its turn_ended event")
                 return cursor
     raise RuntimeError(f"event stream ended before {terminal}")
 
@@ -172,6 +186,13 @@ def allocation(total, workers, index):
 
 
 async def run(args):
+    with WorkloadMeasurements(single_session=args.concurrency == 1) as measurements:
+        report = await _run(args)
+        report["measurements"] = measurements.report()
+        return report
+
+
+async def _run(args):
     turns = 8 if args.short else 512
     compactions = 2 if args.short else 20
     children = 4 if args.short else 64
@@ -191,6 +212,7 @@ async def run(args):
                         "pid": os.getpid(), "cwd": os.getcwd(),
                         "cpu_count": os.cpu_count(), "source": source_state()},
         "limitations": [
+            "Provider requests with tool results may include retries and do not count unique tool completions.",
             "RSS and process IO include the mock provider and harness, not only XBot; "
             "tracemalloc and GC inspection add observer overhead.",
             "Process IO excludes shell subprocess IO; child processes are counted only at sample times.",
@@ -336,7 +358,10 @@ async def run(args):
                     sessions[i], "main", prompt, request_id=f"turn-{i}-{number}",
                 )
                 cursors[i] = await asyncio.wait_for(
-                    consume_until(client, sessions[i], cursors[i], "turn_ended", events, tool_latencies), 60,
+                    consume_until(
+                        client, sessions[i], cursors[i], "execution_ended", events,
+                        tool_latencies, input_id=f"turn-{i}-{number}",
+                    ), 60,
                 )
                 latencies.append((time.perf_counter() - started) * 1000)
                 completed_turns += 1
@@ -432,7 +457,7 @@ async def run(args):
                 "agent_model_requests": harness.provider.agent_requests,
                 "auxiliary_model_requests": harness.provider.auxiliary_requests,
                 "provider_tool_calls": harness.provider.tool_calls,
-                "provider_tool_responses": harness.provider.tool_responses,
+                "provider_requests_with_tool_result": harness.provider.tool_responses,
                 "provider_requests_with_runtime_notice": harness.provider.product_notice_requests,
                 "compactions_committed": completed_compactions,
                 "child_lifecycles_closed": completed_children,
@@ -498,7 +523,7 @@ async def run(args):
                 "agent_model_requests": harness.provider.agent_requests,
                 "auxiliary_model_requests": harness.provider.auxiliary_requests,
                 "provider_tool_calls": harness.provider.tool_calls,
-                "provider_tool_responses": harness.provider.tool_responses,
+                "provider_requests_with_tool_result": harness.provider.tool_responses,
                 "provider_requests_with_runtime_notice": harness.provider.product_notice_requests,
             })
     finally:
