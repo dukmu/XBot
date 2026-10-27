@@ -349,8 +349,8 @@ async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
     assert outcomes["revise"].outcome.kind == "succeeded"
     assert [item.version for item in updates] == list(range(1, 8))
     assert snapshot.edges == ()
-    assert [task.id for task in snapshot.tasks] == ["1", "2"]
-    assert all(task.status == "completed" for task in snapshot.tasks)
+    assert snapshot.tasks == ()
+    assert snapshot.completed_count == 2
     completion = _outcome_text(outcomes["done-a"].outcome)
     assert "evidence" in completion.lower()
     assert "subagent" not in completion.lower()
@@ -662,7 +662,8 @@ async def test_compaction_restates_unfinished_tasks_once(
     try:
         tasks = await dispatch_operation(resumed, GET_TODOS, EmptyRequest())
         assert isinstance(tasks, TaskList)
-        assert [task.status for task in tasks.tasks] == ["completed", "completed"]
+        assert tasks.tasks == ()
+        assert tasks.completed_count == 2
     finally:
         await resumed.root.close()
 
@@ -697,7 +698,8 @@ def test_task_update_parameters_schema_accepts_integer_id_lists():
     import types as _types
 
     tool = _task_tool(
-        _types.MethodType(TaskService.task_update, _FakeService()), cfg,
+        _types.MethodType(TaskService.task_update, _FakeService()),
+        cfg,
     )
     schema = tool_parameters_schema(tool)
     Draft202012Validator(schema).validate({"taskId": "11", "add_blocked_by": [9]})
@@ -706,3 +708,270 @@ def test_task_update_parameters_schema_accepts_integer_id_lists():
     Draft202012Validator(schema).validate({"taskId": "11", "add_blocks": ["2", 3]})
     Draft202012Validator(schema).validate({"taskId": "11", "add_blocked_by": None})
     Draft202012Validator(schema).validate({"taskId": "11"})
+
+
+@pytest.mark.asyncio
+async def test_completed_history_is_paged_and_releases_active_quota(
+    temp_data_dir,
+    temp_workspace,
+):
+    """Real mounted service crosses the SQL row budget, then resumes its graph."""
+    import gc
+    import weakref
+    from XBotv2.core.api.operations import dispatch_operation
+    from XBotv2.todolist.api.service import CompletedTasksRequest, GET_COMPLETED_TODOS
+
+    application, _ = await _start(
+        temp_data_dir, temp_workspace, [], config={"max_tasks": 2}
+    )
+    try:
+        service = application.require("todolist")
+        assert (await service.task_create("Anchor")).kind == "succeeded"
+        for number in range(1, 522):
+            assert (
+                await service.task_create(f"Done {number}", description="正文" * 800)
+            ).kind == "succeeded"
+            task_id = str(number + 1)
+            if number == 1:
+                active = await service.snapshot()
+                reference = weakref.ref(active.find(task_id))
+                del active
+            assert (
+                await service.task_update(task_id, status="completed")
+            ).kind == "succeeded"
+        gc.collect()
+        assert reference() is None
+        snapshot = await service.snapshot()
+        assert [task.id for task in snapshot.tasks] == ["1"]
+        assert snapshot.completed_count == 521
+        assert "正文" * 800 in _outcome_text(await service.task_get("2"))
+        ids = []
+        cursor = 0
+        while True:
+            page = await dispatch_operation(
+                application,
+                GET_COMPLETED_TODOS,
+                CompletedTasksRequest(after=cursor, limit=173),
+            )
+            ids.extend(task.id for task in page.tasks)
+            if page.next_after is None:
+                break
+            cursor = page.next_after
+        assert ids == [str(i) for i in range(2, 523)]
+        assert "#2 [x] Done 1" in _outcome_text(
+            await service.task_list(completed=True, limit=1)
+        )
+        assert (await service.task_create("New active")).kind == "succeeded"
+        assert (
+            await service.task_update("2", status="pending")
+        ).error.code == "task_limit"
+        assert (
+            await service.task_update("1", add_blocked_by=["2"])
+        ).kind == "succeeded"
+        assert (
+            await service.task_update("1", status="in_progress")
+        ).kind == "succeeded"
+        assert (await service.task_delete("523")).kind == "succeeded"
+        assert (
+            await service.task_update("2", status="pending")
+        ).error.code == "blocked"
+        assert (await service.task_create("Active again")).kind == "succeeded"
+        saved = await service.snapshot()
+    finally:
+        await application.root.close()
+
+    resumed, _ = await _start(
+        temp_data_dir, temp_workspace, [], config={"max_tasks": 2}, mode="resume"
+    )
+    try:
+        service = resumed.require("todolist")
+        assert await service.snapshot() == saved
+        assert (await service.task_create("over quota")).error.code == "task_limit"
+        assert (
+            await service.task_update("2", status="pending")
+        ).error.code == "task_limit"
+        assert "正文" * 800 in _outcome_text(await service.task_get("2"))
+        assert (
+            await service.task_update("1", add_blocked_by=["9999"])
+        ).error.code == "task_not_found"
+    finally:
+        await resumed.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_after_commit_reloads_the_committed_task(
+    temp_data_dir,
+    temp_workspace,
+    monkeypatch,
+):
+    import asyncio
+
+    application, _ = await _start(temp_data_dir, temp_workspace, [])
+    try:
+        service = application.require("todolist")
+        original = service._storage.change
+
+        async def cancel_after_commit(**kwargs):
+            await original(**kwargs)
+            raise asyncio.CancelledError
+
+        monkeypatch.setattr(service._storage, "change", cancel_after_commit)
+        with pytest.raises(asyncio.CancelledError):
+            await service.task_create("Committed before cancellation")
+        assert [task.subject for task in (await service.snapshot()).tasks] == [
+            "Committed before cancellation"
+        ]
+    finally:
+        await application.root.close()
+
+    resumed, _ = await _start(temp_data_dir, temp_workspace, [], mode="resume")
+    try:
+        assert [
+            task.subject
+            for task in (await resumed.require("todolist").snapshot()).tasks
+        ] == ["Committed before cancellation"]
+    finally:
+        await resumed.root.close()
+
+
+@pytest.mark.asyncio
+async def test_fork_copies_active_graph_and_completed_history(
+    temp_data_dir, temp_workspace
+):
+    from XBotv2.session.api.contracts import OpenSession, SESSIONS
+    from XBotv2.todolist.api.service import CompletedTasksRequest
+
+    application, llm = await _start(
+        temp_data_dir, temp_workspace, [], config={"max_tasks": 2}
+    )
+    try:
+        service = application.require("todolist")
+        await service.task_create("Prerequisite", "Saved evidence")
+        await service.task_create("Dependent")
+        await service.task_update("2", add_blocked_by=["1"])
+        await service.task_update("1", status="completed")
+        source = await service.snapshot()
+        manager = application.root.require(SESSIONS)
+        fork_id = await manager.fork_session("todolist-production")
+        forked = await manager.open(
+            OpenSession(
+                fork_id, "main", None, None, "resume", False, model_override=llm
+            )
+        )
+        fork_service = forked.require("todolist")
+        assert await fork_service.snapshot() == source
+        page = await fork_service.completed_page(CompletedTasksRequest())
+        assert [(task.id, task.description) for task in page.tasks] == [
+            ("1", "Saved evidence")
+        ]
+        assert (await fork_service.task_delete("1")).kind == "succeeded"
+        assert "Saved evidence" in _outcome_text(await service.task_get("1"))
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_unsupported_counter_schema_fails_without_modifying_existing_rows(
+    temp_data_dir,
+    temp_workspace,
+):
+    import sqlite3
+    from XBotv2.core.api.paths import RuntimePaths
+    from XBotv2.todolist.api.service import CompletedTasksRequest
+
+    application, _ = await _start(
+        temp_data_dir, temp_workspace, [], config={"max_tasks": 2}
+    )
+    try:
+        service = application.require("todolist")
+        await service.task_create("Old completed", "Original detail")
+        await service.task_update("1", status="completed")
+        await service.task_create("Old active")
+    finally:
+        await application.root.close()
+    database = (
+        RuntimePaths.from_data_dir(temp_data_dir)
+        .session("todolist-production")
+        .database_file
+    )
+    with sqlite3.connect(database) as connection:
+        connection.execute("ALTER TABLE todolist_counters DROP COLUMN completed_count")
+        connection.execute("ALTER TABLE todolist_counters DROP COLUMN active_count")
+        connection.execute("UPDATE todolist_tasks SET ordinal=0 WHERE task_id='1'")
+        connection.execute("DROP INDEX todolist_tasks_status_id")
+        connection.execute("DROP INDEX todolist_edges_dependent")
+
+    with sqlite3.connect(database) as connection:
+        original_rows = connection.execute(
+            "SELECT task_id,subject,description,status FROM todolist_tasks ORDER BY task_id"
+        ).fetchall()
+        original_columns = connection.execute(
+            "PRAGMA table_info(todolist_counters)"
+        ).fetchall()
+
+    resumed, _ = await _start(
+        temp_data_dir, temp_workspace, [], config={"max_tasks": 2}, mode="resume"
+    )
+    try:
+        service = resumed.require("todolist")
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            await service.snapshot()
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            await service.task_create("Must not be added")
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            await service.task_get("1")
+        with pytest.raises(sqlite3.OperationalError, match="no such column"):
+            await service.completed_page(CompletedTasksRequest())
+    finally:
+        await resumed.root.close()
+    with sqlite3.connect(database) as connection:
+        assert (
+            connection.execute(
+                "SELECT task_id,subject,description,status FROM todolist_tasks ORDER BY task_id"
+            ).fetchall()
+            == original_rows
+        )
+        assert (
+            connection.execute("PRAGMA table_info(todolist_counters)").fetchall()
+            == original_columns
+        )
+
+
+@pytest.mark.asyncio
+async def test_dependency_changes_obey_database_queue_byte_budget(
+    temp_data_dir,
+    temp_workspace,
+    monkeypatch,
+):
+    from dataclasses import replace
+    from XBotv2.persistence.api.contracts import PERSISTENCE
+
+    application, _ = await _start(temp_data_dir, temp_workspace, [])
+    try:
+        service = application.require("todolist")
+        await service.task_create("Anchor", description="中" * 950)
+        for number in range(2, 47):
+            assert (await service.task_create(f"Task {number}")).kind == "succeeded"
+        worker = application.root.require(PERSISTENCE).worker
+        original_limits = worker.limits
+        ids = list(range(2, 47))
+        before = await service.snapshot()
+        monkeypatch.setattr(
+            worker, "limits", replace(original_limits, queue_bytes=4096)
+        )
+        with pytest.raises(ValueError, match="queue byte budget"):
+            await service.task_update("1", add_blocks=ids)
+        assert await service.snapshot() == before
+
+        monkeypatch.setattr(worker, "limits", original_limits)
+        assert (await service.task_update("1", add_blocks=ids)).kind == "succeeded"
+        with_edges = await service.snapshot()
+        monkeypatch.setattr(
+            worker, "limits", replace(original_limits, queue_bytes=4096)
+        )
+        with pytest.raises(ValueError, match="queue byte budget"):
+            await service.task_update("1", remove_blocks=ids)
+        assert await service.snapshot() == with_edges
+        monkeypatch.setattr(worker, "limits", original_limits)
+    finally:
+        await application.root.close()

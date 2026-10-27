@@ -6,6 +6,8 @@ from XBotv2.agentloop.api.contracts import AGENT_LOOP
 from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopPort, InboxItem, RuntimeInput
 from XBotv2.agentloop.api.state import LOOP_STATE
 import copy
+import asyncio
+from functools import wraps
 from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
@@ -30,7 +32,7 @@ from XBotv2.todolist.api.models import (
     TaskValidationError,
 )
 from XBotv2.todolist.api.events import TaskChanged
-from XBotv2.todolist.api.service import GET_TODOS
+from XBotv2.todolist.api.service import (GET_TODOS, GET_COMPLETED_TODOS, CompletedTasksRequest, CompletedTasksPage)
 from XBotv2.todolist.impl.parsing import (
     parse_task_id,
     parse_task_ids,
@@ -66,6 +68,15 @@ async def mount_http(ctx: Context) -> None:
     )
 
 
+def _serialized(method):
+    @wraps(method)
+    async def run(self, *args, **kwargs):
+        async with self._mutation_lock:
+            return await method(self, *args, **kwargs)
+
+    return run
+
+
 class TaskService:
     """Own the typed task list for one thread."""
 
@@ -86,10 +97,12 @@ class TaskService:
         self._engine = engine
         self._events = events
         self._config = config
+        self._mutation_lock = asyncio.Lock()
 
     async def snapshot(self) -> TaskList:
         return await self._storage.load()
 
+    @_serialized
     async def task_create(
         self,
         subject: str,
@@ -142,8 +155,11 @@ class TaskService:
             description=parsed_description,
             active_form=parsed_active_form,
         )
-        updated = current.append(task)
-        await self._write(updated)
+        try:
+            await self._storage.change(task=task, max_tasks=self._config.max_tasks)
+        except TaskValidationError as exc:
+            return failed_text(exc.code, str(exc))
+        await self._changed()
         return await self._result(
             f"Created task #{task.id}: {task.subject}",
         )
@@ -158,12 +174,13 @@ class TaskService:
             parsed_id = parse_task_id(taskId)
         except TaskValidationError as exc:
             return failed_text(exc.code, str(exc))
-        current = await self.snapshot()
-        task = current.find(parsed_id)
-        if task is None:
+        found = await self._storage.get(parsed_id)
+        if found is None:
             return _unknown_task(parsed_id)
-        return succeeded_text(_format_task_detail(task, current))
+        task, edges = found
+        return succeeded_text(_format_task_detail(task, edges))
 
+    @_serialized
     async def task_update(
         self,
         taskId: str,
@@ -206,9 +223,10 @@ class TaskService:
             return failed_text(exc.code, str(exc))
 
         current = await self.snapshot()
-        task = current.find(parsed_id)
-        if task is None:
+        found = await self._storage.get(parsed_id)
+        if found is None:
             return _unknown_task(parsed_id)
+        task, existing_edges = found
 
         try:
             changes: dict[str, object] = {}
@@ -294,36 +312,25 @@ class TaskService:
                 "Cannot add and remove the same dependency",
             )
         for value in (*blocks, *blocked_by, *unblocks, *unblocked_by):
-            if current.find(value) is None:
+            if await self._storage.get(value) is None:
                 return _unknown_task(value)
-        edges = tuple(edge for edge in current.edges if edge not in removals)
-        edges += tuple(edge for edge in additions if edge not in edges)
         updated_task = task.model_copy(update=changes)
-        if updated_task == task and edges == current.edges:
+        if (
+            updated_task == task
+            and all(edge in existing_edges for edge in additions)
+            and all(edge not in existing_edges for edge in removals)
+        ):
             return succeeded_text(f"Task #{task.id} is unchanged.")
         try:
-            updated = TaskList(
-                version=current.version + 1,
-                next_id=current.next_id,
-                tasks=tuple(
-                    updated_task if item.id == task.id else item
-                    for item in current.tasks
-                ),
-                edges=edges,
+            await self._storage.change(
+                task=updated_task,
+                additions=additions,
+                removals=removals,
+                max_tasks=self._config.max_tasks,
             )
-        except ValueError as exc:
-            return failed_text("invalid_task_dependency", str(exc))
-        for candidate in updated.tasks:
-            if candidate.status == "in_progress":
-                unfinished = _blocking_tasks(updated, candidate)
-                if unfinished:
-                    return failed_text(
-                        "blocked",
-                        f"Task #{candidate.id} is blocked by "
-                        + ", ".join(f"#{value}" for value in unfinished),
-                    )
-
-        await self._write(updated)
+        except TaskValidationError as exc:
+            return failed_text(exc.code, str(exc))
+        updated = await self._changed()
         content = f"Updated task #{task.id}: {_describe_update(updated_task)}"
         if (
             self._config.verification_nudge
@@ -333,31 +340,59 @@ class TaskService:
             content = f"{content}\n{_VERIFICATION_NUDGE}"
         return await self._result(content)
 
+    @_serialized
     async def task_delete(self, task_id: str) -> ToolOutcome:
         """Delete one task and all dependency edges connected to it."""
         try:
             parsed_id = parse_task_id(task_id)
         except TaskValidationError as exc:
             return failed_text(exc.code, str(exc))
-        current = await self.snapshot()
-        if current.find(parsed_id) is None:
+        if await self._storage.get(parsed_id) is None:
             return _unknown_task(parsed_id)
-        updated = current.remove(parsed_id)
-        await self._write(updated)
+        await self._storage.change(delete=parsed_id, max_tasks=self._config.max_tasks)
+        await self._changed()
         return await self._result(
             f"Deleted task #{parsed_id}.",
         )
 
-    async def task_list(self) -> ToolOutcome:
-        """List every task with id, status, owner, and dependencies.
+    async def task_list(
+        self, after: int = 0, limit: int = 100, completed: bool = False
+    ) -> ToolOutcome:
+        """List active tasks, or a page of completed tasks by numeric id.
+
+        Args:
+            after: Return completed tasks after this numeric id.
+            limit: Maximum completed tasks to return (1 to 400).
+            completed: Read completed history instead of active tasks.
 
         Call this when the current plan is unknown, or before choosing the next
         task after completing one.
         """
+        if completed:
+            try:
+                page = await self._storage.completed_page(after, limit)
+            except ValueError as exc:
+                return failed_text("invalid_task_page", str(exc))
+            if not page:
+                return succeeded_text("No completed tasks in this page.")
+            lines = [f"Completed tasks (continue after {page[-1].id}):"]
+            lines.extend(f"- #{task.id} [x] {task.subject}" for task in page)
+            return succeeded_text("\n".join(lines))
         current = await self.snapshot()
         if not current.tasks:
-            return succeeded_text("The task list is empty.")
+            return succeeded_text(
+                f"No active tasks. {current.completed_count} completed."
+            )
         return succeeded_text(_format_task_list(current))
+
+    async def completed_page(
+        self, request: CompletedTasksRequest
+    ) -> CompletedTasksPage:
+        tasks = await self._storage.completed_page(request.after, request.limit)
+        return CompletedTasksPage(
+            tasks=tasks,
+            next_after=int(tasks[-1].id) if len(tasks) == request.limit else None,
+        )
 
     async def get_snapshot(self, _request: EmptyRequest) -> TaskList:
         return await self.snapshot()
@@ -412,12 +447,13 @@ class TaskService:
             wake=False,
         )
 
-    async def _write(self, tasks: TaskList) -> None:
-        await self._storage.save(tasks)
+    async def _changed(self) -> TaskList:
+        tasks = await self.snapshot()
         await self._events.emit(
             RUNTIME_EVENT,
             RuntimeEvent(event=TaskChanged(snapshot=tasks)),
         )
+        return tasks
 
     async def _stale_turns(self) -> int:
         stored = await self._store.get(_STALE_TURNS_KEY)
@@ -434,7 +470,7 @@ def _blocking_tasks(tasks: TaskList, task: Task) -> list[str]:
     return [
         value
         for value in tasks.prerequisites(task.id)
-        if (blocker := tasks.find(value)) is None or blocker.status != "completed"
+        if value not in tasks.completed_prerequisites and ((blocker := tasks.find(value)) is None or blocker.status != "completed")
     ]
 
 
@@ -452,8 +488,8 @@ def _describe_update(task: Task | None) -> str:
 
 
 def _format_task_list(tasks: TaskList) -> str:
-    completed = sum(task.status == "completed" for task in tasks.tasks)
-    lines = [f"Tasks ({completed}/{len(tasks.tasks)} completed):"]
+    completed = tasks.completed_count
+    lines = [f"Tasks ({completed}/{completed + len(tasks.tasks)} completed):"]
     lines.extend(_format_task_line(task, tasks) for task in tasks.tasks)
     return "\n".join(lines)
 
@@ -483,7 +519,7 @@ def _format_task_line(task: Task, tasks: TaskList, *, xml: bool = False) -> str:
     return line
 
 
-def _format_task_detail(task: Task, tasks: TaskList) -> str:
+def _format_task_detail(task: Task, edges: tuple[DependencyEdge, ...]) -> str:
     lines = [
         f"#{task.id} [{task.status}] {task.subject}",
     ]
@@ -493,8 +529,8 @@ def _format_task_detail(task: Task, tasks: TaskList) -> str:
         lines.append(f"Active form: {task.active_form}")
     if task.owner:
         lines.append(f"Owner: {task.owner}")
-    dependents = tasks.dependents(task.id)
-    prerequisites = tasks.prerequisites(task.id)
+    dependents = tuple(edge.dependent for edge in edges if edge.prerequisite == task.id)
+    prerequisites = tuple(edge.prerequisite for edge in edges if edge.dependent == task.id)
     if dependents:
         lines.append("Blocks: " + ", ".join(f"#{value}" for value in dependents))
     if prerequisites:
@@ -578,6 +614,7 @@ class TodolistRuntimeComponent:
         )
         ctx.set("todolist", service)
         ctx.on(GET_TODOS.name, service.get_snapshot)
+        ctx.on(GET_COMPLETED_TODOS.name, service.completed_page)
         ctx.on(Events.TURN_START, service.on_turn_start)
         ctx.on(HISTORY_CHANGED, service.on_compaction)
         for function in (

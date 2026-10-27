@@ -46,6 +46,13 @@ class DatabaseWorker:
         size: int = 0,
         create: bool = False,
     ) -> T:
+        return await self._submit(path, callback, size=size, create=create)
+
+    async def release(self, path: Path | None = None):
+        """Close the current connection if it belongs to path (or any path)."""
+        await self._submit(path, None, size=0, create=False)
+
+    async def _submit(self, path, callback, *, size, create):
         if size < 0 or size > self.limits.queue_bytes:
             raise ValueError(
                 "Database operation exceeds the configured queue byte budget"
@@ -124,43 +131,70 @@ class DatabaseWorker:
         return value
 
     def _run(self):
+        connection = path_open = identity = None
+        discard = False
         while (work := self._queue.get()) is not None:
             loop, result, path, callback, create = work
-            value = error = None
-            connection = None
+            value = error = cleanup_errors = None
             try:
-                # Connections belong to short operations, never logical
-                # threads or an unbounded archive-reader cache.
-                if create:
-                    path.parent.mkdir(parents=True, exist_ok=True)
-                    connection = sqlite3.connect(path)
-                else:
-                    connection = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)
-                connection.row_factory = sqlite3.Row
-                connection.execute("PRAGMA foreign_keys=ON")
-                connection.execute("PRAGMA busy_timeout=1000")
-                value = self._result(callback(connection))
-                connection.commit()
+                current = None
+                if path is not None:
+                    try:
+                        stat = path.stat()
+                        current = (stat.st_dev, stat.st_ino)
+                    except FileNotFoundError:
+                        pass
+                if connection is not None and (
+                    discard
+                    or (callback is None and (path is None or path == path_open))
+                    or (callback is not None and (path != path_open or current != identity))
+                ):
+                    discard = True
+                    connection.close()
+                    connection = None
+                    path_open = identity = None
+                    discard = False
+                if callback is not None:
+                    if connection is None:
+                        if create:
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            connection = sqlite3.connect(path)
+                        else:
+                            connection = sqlite3.connect(path.as_uri() + "?mode=rw", uri=True)
+                        path_open = path
+                        stat = path.stat()
+                        identity = (stat.st_dev, stat.st_ino)
+                        connection.row_factory = sqlite3.Row
+                        connection.execute("PRAGMA foreign_keys=ON")
+                        connection.execute("PRAGMA busy_timeout=1000")
+                    value = self._result(callback(connection))
+                    connection.set_authorizer(None)
+                    connection.commit()
             except BaseException as exc:
                 error = exc
-            finally:
+            if error is not None:
                 cleanup_errors = []
                 if connection is not None:
-                    if error is not None:
-                        try:
-                            connection.rollback()
-                        except BaseException as exc:
-                            cleanup_errors.append(exc)
+                    discard = True
+                    try:
+                        connection.set_authorizer(None)
+                        connection.rollback()
+                    except BaseException as exc:
+                        cleanup_errors.append(exc)
                     try:
                         connection.close()
                     except BaseException as exc:
                         cleanup_errors.append(exc)
+                    else:
+                        connection = path_open = identity = None
+                        discard = False
                 if cleanup_errors:
                     error = BaseExceptionGroup(
                         "Database operation cleanup failed",
                         ([error] if error is not None else []) + cleanup_errors,
                     )
             loop.call_soon_threadsafe(self._complete, result, value, error)
+            del work, loop, result, path, callback, create, value, error, cleanup_errors
 
     async def close(self):
         async with self._admission:
@@ -168,6 +202,10 @@ class DatabaseWorker:
             self._admission.notify_all()
             await self._admission.wait_for(lambda: self._operations == 0)
         if self._thread.is_alive():
+            loop = asyncio.get_running_loop()
+            result = loop.create_future()
+            self._queue.put((loop, result, None, None, False))
+            await asyncio.shield(result)
             self._queue.put(None)
             await asyncio.to_thread(self._thread.join)
 

@@ -96,6 +96,7 @@ class PreparedCopy:
         self.published = False
 
     async def publish(self):
+        await self.resources.worker.release(self.staging.database_file)
         await file_io(_sync_tree, self.staging.root)
         await file_io(
             _publish,
@@ -111,64 +112,85 @@ from contextlib import asynccontextmanager
 @asynccontextmanager
 async def prepare_copy(resources, source_id, target_id):
     async with resources.use(source_id):
-        source_claim = target_claim = staging_claim = None
-        prepared = None
-        final = resources._paths.session(target_id)
-        staging_root = resources._paths.data_dir / ".preparing" / uuid4().hex
-        staging = RuntimePaths.from_data_dir(staging_root).session(target_id)
-        try:
-            source = resources.paths(source_id) if source_id is not None else None
-            if source is not None and not resources.owns(source_id):
-                source_claim = resources.acquire(source_id)
-            target_claim = resources.acquire(target_id)
-            if final.root.exists():
-                raise FileExistsError(final.root)
-            resources._preparations[target_id] = (staging, asyncio.current_task())
-            staging_claim = resources.acquire(target_id)
-            cuts = []
-            if source is not None:
+        async with resources._preparation_lock:
+            await resources.cleanup_preparation()
+            async with _prepare_copy(resources, source_id, target_id) as prepared:
+                yield prepared
 
-                def snapshot(c):
-                    staging.root.mkdir(parents=True, exist_ok=True)
-                    target = sqlite3.connect(staging.database_file)
-                    try:
-                        c.backup(target)
-                    finally:
-                        target.close()
-                    tables = {
-                        row[0]
-                        for row in c.execute(
-                            "SELECT name FROM sqlite_master WHERE type='table'"
-                        )
-                    }
-                    return (
-                        [
-                            tuple(row)
-                            for row in c.execute(
-                                "SELECT stream_id,indexed_seq,indexed_offset FROM stream_heads ORDER BY stream_id"
-                            )
-                        ]
-                        if "stream_heads" in tables
-                        else []
+
+@asynccontextmanager
+async def _prepare_copy(resources, source_id, target_id):
+    source_claim = target_claim = staging_claim = None
+    prepared = None
+    final = resources._paths.session(target_id)
+    staging_root = resources._paths.data_dir / ".preparing" / uuid4().hex
+    staging = RuntimePaths.from_data_dir(staging_root).session(target_id)
+    try:
+        source = resources.paths(source_id) if source_id is not None else None
+        if source is not None and not resources.owns(source_id):
+            source_claim = resources.acquire(source_id)
+        target_claim = resources.acquire(target_id)
+        if final.root.exists():
+            raise FileExistsError(final.root)
+        resources._preparations[target_id] = (staging, asyncio.current_task())
+        staging_claim = resources.acquire(target_id)
+        cuts = []
+        if source is not None:
+
+            def snapshot(c):
+                staging.root.mkdir(parents=True, exist_ok=True)
+                target = sqlite3.connect(staging.database_file)
+                try:
+                    c.backup(target)
+                finally:
+                    target.close()
+                tables = {
+                    row[0]
+                    for row in c.execute(
+                        "SELECT name FROM sqlite_master WHERE type='table'"
                     )
-
-                cuts = await resources.worker.call(source.database_file, snapshot)
-                for thread, seq, offset in cuts:
-                    if offset:
-                        await file_io(
-                            _copy_prefix,
-                            source.thread(thread).rollout_file,
-                            staging.thread(thread).rollout_file,
-                            offset,
+                }
+                return (
+                    [
+                        tuple(row)
+                        for row in c.execute(
+                            "SELECT stream_id,indexed_seq,indexed_offset FROM stream_heads ORDER BY stream_id"
                         )
-                await file_io(
-                    _copy_objects, source.root / "objects", staging.root / "objects"
+                    ]
+                    if "stream_heads" in tables
+                    else []
                 )
-            prepared = PreparedCopy(resources, target_id, staging, cuts)
-            yield prepared
+
+            cuts = await resources.worker.call(source.database_file, snapshot)
+            for thread, seq, offset in cuts:
+                if offset:
+                    await file_io(
+                        _copy_prefix,
+                        source.thread(thread).rollout_file,
+                        staging.thread(thread).rollout_file,
+                        offset,
+                    )
+            await file_io(
+                _copy_objects, source.root / "objects", staging.root / "objects"
+            )
+        prepared = PreparedCopy(resources, target_id, staging, cuts)
+        yield prepared
+    finally:
+        staging_released = False
+        try:
+            try:
+                await resources.worker.release(staging.database_file)
+                staging_released = True
+            except BaseException:
+                resources._failed_preparation = (staging.database_file, staging_root)
+                raise
+            finally:
+                if source_claim is not None:
+                    await resources.worker.release(source.database_file)
         finally:
             if (
-                prepared is not None
+                staging_released
+                and prepared is not None
                 and not prepared.published
                 and not staging.root.exists()
                 and final.root.exists()
@@ -181,7 +203,8 @@ async def prepare_copy(resources, source_id, target_id):
                 target_claim.release()
             if source_claim is not None:
                 source_claim.release()
-            await file_io(shutil.rmtree, staging_root, True)
+            if staging_released:
+                await file_io(shutil.rmtree, staging_root, True)
 
 
 def _delete(paths, session_id):

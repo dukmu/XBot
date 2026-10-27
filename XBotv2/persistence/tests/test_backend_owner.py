@@ -1,5 +1,7 @@
 """An independent storage owner uses the backend without an Agent loop."""
 import asyncio
+import sqlite3
+import threading
 import pytest
 from xcore.api.context import Context
 from XBotv2.loader.api.service import create_loader
@@ -55,5 +57,101 @@ async def test_custom_owner_transaction_rollout_replay_and_lifetime(tmp_path):
         finally:
             occupied.release()
     finally:
+        await root.close()
+        loader.close()
+
+
+async def test_delete_waits_for_sql_and_recreate_does_not_read_old_database(tmp_path):
+    root = Context()
+    paths = RuntimePaths.from_data_dir(tmp_path / 'data')
+    root.set('runtime_paths', paths)
+    root.set('runtime_log', DEFAULT_RUNTIME_LOG)
+    loader = create_loader()
+    await loader.mount(root, PluginTree([PluginEntry('persistence', 'persistence')]), kind='process', required=(PERSISTENCE,))
+    backend = root.require(PERSISTENCE)
+    claim = backend.acquire('same')
+    started = threading.Event()
+    release = threading.Event()
+    reading = deleting = None
+    try:
+        state = backend.state('same').namespace('test')
+        await state.set('value', 'old')
+        path = paths.session('same').database_file
+
+        async def read_blocked():
+            async with backend.use('same'):
+                def blocked(c):
+                    started.set()
+                    assert release.wait(5)
+                    return c.execute('SELECT 1').fetchone()[0]
+                return await backend.worker.call(path, blocked)
+
+        reading = asyncio.create_task(read_blocked())
+        assert await asyncio.to_thread(started.wait, 5)
+        deleting = asyncio.create_task(backend.delete_session('same'))
+        await asyncio.sleep(.05)
+        assert not deleting.done() and path.exists()
+        release.set()
+        await asyncio.wait_for(deleting, 5)
+        with pytest.raises(asyncio.CancelledError):
+            await reading
+        assert not path.exists()
+        await state.set('value', 'new')
+        assert await state.get('value') == 'new'
+    finally:
+        release.set()
+        await asyncio.gather(*(task for task in (reading, deleting) if task), return_exceptions=True)
+        await backend.drain('same')
+        claim.release()
+        await root.close()
+        loader.close()
+
+
+@pytest.mark.parametrize('retry', ['prepare', 'close'])
+async def test_failed_staging_release_preserves_directory_until_connection_closes(tmp_path, monkeypatch, retry):
+    root = Context()
+    paths = RuntimePaths.from_data_dir(tmp_path / 'data')
+    root.set('runtime_paths', paths)
+    root.set('runtime_log', DEFAULT_RUNTIME_LOG)
+    loader = create_loader()
+    await loader.mount(root, PluginTree([PluginEntry('persistence', 'persistence')]), kind='process', required=(PERSISTENCE,))
+    backend = root.require(PERSISTENCE)
+    connect = sqlite3.connect
+    fail_close = threading.Event()
+    staging = None
+
+    class BrokenClose(sqlite3.Connection):
+        def close(self):
+            if fail_close.is_set():
+                raise RuntimeError('release fault')
+            super().close()
+
+    def controlled(*args, **kwargs):
+        return connect(*args, **kwargs, factory=BrokenClose)
+
+    monkeypatch.setattr(sqlite3, 'connect', controlled)
+    try:
+        with pytest.raises(ExceptionGroup, match='cleanup failed'):
+            async with backend.prepare_session('target') as prepared:
+                staging = prepared.staging
+                await backend.state('target').namespace('test').set('value', 'staged')
+                fail_close.set()
+        assert staging.database_file.exists()
+        assert not paths.session('target').root.exists()
+        with pytest.raises(ExceptionGroup, match='cleanup failed'):
+            async with backend.prepare_session('other'):
+                pytest.fail('must retry the failed cleanup before preparing')
+        assert staging.database_file.exists()
+        fail_close.clear()
+        if retry == 'prepare':
+            async with backend.prepare_session('other'):
+                assert not staging.database_file.exists()
+        else:
+            await root.close()
+        assert not staging.database_file.exists()
+        assert not staging.root.exists()
+        assert not staging.runtime.data_dir.exists()
+    finally:
+        fail_close.clear()
         await root.close()
         loader.close()

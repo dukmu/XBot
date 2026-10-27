@@ -365,11 +365,11 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 
     elif isinstance(event, TaskChangedReceived):
         tasks = event.payload.snapshot.tasks
-        completed = sum(task.status == "completed" for task in tasks)
+        completed = event.payload.snapshot.completed_count
         _append(state, NoticeEntry(
             id="tasks:active",
             notice_kind="tasks",
-            text=f"Tasks {completed}/{len(tasks)} completed",
+            text=f"Tasks {completed}/{completed + len(tasks)} completed",
         ))
 
     elif isinstance(event, InteractionOpened):

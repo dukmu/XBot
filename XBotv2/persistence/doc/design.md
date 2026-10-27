@@ -12,6 +12,14 @@ before their first persistent business mutation; the backend does not inject a
 A session owner holds the OS writer claim; its thread descendants share that
 claim. Independent roots, including roots in the same process, cannot share it.
 Draining rejects new work and waits for accepted I/O leases to actually exit.
+The worker retains at most one SQLite connection, switching it when the path or
+file identity changes. Transactions still commit per operation; failures roll
+back and discard the connection. Session drain and prepared-copy publication
+close the relevant connection before releasing ownership or renaming storage.
+Process disposal closes the remaining connection on the worker thread.
+Preparations are serialized. If a staging connection cannot close, its one
+unpublished directory is retained and the next preparation or process drain
+retries closing it before removing the directory.
 Root `pre_stop` runs after children have stopped. Session claims are released
 after their accepted work drains; the process worker closes during disposal. Archive page decoding does not hold the writer mutex, but
 retains a tracked read lifetime.

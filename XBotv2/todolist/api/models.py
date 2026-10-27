@@ -60,6 +60,8 @@ class TaskList(BaseModel):
     next_id: int = Field(default=1, ge=1)
     tasks: tuple[Task, ...] = ()
     edges: tuple[DependencyEdge, ...] = ()
+    completed_prerequisites: tuple[str, ...] = ()
+    completed_count: int = Field(default=0, ge=0)
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     @model_validator(mode="after")
@@ -67,7 +69,7 @@ class TaskList(BaseModel):
         ids = [task.id for task in self.tasks]
         if len(ids) != len(set(ids)):
             raise ValueError("Task ids must be unique")
-        known = set(ids)
+        known = set(ids) | set(self.completed_prerequisites)
         edge_keys = {
             (edge.prerequisite, edge.dependent) for edge in self.edges
         }
@@ -134,6 +136,8 @@ class TaskList(BaseModel):
             next_id=self.next_id,
             tasks=self.tasks,
             edges=(*self.edges, edge),
+            completed_prerequisites=self.completed_prerequisites,
+            completed_count=self.completed_count,
         )
 
     def prerequisites(self, task_id: str) -> tuple[str, ...]:

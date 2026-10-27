@@ -3893,7 +3893,12 @@ async def test_completed_todos_do_not_implicitly_complete_goal(
         todos = await skills_client.get(
             "/sessions/goal-todo-not-terminal/threads/t/todos"
         )
-        assert todos.json()["tasks"][0]["status"] == "completed"
+        assert todos.json()["tasks"] == []
+        assert todos.json()["completed_count"] == 1
+        completed = await skills_client.get(
+            "/sessions/goal-todo-not-terminal/threads/t/todos/completed"
+        )
+        assert completed.json()["tasks"][0]["status"] == "completed"
     finally:
         await skills_client.post(
             "/sessions/goal-todo-not-terminal/threads/t/interrupt"
@@ -5163,7 +5168,17 @@ async def test_todo_and_usage_survive_http_close_resume(
     ]
     assert len(completed_events) == 1
     assert completed_events[0].snapshot.version == 2
-    assert completed_events[0].snapshot.tasks[0].status == "completed"
+    assert completed_events[0].snapshot.tasks == ()
+    assert completed_events[0].snapshot.completed_count == 1
+    active_todos = (await client.get("/sessions/todo-recovery/threads/main/todos")).json()
+    assert active_todos["tasks"] == []
+    assert active_todos["completed_count"] == 1
+    page = await client.get("/sessions/todo-recovery/threads/main/todos/completed", params={"limit": 1})
+    assert page.status_code == 200
+    assert [task["id"] for task in page.json()["tasks"]] == ["1"]
+    assert page.json()["next_after"] == 1
+    assert (await client.get("/sessions/todo-recovery/threads/main/todos/completed", params={"after": 1})).json()["tasks"] == []
+    assert (await client.get("/sessions/todo-recovery/threads/main/todos/completed", params={"limit": 401})).status_code == 400
     final_updates = [
         event for event in second_turn_events if isinstance(event, UsageUpdated)
     ]
@@ -5194,7 +5209,7 @@ async def test_todo_and_usage_survive_http_close_resume(
     ]
     assert "Updated task #1" in projections[-1]
     assert (
-        await client.get("/sessions/todo-recovery/threads/main/todos")
+        await client.get("/sessions/todo-recovery/threads/main/todos/completed")
     ).json()["tasks"][0]["status"] == "completed"
 
 @pytest.mark.asyncio

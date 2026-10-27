@@ -1650,3 +1650,16 @@ def test_releasing_a_page_that_repeated_held_entries_removes_only_what_it_added(
     release_oldest_loaded_page(state)
 
     assert state.timeline.ids() == ("u3",)
+
+
+def test_task_notice_counts_completed_history_with_active_tasks() -> None:
+    from XBotv2.todolist.api.events import TaskChanged
+    from XBotv2.todolist.api.models import Task, TaskList
+    from XBotv2.tui.impl.events import TaskChangedReceived
+
+    state = session(TaskChangedReceived(payload=TaskChanged(snapshot=TaskList(
+        tasks=(Task(id="3", subject="Remaining"),), completed_count=2,
+    ))))
+    notice = state.timeline.get("tasks:active")
+    assert isinstance(notice, NoticeEntry)
+    assert notice.text == "Tasks 2/3 completed"

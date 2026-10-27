@@ -44,8 +44,11 @@ class PersistenceResources:
         self._locks = {}
         self._claims = {}
         self._preparations = {}
+        self._preparation_lock = asyncio.Lock()
+        self._failed_preparation = None
         self._closing = False
         self._draining = False
+        self._shutdown_drained = False
 
     def _admit(self, session_id=None):
         if (
@@ -93,6 +96,22 @@ class PersistenceResources:
             task.cancel()
         if accepted:
             await asyncio.gather(*(done.wait() for _, done in accepted))
+        await self.worker.release(
+            self.paths(session_id).database_file if session_id is not None else None
+        )
+        if session_id is None:
+            async with self._preparation_lock:
+                await self.cleanup_preparation()
+
+    async def cleanup_preparation(self):
+        if self._failed_preparation is not None:
+            import shutil
+
+            path, root = self._failed_preparation
+            await self.worker.release(path)
+            if root.exists():
+                await file_io(shutil.rmtree, root)
+            self._failed_preparation = None
 
     @asynccontextmanager
     async def handle_use(self, session_id, binding, *, write=False):
@@ -265,7 +284,9 @@ class PersistenceResources:
 
     async def close(self):
         self._closing = True
-        await self.drain()
+        if not self._shutdown_drained:
+            await self.drain()
+            self._shutdown_drained = True
         await self.worker.close()
 
 
