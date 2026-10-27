@@ -12,14 +12,24 @@ before their first persistent business mutation; the backend does not inject a
 A session owner holds the OS writer claim; its thread descendants share that
 claim. Independent roots, including roots in the same process, cannot share it.
 Draining rejects new work and waits for accepted I/O leases to actually exit.
-The worker retains at most one SQLite connection, switching it when the path or
-file identity changes. Transactions still commit per operation; failures roll
-back and discard the connection. Session drain and prepared-copy publication
+The worker retains a bounded LRU of SQLite connections, defaulting to 32 and
+configurable with `connection_limit` (at least 1). This bounds retained
+connections, not the number of sessions. File identity changes discard the
+affected connection. Transactions still commit per operation; failures roll
+back and discard only the affected connection. Session drain and prepared-copy publication
 close the relevant connection before releasing ownership or renaming storage.
-Process disposal closes the remaining connection on the worker thread.
-Preparations are serialized. If a staging connection cannot close, its one
-unpublished directory is retained and the next preparation or process drain
-retries closing it before removing the directory.
+Retaining connections avoids repeating SQLite's
+[last-connection WAL cleanup](https://sqlite.org/wal.html#avoiding_excessively_large_wal_files)
+on interleaved database access. The initial budget accommodates the 16-session
+reference workload and its process database; it is not a universal optimum.
+SQLite page caches and statement memory are separate from the record-byte cache.
+Process disposal attempts to close every remaining connection on the worker
+thread, reports all close failures, and retains failed entries for a later retry.
+Preparations are serialized. If a preparation connection cannot close, its
+temporary directory and writer claims remain owned; the next preparation or
+process drain closes the affected connections before cleanup and release. If a
+session deletion cannot drain, its writer claim remains held until the process
+worker has closed during disposal.
 Fork copies stream prefixes using pages of cuts from the frozen staging
 database; the prepared copy reads an individual cut from that same snapshot.
 Root `pre_stop` runs after children have stopped. Session claims are released

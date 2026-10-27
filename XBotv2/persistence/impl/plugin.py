@@ -18,6 +18,7 @@ class PersistenceConfig(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     artifact_cache_bytes: int = Field(default=64 * 1024 * 1024, ge=0)
     record_cache_bytes: int = Field(default=16 * 1024 * 1024, ge=0)
+    connection_limit: int = Field(default=32, ge=1)
     queue_operations: int = Field(default=64, ge=1)
     queue_bytes: int = Field(default=16 * 1024 * 1024, ge=4096)
     replay_records: int = Field(default=128, ge=1, le=1000)
@@ -119,11 +120,14 @@ class PersistenceResources:
         if self._failed_preparation is not None:
             import shutil
 
-            path, root = self._failed_preparation
-            await self.worker.release(path)
+            paths, root, claims = self._failed_preparation
+            for path in paths:
+                await self.worker.release(path)
             self.record_cache.drop_root(root)
             if root.exists():
                 await file_io(shutil.rmtree, root)
+            for claim in claims:
+                claim.release()
             self._failed_preparation = None
 
     @asynccontextmanager
@@ -337,6 +341,8 @@ class PersistenceResources:
             self._shutdown_drained = True
         await self.artifact_cache.close()
         await self.worker.close()
+        for claim in tuple(self._claims.values()):
+            claim.release()
 
 
 async def mount_process(ctx, config):

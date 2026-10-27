@@ -1170,12 +1170,10 @@ class SessionManager(SessionsPort):
             )
         await self.close_session(session_id, reason="session_deleted")
         ownership = self._root.require(PERSISTENCE).acquire(session_id)
-        try:
-            root = self.paths.session(session_id).root
-            if root.exists() or root.is_symlink():
-                await self._root.require(PERSISTENCE).delete_session(session_id)
-        finally:
-            ownership.release()
+        root = self.paths.session(session_id).root
+        if root.exists() or root.is_symlink():
+            await self._root.require(PERSISTENCE).delete_session(session_id)
+        ownership.release()
         self._published_summaries.pop(session_id, None)
         self._log.info("session.deleted", session_id=session_id)
         await self._events.emit(

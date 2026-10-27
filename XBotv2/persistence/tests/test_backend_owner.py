@@ -9,6 +9,8 @@ from XBotv2.loader.api.contracts import PluginTree,PluginEntry
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
 from XBotv2.persistence.api.contracts import PERSISTENCE
+from XBotv2.persistence.impl.session_lock import acquire_session
+from XBotv2.core.api.errors import OperationError
 
 async def test_custom_owner_transaction_rollout_replay_and_lifetime(tmp_path):
     root=Context()
@@ -131,14 +133,17 @@ async def test_failed_staging_release_preserves_directory_until_connection_close
 
     monkeypatch.setattr(sqlite3, 'connect', controlled)
     try:
-        with pytest.raises(ExceptionGroup, match='cleanup failed'):
+        with pytest.raises(RuntimeError, match='release fault'):
             async with backend.prepare_session('target') as prepared:
                 staging = prepared.staging
                 await backend.state('target').namespace('test').set('value', 'staged')
                 fail_close.set()
         assert staging.database_file.exists()
         assert not paths.session('target').root.exists()
-        with pytest.raises(ExceptionGroup, match='cleanup failed'):
+        for locked in (paths.session('target').root, staging.root):
+            with pytest.raises(OperationError, match='already owned'):
+                acquire_session(locked, label='competing runtime')
+        with pytest.raises(RuntimeError, match='release fault'):
             async with backend.prepare_session('other'):
                 pytest.fail('must retry the failed cleanup before preparing')
         assert staging.database_file.exists()
@@ -151,7 +156,48 @@ async def test_failed_staging_release_preserves_directory_until_connection_close
         assert not staging.database_file.exists()
         assert not staging.root.exists()
         assert not staging.runtime.data_dir.exists()
+        owner = acquire_session(paths.session('target').root, label='after cleanup')
+        owner.release()
     finally:
         fail_close.clear()
+        await root.close()
+        loader.close()
+
+
+async def test_fork_source_release_failure_retains_claims_until_cleanup(tmp_path, monkeypatch):
+    root = Context()
+    paths = RuntimePaths.from_data_dir(tmp_path / 'data')
+    root.set('runtime_paths', paths)
+    root.set('runtime_log', DEFAULT_RUNTIME_LOG)
+    loader = create_loader()
+    await loader.mount(root, PluginTree([PluginEntry('persistence', 'persistence')]), kind='process', required=(PERSISTENCE,))
+    backend = root.require(PERSISTENCE)
+    claim = backend.acquire('source')
+    await backend.state('source').namespace('test').set('value', 'source')
+    await backend.worker.release(paths.session('source').database_file)
+    claim.release()
+    original = backend.worker.release
+    fail = True
+
+    async def release(path=None):
+        if fail and path == paths.session('source').database_file:
+            raise RuntimeError('source release fault')
+        await original(path)
+
+    monkeypatch.setattr(backend.worker, 'release', release)
+    try:
+        with pytest.raises(RuntimeError, match='source release fault'):
+            async with backend.copy_session('source', 'target'):
+                pass
+        for sid in ('source', 'target'):
+            with pytest.raises(OperationError, match='already owned'):
+                acquire_session(paths.session(sid).root, label='competing runtime')
+        fail = False
+        async with backend.prepare_session('other'):
+            for sid in ('source', 'target'):
+                owner = acquire_session(paths.session(sid).root, label='after cleanup')
+                owner.release()
+    finally:
+        fail = False
         await root.close()
         loader.close()

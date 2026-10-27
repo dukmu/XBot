@@ -191,36 +191,30 @@ async def _prepare_copy(resources, source_id, target_id):
         prepared = PreparedCopy(resources, target_id, staging)
         yield prepared
     finally:
-        staging_released = False
+        claims = tuple(claim for claim in (staging_claim, target_claim, source_claim) if claim is not None)
+        paths = [staging.database_file]
+        if source_claim is not None:
+            paths.append(source.database_file)
         try:
-            try:
-                await resources.worker.release(staging.database_file)
-                staging_released = True
-                resources.record_cache.drop_root(staging.root)
-            except BaseException:
-                resources._failed_preparation = (staging.database_file, staging_root)
-                raise
-            finally:
-                if source_claim is not None:
-                    await resources.worker.release(source.database_file)
-        finally:
+            for path in paths:
+                await resources.worker.release(path)
+            resources.record_cache.drop_root(staging.root)
             if (
-                staging_released
-                and prepared is not None
+                prepared is not None
                 and not prepared.published
                 and not staging.root.exists()
                 and final.root.exists()
             ):
                 await file_io(shutil.rmtree, final.root, True)
-            if staging_claim is not None:
-                staging_claim.release()
+            await file_io(shutil.rmtree, staging_root, True)
+        except BaseException:
+            resources._failed_preparation = (paths, staging_root, claims)
+            raise
+        else:
+            for claim in claims:
+                claim.release()
+        finally:
             resources._preparations.pop(target_id, None)
-            if target_claim is not None:
-                target_claim.release()
-            if source_claim is not None:
-                source_claim.release()
-            if staging_released:
-                await file_io(shutil.rmtree, staging_root, True)
 
 
 def _delete(paths, session_id):

@@ -81,3 +81,39 @@ async def test_delete_unmaterialized_session(tmp_path):
         assert not paths.session("empty").root.exists()
     finally:
         await host.close()
+
+
+async def test_delete_drain_failure_keeps_claim_until_process_close(tmp_path, monkeypatch):
+    from XBotv2.persistence.api.contracts import PERSISTENCE
+    from XBotv2.persistence.impl.session_lock import acquire_session
+
+    paths = RuntimePaths.from_data_dir(tmp_path / 'data')
+    host = await open_runtime(paths=paths)
+    backend = host.require(PERSISTENCE)
+    original = backend.worker.release
+    fail = False
+
+    async def release(path=None):
+        if fail and path == paths.session('owned').database_file:
+            raise RuntimeError('delete drain fault')
+        await original(path)
+
+    monkeypatch.setattr(backend.worker, 'release', release)
+    try:
+        await host.sessions.open_session(
+            session_id='owned', thread_id='main', provider_name='default',
+            workspace_root=str(tmp_path), no_plugins=True, llm_override=MockLLM(),
+        )
+        await host.sessions.rename_session('owned', 'persisted')
+        await host.sessions.close_session('owned')
+        fail = True
+        with pytest.raises(RuntimeError, match='delete drain fault'):
+            await host.sessions.delete_session('owned')
+        assert paths.session('owned').database_file.exists()
+        with pytest.raises(OperationError, match='already owned'):
+            acquire_session(paths.session('owned').root, label='competing runtime')
+    finally:
+        fail = False
+        await host.close()
+    owner = acquire_session(paths.session('owned').root, label='after close')
+    owner.release()

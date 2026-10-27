@@ -116,7 +116,7 @@ async def test_rollback_and_close_errors_are_delivered_without_killing_worker(
         await worker.close()
 
 
-async def test_single_connection_reuse_release_and_replaced_database(tmp_path, monkeypatch):
+async def test_connection_reuse_release_and_replaced_database(tmp_path, monkeypatch):
     connect = sqlite3.connect
     opened = []
 
@@ -194,19 +194,90 @@ async def test_release_close_error_reaches_caller_and_worker_continues(tmp_path,
     path = tmp_path / 'state.sqlite3'
     try:
         assert await worker.call(path, lambda c: 1, create=True) == 1
-        with pytest.raises(ExceptionGroup, match='cleanup failed') as failure:
+        with pytest.raises(RuntimeError, match='close fault'):
             await worker.release(path)
-        assert all('close fault' in str(exc) for exc in failure.value.exceptions)
-        with pytest.raises(ExceptionGroup, match='cleanup failed'):
-            await worker.call(tmp_path / 'other.sqlite3', lambda c: 2, create=True)
-        assert count == 1
+        assert await worker.call(tmp_path / 'other.sqlite3', lambda c: 2, create=True) == 2
+        assert count == 2
         allow_close.set()
         assert await worker.call(path, lambda c: 2) == 2
         allow_close.clear()
-        with pytest.raises(ExceptionGroup, match='cleanup failed'):
+        with pytest.raises(ExceptionGroup, match='connection cleanup failed'):
             await worker.close()
         assert worker._thread.is_alive()
         allow_close.set()
+    finally:
+        allow_close.set()
+        await worker.close()
+
+
+async def test_connection_lru_and_targeted_release(tmp_path, monkeypatch):
+    connect = sqlite3.connect
+    opened = []
+    closed = []
+
+    class Tracked(sqlite3.Connection):
+        def close(self):
+            closed.append(self.name)
+            super().close()
+
+    def counted(path, *args, **kwargs):
+        kwargs['factory'] = Tracked
+        connection = connect(path, *args, **kwargs)
+        connection.name = str(path).split('?')[0].removeprefix('file://')
+        opened.append(connection.name)
+        return connection
+
+    monkeypatch.setattr(sqlite3, 'connect', counted)
+    worker = DatabaseWorker(StorageLimits(connection_limit=2))
+    a, b, c = (tmp_path / f'{name}.sqlite3' for name in 'abc')
+    try:
+        for path in (a, b, a, c):
+            await worker.call(path, lambda connection: 1, create=True)
+        assert opened == [str(a), str(b), str(c)]
+        assert closed == [str(b)]
+        await worker.release(a)
+        assert closed == [str(b), str(a)]
+        await worker.call(c, lambda connection: 1)
+        assert len(opened) == 3
+        await worker.release()
+        assert closed == [str(b), str(a), str(c)]
+    finally:
+        await worker.close()
+
+
+async def test_release_all_closes_other_connections_after_failure(tmp_path, monkeypatch):
+    connect = sqlite3.connect
+    allow_close = threading.Event()
+    closed = []
+    broken = tmp_path / 'broken.sqlite3'
+    healthy = tmp_path / 'healthy.sqlite3'
+
+    class Tracked(sqlite3.Connection):
+        def close(self):
+            if self.name == str(broken) and not allow_close.is_set():
+                raise RuntimeError('close fault')
+            super().close()
+            closed.append(self.name)
+
+    def controlled(path, *args, **kwargs):
+        kwargs['factory'] = Tracked
+        connection = connect(path, *args, **kwargs)
+        connection.name = str(path)
+        return connection
+
+    monkeypatch.setattr(sqlite3, 'connect', controlled)
+    worker = DatabaseWorker(StorageLimits())
+    try:
+        await worker.call(broken, lambda c: 1, create=True)
+        await worker.call(healthy, lambda c: 1, create=True)
+        with pytest.raises(ExceptionGroup, match='connection cleanup failed') as failure:
+            await worker.release()
+        assert len(failure.value.exceptions) == 1
+        assert 'close fault' in str(failure.value.exceptions[0])
+        assert closed == [str(healthy)]
+        allow_close.set()
+        await worker.release()
+        assert closed == [str(healthy), str(broken)]
     finally:
         allow_close.set()
         await worker.close()
