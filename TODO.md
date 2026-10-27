@@ -214,3 +214,7 @@
 - [x] 主代理再次对比基线AST，误删的有效验收已恢复到源码：HTTP原108个test函数→105，仅退出2项memory-only、1项旧receipt包装和1项close丢输入（新增保留已接受inbox的替代项）；startup原55→53，factory优先级改为公开模型覆盖验收，另外退出2项memory-only。恢复后的合跑尚有失败正在处理，此条不代表108个参数项已全绿。
 - [x] 主代理读取`/tmp/xbot-scopes-multi-server.json`：2个真实监听、2次请求，第二owner拒绝、原输入保真和另一个session完成的invariant均为true、errors为空，进程FD为7→7。该中间工况不代表不同配置catalog驻留或最终修改后的资源上界。
 - [ ] 第3批明确修正空会话元数据：当前rename依赖persisted_thread_ids，空活跃main尚未物化会报main_thread_not_found；DeferredMetadata也不能独立保证只改title的事实被保存。SQLite session行应把明确的用户title/workspace事实与首条聊天分离，不为中间格式新增另一套持久状态。
+- [x] 主代理发现并由Sol修复创建中关闭的具体窗口：thread创建取消原本不取消被shield保护的session owner初始化，可能在close返回后晚注册owner/持锁；现在关闭覆盖并等待_session_opening，普通等待者取消仍不破坏共享打开。受控session facet验收已进源码；`/tmp/xbot-scopes-lifecycle-focused.log`为16项scope与7项恢复/取消组合，共23 passed。
+- [x] 恢复后HTTP108个参数项已通过；主代理读取`/tmp/xbot-scopes-http-startup-final.log`的实际结果为166 passed、1 failed，失败属于startup的默认工具注册用例，不能把日志文件名中的final当成冻结完成。core入口迁移中另有36 passed、5 failed（`/tmp/xbot-scopes-core-routing.log`），继续按实际调用与目标语义修正。
+- [ ] SessionManager最后的业务初始化调用正在退出：agents自行通过现有ready完成初始化，XCore补scope的ready边界，loader按真实owner的activation错误区分required/optional。必须覆盖嵌套THREAD_INITIALIZED回调失败后的后续初始化与最终工具投影，不给异常附加owner属性，不改变正常事件的错误传播，不让后台任务继承永久的初始化错误隔离语义。生产代码尚未冻结。
+- [ ] 共享缓存的准确现状：AgentCatalog仍按thread持有已展开定义，原Markdown解析由模块级lru_cache(128)共享；这不是进程共享完整可变catalog。第3/5批与provider目录/连接缓存一起落实明确owner、按字节预算和来源失效清退，不把thread变量展开值错误共享。
