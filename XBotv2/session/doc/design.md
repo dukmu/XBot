@@ -16,6 +16,10 @@ A session owner holds one OS writer lock; child scopes share that owner.
 Independent roots, including roots in the same PID, cannot share its claim.
 Different sessions may run concurrently.
 
+An active session with no durable evidence is absent from the catalog. Its
+first durable publication emits one added event; later updates emit changed
+events, including after the bounded summary cache evicts that session.
+
 Concurrent opens of the same `(session_id, thread_id)` await one shared task;
 canceling one caller does not cancel initialization. No global lock surrounds
 long initialization. Scope state stores Contexts and ownership tasks/markers.

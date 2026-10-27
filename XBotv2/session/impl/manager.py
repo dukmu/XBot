@@ -96,6 +96,7 @@ class SessionManager(SessionsPort):
         self._repository = SessionRepository(events.require(PERSISTENCE))
         self._events = events
         self._published_summaries: OrderedDict[str, SessionSummary] = OrderedDict()
+        self._unpublished_sessions: set[str] = set()
         self.idle_timeout = idle_timeout
         self.reap_interval = reap_interval
         self._root = events.root
@@ -149,6 +150,9 @@ class SessionManager(SessionsPort):
                 )
                 ctx.provide(SESSION_INFO, SessionInfo(session_id, workspace))
                 try:
+                    if not session_has_evidence(self.paths, session_id):
+                        self._unpublished_sessions.add(session_id)
+                        ctx.dispose(lambda: self._unpublished_sessions.discard(session_id))
                     try:
                         await loader.mount(ctx, tree, kind="session")
                     except LoadError as error:
@@ -311,13 +315,15 @@ class SessionManager(SessionsPort):
         except Exception:  # noqa: BLE001 — a vanished session needs no catalog event
             return
         previous = self._published_summaries.get(session_id)
-        if previous == summary:
+        if previous == summary and session_id not in self._unpublished_sessions:
             self._published_summaries.move_to_end(session_id)
             return
         self._remember_summary(session_id, summary)
+        added = session_id in self._unpublished_sessions
+        self._unpublished_sessions.discard(session_id)
         await self._events.emit(
             SESSION_RESOURCE_CHANGED,
-            SessionResourceChanged(summary, added=False),
+            SessionResourceChanged(summary, added=added),
         )
 
     async def _close_runtime(self, scope: Context, reason: str) -> None:
@@ -540,7 +546,6 @@ class SessionManager(SessionsPort):
         )
         try:
             session_paths = self.paths.session(session_id)
-            session_preexisting = session_paths.root.is_dir()
             persisted_thread = await self._repository.has_thread(session_id, thread_id)
             if mode == "resume" and not persisted_thread:
                 raise SessionNotFound(f"{session_id}/{thread_id}")
@@ -642,11 +647,13 @@ class SessionManager(SessionsPort):
             if mode == "resume" or session_has_evidence(self.paths, session_id):
                 opened_summary = await self.session_summary(session_id)
                 self._remember_summary(session_id, opened_summary)
+                added = session_id in self._unpublished_sessions
+                self._unpublished_sessions.discard(session_id)
                 await self._events.emit(
                     SESSION_RESOURCE_CHANGED,
                     SessionResourceChanged(
                         opened_summary,
-                        added=not session_preexisting,
+                        added=added,
                     ),
                 )
             return scope

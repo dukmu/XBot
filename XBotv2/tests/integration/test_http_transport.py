@@ -536,7 +536,10 @@ async def test_blank_session_projection_tracks_turn_and_clear(
     listed = (await client.get("/sessions")).json()["sessions"]
     assert all(item["session_id"] != "blank-summary" for item in listed)
     workspace_listing = (await client.get("/workspaces")).json()["items"]
-    assert all("blank-summary" not in item["session_ids"] for item in workspace_listing)
+    for workspace in workspace_listing:
+        members = await client.get(f"/workspaces/{workspace['workspace_id']}/sessions")
+        assert members.status_code == 200
+        assert all(item["session_id"] != "blank-summary" for item in members.json()["sessions"])
 
     workspace_events = http_app.state.test_context.workspace_events
     subscription = workspace_events.subscribe(workspace_events.sequence)
@@ -2083,20 +2086,10 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
     # This subscriber must exist before the turn starts; the event stream is
     # live and a new subscription after completion does not replay history.
     ev_stream = ctx.require(THREAD_EVENTS).subscribe()
-    approvals = ctx.require(THREAD_EVENTS).subscribe()
-    async def approve_tool():
-        from XBotv2.permissions.api.models import PermissionRequest, Allowed
-        async for frame in approvals:
-            if isinstance(frame.event, PermissionRequest):
-                ctx.require(CLIENT_EVENTS).resolve(frame.event.interaction_id, Allowed(scope="once"))
-                break
-        await approvals.aclose()
-    approved = asyncio.create_task(approve_tool())
     first_task = asyncio.create_task(collect(
         _runtime_command(ctx, "start the tool", "req-1")
     ))
     await asyncio.wait_for(tool_started.wait(), timeout=5)
-    await approved
     second_task = asyncio.create_task(collect(
         _runtime_command(ctx, "also include this", "req-2")
     ))
@@ -2125,6 +2118,7 @@ async def test_queued_user_message_enters_after_complete_tool_batch(http_app) ->
                 and msg.record.root.content == "also include this"
             ):
                 break
+    await ev_stream.aclose()
     assert msg.record.root.id
     assert any(
         isinstance(event, AssistantCompleted)
@@ -2386,12 +2380,16 @@ async def test_workspace_sse_updates_and_replays_across_http_clients(http_app) -
                 if item["workspace_id"]
                 == live["catalog/workspace-changed"]["payload"]["workspace"]["workspace_id"]
             )
+            members = await mutation_client.get(
+                f"/workspaces/{workspace['workspace_id']}/sessions"
+            )
+            members.raise_for_status()
     finally:
         server.should_exit = True
         server_thread.join(timeout=3.0)
 
     assert live["catalog/session-added"]["payload"]["session"]["session_id"] == "host-sync"
-    assert workspace["session_ids"][0] == "host-sync"
+    assert members.json()["sessions"][0]["session_id"] == "host-sync"
     assert {
         event_type: frame["sequence"] for event_type, frame in replayed.items()
     } == {
