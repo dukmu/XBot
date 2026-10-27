@@ -28,7 +28,6 @@ from functools import partial
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, AsyncIterator, Literal
-
 import httpx
 import pytest
 import pytest_asyncio
@@ -38,11 +37,11 @@ from openai.types.chat import ChatCompletionChunk
 from pydantic import BaseModel, ValidationError
 from XBotv2.jobs import Running
 from XBotv2.jobs.protocol import JobCompletedEvent
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.errors import OperationError
 from XBotv2.loader import PluginOverlay
-from XBotv2.agentloop import AllTools
-from XBotv2.core.tools import (
+from XBotv2.agentloop.api.contracts import AllTools, InboxItem, RuntimeInput
+from XBotv2.core.api.tools import (
     Tool,
     ToolCall,
     ToolCancelled,
@@ -53,7 +52,6 @@ from XBotv2.core.tools import (
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellJobSpec, ShellRunner, start_shell
 from httpx import ASGITransport
-
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.openai import OpenAICompatibleProvider
 from XBotv2.interactions.models import Answered
@@ -61,25 +59,18 @@ from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.session import (
-    InteractionReceipt,
-    OpenSession,
-    OpenThread,
-    SendMessage,
-)
-from XBotv2.session.contracts import SessionEvent
-from XBotv2.session.contracts import SessionResourceChanged
-from XBotv2.agentloop.outputs import (
+from XBotv2.session import InteractionReceipt, OpenSession, OpenThread, SendMessage
+from XBotv2.session.contracts import SessionEvent, SessionResourceChanged
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,
     LoopTurnStarted,
 )
-from XBotv2.agentloop.contracts import InboxItem, RuntimeInput
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderUser
-from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.domain import InboxTarget, TokenCounters, TurnScope, UsageSnapshot
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderUser
+from XBotv2.core.api.artifacts import ArtifactRef
+from XBotv2.core.api.domain import InboxTarget, TokenCounters, TurnScope, UsageSnapshot
 from XBotv2.session.events import (
     InputAcceptedEvent,
     InputClaimedEvent,
@@ -87,18 +78,11 @@ from XBotv2.session.events import (
     MessagePublishedEvent,
     QueueReplacedEvent,
 )
-from XBotv2.session.records import (
-    AssistantRecord,
-    HumanInputRecord,
-    ToolRecord,
-    project_message,
-)
-from XBotv2.core.messages import AssistantMessage, HumanInputMessage
+from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord, project_message
+from XBotv2.core.api.messages import AssistantMessage, HumanInputMessage
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.interactions import ClientNotice
-from XBotv2.session.runtime import (
-    TurnEventRouter,
-)
+from XBotv2.session.runtime import TurnEventRouter
 from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.usage.api.events import UsageUpdated
 
@@ -1829,7 +1813,7 @@ async def test_http_resume_leftover_thread_dir_does_not_create_empty_session(
     tmp_path: Path,
 ) -> None:
     """A leftover state directory without metadata must not reopen empty."""
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     data_dir = RuntimePaths.from_data_dir(http_app.state.paths.data_dir)
     leftover = (
@@ -1996,7 +1980,7 @@ async def test_http_open_then_close_without_input_leaves_no_session_data(
     http_app,
 ) -> None:
     """An idle TUI attachment must not create a durable empty conversation."""
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     session_id = "unused-no-input"
     paths = RuntimePaths.from_data_dir(http_app.state.paths.data_dir)
@@ -3145,7 +3129,7 @@ async def test_http_message_request_id_reaches_engine_hooks_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from XBotv2.agentloop import Events
+    from XBotv2.agentloop.api.events import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -3191,7 +3175,7 @@ async def test_http_generated_request_id_reaches_engine_and_sse(
     client: httpx.AsyncClient,
     http_app,
 ) -> None:
-    from XBotv2.agentloop import Events
+    from XBotv2.agentloop.api.events import Events
 
     open_resp = await client.post(
         "/sessions",
@@ -4760,7 +4744,7 @@ async def test_real_http_stream_forwards_external_plugin_runtime_event(tmp_path:
 
 @pytest.mark.asyncio
 async def test_real_http_stream_uses_provider_resources_on_the_owning_loop(tmp_path):
-    from XBotv2.core.stream import TextDelta
+    from XBotv2.core.api.stream import TextDelta
 
     response_ready = asyncio.get_running_loop().create_future()
 
@@ -5695,7 +5679,7 @@ async def test_subagent_message_and_followup_share_one_hosted_child_thread(
     skills_client: httpx.AsyncClient,
 ) -> None:
     """All collaboration paths use one server-owned child and inbox."""
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
 
     workspace = Path(skills_app.state.workspace_root)
     agents = workspace / ".agents"
@@ -6010,7 +5994,7 @@ async def test_followup_resumes_the_same_child_after_server_restart(
     tmp_path: Path,
 ) -> None:
     """Persisted child identity, not an in-memory launcher cache, owns resume."""
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     workspace = tmp_path / "workspace"
@@ -6237,8 +6221,6 @@ async def test_http_compact_command_commits_history_and_streams_typed_events(
         )
 
 
-
-
 def _goal_request_text(request) -> str:
     return "\n".join(
         part.text
@@ -6255,7 +6237,7 @@ async def test_goal_agent_tools_create_read_and_complete_real_state(
     skills_app,
     terminal_status: str,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import BlockedGoal, CompleteGoal
 
     class GoalToolsLLM(MockLLM):
@@ -6353,7 +6335,7 @@ async def test_http_goal_continues_in_session_until_model_marks_it_complete(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import CompleteGoal
 
     class CompletingGoalLLM(MockLLM):
@@ -6454,7 +6436,7 @@ async def test_completed_todos_do_not_implicitly_complete_goal(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import ActiveGoal
 
     class TodoGoalLLM(MockLLM):
@@ -6517,7 +6499,7 @@ async def test_goal_interrupt_and_cold_resume_do_not_restart_stale_work(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import ActiveGoal
 
     class BlockingContinuationLLM(MockLLM):
@@ -6591,7 +6573,7 @@ async def test_goal_clear_during_claimed_turn_drops_stale_continuation(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import NoGoal
 
     class ClaimedGoalLLM(MockLLM):
@@ -6642,7 +6624,7 @@ async def test_goal_identity_survives_compaction_and_explicit_resume(
     skills_client: httpx.AsyncClient,
     skills_app,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import CompleteGoal, PausedGoal
 
     class CompactGoalLLM(MockLLM):
@@ -6767,7 +6749,7 @@ async def test_goal_waits_for_background_job_and_running_steer_then_continues_on
     skills_app,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from XBotv2.core.stream import ModelCompleted
+    from XBotv2.core.api.stream import ModelCompleted
     from XBotv2.goal.api.models import CompleteGoal
 
     release_job = asyncio.Event()
@@ -6984,7 +6966,6 @@ Follow this test instruction: $ARGUMENTS
     )
 
 
-
 @pytest.mark.asyncio
 async def test_http_policy_patch_persists_sandbox_to_yaml(
     client: httpx.AsyncClient,
@@ -7131,8 +7112,6 @@ async def test_http_policy_patch_rejects_invalid_sandbox_values(
     )
     assert bad_network.status_code == 400
     assert bad_network.json()["code"] == "invalid_request"
-
-
 
 
 @pytest.mark.asyncio

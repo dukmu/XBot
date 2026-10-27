@@ -8,9 +8,7 @@ registering plugin unloads.
 from __future__ import annotations
 
 from typing import Literal
-
 from pydantic import JsonValue
-
 from xcore import bound_effect
 from xcore.api.context import Context
 from XBotv2.commands.contracts import (
@@ -33,7 +31,7 @@ async def mount_http(ctx: Context) -> None:
         owner="xbot.commands.http",
         router=build_commands_router(sessions=ctx.sessions),
     )
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.api.operations import EmptyRequest
 
 
 class CommandsService(CommandsPort):

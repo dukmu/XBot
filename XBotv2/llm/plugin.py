@@ -11,16 +11,11 @@ provider-neutral port to the loop.
 
 from __future__ import annotations
 
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.llm.service import LlmService, ModelService
 from XBotv2.llm.commands import build_llm_commands
-from XBotv2.core.operations import EmptyRequest
-from XBotv2.llm.contracts import (
-    LlmConfig,
-    LIST_PROVIDERS,
-    ProviderCatalog,
-)
+from XBotv2.core.api.operations import EmptyRequest
+from XBotv2.llm.contracts import LlmConfig, LIST_PROVIDERS, ProviderCatalog
 from XBotv2.llm.protocol import build_router
 from XBotv2.server import contribute_router
 
@@ -91,7 +86,6 @@ class ProviderCatalogHandler:
 
     def list_providers(self, _request: EmptyRequest) -> ProviderCatalog:
         return self._service.catalog()
-
 
 
 plugin = LlmComponent()

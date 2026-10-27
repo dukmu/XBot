@@ -4,9 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pydantic import BaseModel
-
-from XBotv2.core.metadata import ThreadMetadata
-from XBotv2.session.contracts import SessionRuntimeState
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.agentloop.api.state import ThreadExecution
 
 
 APPLICATION_INITIALIZED = "session/init"
@@ -15,7 +14,7 @@ RUNTIME_EVENT = "runtime/event"
 
 @dataclass(frozen=True, slots=True)
 class ApplicationInitialized:
-    session: SessionRuntimeState
+    session: ThreadExecution
     metadata: ThreadMetadata
 
 

@@ -53,7 +53,7 @@ model advertises it.
 ## Streaming contract
 
 `ModelPort.astream(request: ModelRequest)` yields `ModelStreamEvent` values from
-`XBotv2.core.stream`:
+`XBotv2.core.api.stream`:
 
 - `TextDelta(text)` for user-facing generated text;
 - `ReasoningDelta(text)` for reasoning content, when emitted by the provider;

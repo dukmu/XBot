@@ -9,28 +9,25 @@ it without importing or depending on this plugin.
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS, ToolsPort
 from collections.abc import Awaitable, Callable, Sequence
 import asyncio
 from pydantic import JsonValue, TypeAdapter
-from xcore import Context
+from xcore.api.context import Context
 from xcore.state import StateService
-
-from XBotv2.agents import (
-    AGENT_CONFIGURED,
-    AgentCatalogPort,
-    AgentConfigured,
-    AgentDefinition,
-)
+from XBotv2.agents import AGENT_CONFIGURED, AgentCatalogPort, AgentConfigured, AgentDefinition
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.interactions import InteractionReceipt, InteractionRegistration
 from XBotv2.permissions.contracts import (
     PermissionDecision,
     PermissionPolicy,
     PermissionRule,
     PermissionsPort,
+    PermissionRequest,
+    NamedPermission,
 )
 from XBotv2.permissions import (
     Allowed,
@@ -41,16 +38,11 @@ from XBotv2.permissions import (
 )
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.commands import build_permissions_commands
-from XBotv2.permissions.rules import (
-    permission_rule_for_tool_call,
-    requested_permission_rule,
-)
+from XBotv2.permissions.rules import permission_rule_for_tool_call, requested_permission_rule
 from XBotv2.permissions.system import PermissionSystem
-from XBotv2.permissions.contracts import PermissionRequest, NamedPermission
 from XBotv2.permissions.approval import ApprovalService
 from XBotv2.permissions.protocol import PermissionResponseRecorded
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.contracts import ToolsPort
+from XBotv2.agentloop.api.events import Events
 
 
 def _permission_response_recorded(
@@ -211,7 +203,7 @@ class PermissionsComponent:
         "session",
         "session_launch",
         "parent_permissions",
-        "tools",
+        TOOLS,
         "client_events",
         "interactions",
         "variables",
@@ -251,7 +243,7 @@ class PermissionsComponent:
             ctx.variables,
             ctx.state.namespace("permissions"),
             parent=ctx.parent_permissions.value,
-            tools=ctx.tools,
+            tools=ctx.require(TOOLS),
         )
         ctx.set("permissions", permissions)
         for command in build_permissions_commands(ctx.settings, permissions):
@@ -264,7 +256,7 @@ class PermissionsComponent:
             ctx.emit,
             handlers.apply_decision,
         )
-        ctx.tools.guard(guard.check, approval=True)
+        ctx.require(TOOLS).guard(guard.check, approval=True)
         ctx.on(APPLICATION_INITIALIZED, handlers.configure_initial, prepend=True)
         ctx.on(AGENT_CONFIGURED, handlers.configure_agent, prepend=True)
         ctx.on(POLICY_CHANGED, handlers.update_policy)
@@ -276,7 +268,7 @@ class PermissionsComponent:
                 approval,
                 handlers.apply_decision,
             )
-            ctx.tools.register(tool.as_tool())
+            ctx.require(TOOLS).register(tool.as_tool())
 
 
 class PermissionHandlers:

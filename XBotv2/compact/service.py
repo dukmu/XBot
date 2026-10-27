@@ -1,24 +1,24 @@
 """Compact plugin runtime service and history-commit ownership."""
 
 from __future__ import annotations
-
+from XBotv2.context_builder.api.contracts import ContextCompiler
+from xcore.api.events import EventDispatch
 import asyncio
 import logging
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Protocol, Sequence
 from pydantic import JsonValue
-
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
-from XBotv2.core import (
-    ProviderFailure,
+from XBotv2.core.api.providers import ProviderFailure
+from XBotv2.core.api.tokens import (
     context_token_limit,
     estimate_messages_tokens,
     estimate_model_request_tokens,
     estimate_request_tokens,
 )
-from XBotv2.core.messages import ConversationMessage
-from XBotv2.core.domain import (
+from XBotv2.core.api.messages import ConversationMessage
+from XBotv2.core.api.domain import (
     ResolvedModelSelection,
     RequestObservation,
     TransactionAborted,
@@ -29,9 +29,8 @@ from XBotv2.core.domain import (
     TransactionRef,
     UsageDelta,
 )
-from XBotv2.agentloop import Events, LoopState
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.agentloop.events import (
+from XBotv2.agentloop.api.events import (
+    Events,
     BeforeContextBuild,
     KeepContextRequest,
     ModelRequestReady,
@@ -41,39 +40,25 @@ from XBotv2.agentloop.events import (
     RetryRequest,
     TurnEnded,
 )
+from XBotv2.agentloop.api.state import LoopState, ThreadExecution
+from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.commands import CommandResult
 from XBotv2.llm.contracts import ModelPort
-from XBotv2.session.contracts import (
-    HISTORY_CHANGED,
-    HistoryChanged,
-    SessionRuntimeState,
-)
-
+from XBotv2.session.contracts import HISTORY_CHANGED, HistoryChanged
 from XBotv2.compact.commands import run_compact_command
 from XBotv2.compact.compactor import build_compaction_plan
-from XBotv2.compact.contracts import CompactConfig
-from XBotv2.compact.contracts import CompactionPlan
+from XBotv2.compact.contracts import CompactConfig, CompactionPlan
 from XBotv2.compact.protocol import (
     CompactionMetrics,
     CompactionReason,
     is_automatic_compaction,
+    CompactionCompleted,
+    CompactionFailed,
 )
-from XBotv2.compact.events import (
-    POST_COMPACT,
-    PRE_COMPACT,
-    AfterCompact,
-    BeforeCompact,
-)
+from XBotv2.compact.events import POST_COMPACT, PRE_COMPACT, AfterCompact, BeforeCompact
 from XBotv2.compact.history import history_chars, leading_system_messages
-from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed
 
 logger = logging.getLogger("xbotv2.compact")
-
-
-class CompactEventsPort(Protocol):
-    async def serial(self, event: str, *args: object) -> object: ...
-
-    async def emit(self, event: str, *args: object) -> None: ...
 
 
 class UsagePort(Protocol):
@@ -90,18 +75,20 @@ class CompactService:
     def __init__(
         self,
         *,
-        events: CompactEventsPort,
+        events: EventDispatch,
         model: ModelPort,
         state: LoopState,
         usage: UsagePort,
         config: CompactConfig,
         artifacts: ArtifactStorePort,
+        compiler: ContextCompiler,
     ) -> None:
         self._events = events
         self.model = model
         self.state = state
         self._usage = usage
         self._artifacts = artifacts
+        self._compiler = compiler
         self._automatic = config.automatic
         self._output_reservation = config.output_reservation
         self._trigger_ratio = config.trigger_ratio
@@ -444,6 +431,7 @@ class CompactService:
             stable_prefix=stable,
             removable_estimate=removable_estimate,
             artifacts=self._artifacts,
+            compiler=self._compiler,
             record_trajectory=lambda event: self.state.history.record(
                 event, durable=True
             ),
@@ -467,7 +455,7 @@ class CompactService:
         self,
         reason: CompactionReason,
         metrics: CompactionMetrics,
-        session: SessionRuntimeState,
+        session: ThreadExecution,
     ) -> None:
         self._compactions += 1
         self._last_reason = reason

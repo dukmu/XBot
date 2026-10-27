@@ -1,10 +1,8 @@
 """Public declarations owned by the subagent capability."""
 
 from dataclasses import dataclass, field as dataclass_field
-
 from pydantic import BaseModel, ConfigDict, Field
-
-from XBotv2.core.domain import UsageSnapshot
+from XBotv2.core.api.domain import UsageSnapshot
 
 
 class SubagentsConfig(BaseModel):

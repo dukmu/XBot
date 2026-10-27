@@ -1,11 +1,9 @@
 """Permission guards cannot widen policy decisions."""
 
 from dataclasses import replace
-
 import pytest
-
-from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core import SandboxEscape, Tool, ToolCall
+from XBotv2.agentloop.api.contracts import ToolRegistration
+from XBotv2.core.api.tools import SandboxEscape, Tool, ToolCall
 from XBotv2.permissions import Allowed, PermissionPolicy, PermissionRule
 from XBotv2.permissions.guard import PermissionGuard
 from XBotv2.permissions.system import PermissionSystem

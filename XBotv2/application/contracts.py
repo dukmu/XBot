@@ -1,16 +1,16 @@
 """Public contracts for Agent application composition."""
 
 from __future__ import annotations
-
+from xcore.api.context import Context
+from XBotv2.agentloop.api.state import LoopState
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
-
-from XBotv2.agentloop import AgentLoopDriverPort
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import ConversationMessage, HumanInputMessage
-from XBotv2.core.domain import UsageSnapshot
+from XBotv2.agentloop.api.contracts import AgentLoopDriverPort
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.messages import ConversationMessage, HumanInputMessage
+from XBotv2.core.api.domain import UsageSnapshot
 from XBotv2.interactions.contracts import (
     InteractionRegistration,
     InteractionRequest,
@@ -18,12 +18,11 @@ from XBotv2.interactions.contracts import (
     InteractionResolution,
     InteractionWaiterPort,
 )
-from XBotv2.core.history import ConversationHistory, HistoryReader
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from XBotv2.core.paths import SessionPaths
-from XBotv2.core.operations import OperationContext
+from XBotv2.core.api.history import History, HistoryReader
+from XBotv2.core.api.metadata import ThreadMetadata, Metadata
+from XBotv2.core.api.paths import SessionPaths
+from xcore.api.events import EventQuery
 from pydantic import BaseModel, JsonValue
-
 from XBotv2.permissions import PermissionsPort
 
 
@@ -47,11 +46,6 @@ class ApplicationSnapshot:
     messages: tuple[ConversationMessage, ...]
     usage: UsageSnapshot
     status_slots: dict[str, str]
-
-class ApplicationEventsPort(OperationContext, Protocol):
-    def on(self, event: str, callback: Callable[..., object], **kwargs: Any) -> object: ...
-
-    async def emit(self, event: str, *args: object) -> None: ...
 
 
 class ClientEventSink(Protocol):
@@ -115,23 +109,15 @@ class UsageSnapshotPort(Protocol):
     def snapshot(self) -> UsageSnapshot: ...
 
 
-class LoopStateView(Protocol):
-    metadata: ThreadMetadataState
-    history: ConversationHistory
-
-    @property
-    def turn_count(self) -> int: ...
-
-
 class AgentApplicationPort(Protocol):
-    events: ApplicationEventsPort
+    events: Context
     driver: AgentLoopDriverPort
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
     history_pages: HistoryReader
     usage: UsageSnapshotPort
-    loop_state: LoopStateView
+    loop_state: LoopState
     persistence_available: bool
     parent_permissions: PermissionsPort
 
@@ -164,12 +150,10 @@ class ParentPermissions:
 __all__ = [
     "AgentApplicationPort",
     "ApplicationSnapshot",
-    "ApplicationEventsPort",
     "COLLECT_STATUS_SLOTS",
     "ClientEventSink",
     "ClientEventsPort",
     "InteractionWaiterPort",
-    "LoopStateView",
     "ParentPermissions",
     "SessionLaunch",
     "SessionHistoryPort",

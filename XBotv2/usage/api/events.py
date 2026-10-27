@@ -1,7 +1,7 @@
 """Usage accounting events."""
 from typing import Literal
 from pydantic import BaseModel, ConfigDict
-from XBotv2.core.domain import UsageSnapshot
+from XBotv2.core.api.domain import UsageSnapshot
 
 class UsageUpdated(BaseModel):
     kind: Literal["usage_updated"] = "usage_updated"

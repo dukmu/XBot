@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopDriverPort, InboxItem, RuntimeInput
 import asyncio
 import json
 import time
@@ -9,13 +10,11 @@ from collections.abc import Callable, Mapping
 from dataclasses import replace
 from typing import Literal, Protocol
 from uuid import uuid4
-
 from pydantic import BaseModel, ConfigDict, JsonValue
-from xcore import Context
+from xcore.api.context import Context
 from xcore.state import StateService
-
-from XBotv2.agentloop import AgentLoopDriverPort, Events, InboxItem, RuntimeInput
-from XBotv2.agentloop.events import (
+from XBotv2.agentloop.api.events import (
+    Events,
     AfterToolExecution,
     LoopFailure,
     OnTurnInput,
@@ -25,9 +24,16 @@ from XBotv2.agentloop.events import (
 )
 from XBotv2.application import COLLECT_STATUS_SLOTS, RUNTIME_EVENT, RuntimeEvent, StatusSlots
 from XBotv2.commands import Command, CommandEffect, CommandResult
-from XBotv2.core import Tool, ToolFailed, ToolOutcome, ToolSucceeded, failed_text, succeeded_text
-from XBotv2.core.domain import InboxTarget, TokenCounters, UsageSnapshot
-from XBotv2.core.parts import TextPart
+from XBotv2.core.api.tools import (
+    Tool,
+    ToolFailed,
+    ToolOutcome,
+    ToolSucceeded,
+    failed_text,
+    succeeded_text,
+)
+from XBotv2.core.api.domain import InboxTarget, TokenCounters, UsageSnapshot
+from XBotv2.core.api.parts import TextPart
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import (
     ActiveGoal,
@@ -577,7 +583,7 @@ def _tool_outcome_text(result: ToolOutcome) -> str:
 
 class GoalPlugin:
     inject = {
-        "required": ["commands", "engine", "state", "tools", "usage"],
+        "required": ["commands", "engine", "state", TOOLS, "usage"],
         "optional": ["jobs"],
     }
     name = "goal"
@@ -601,7 +607,7 @@ class GoalPlugin:
         ctx.on(Events.SESSION_CLOSE, service.on_session_close)
         ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
         for function in (service.create_goal, service.get_goal, service.update_goal):
-            ctx.tools.register(replace(Tool.from_function(function), kind="think"))
+            ctx.require(TOOLS).register(replace(Tool.from_function(function), kind="think"))
         ctx.commands.register(Command(
             name="goal",
             description="Manage an explicit same-session goal.",

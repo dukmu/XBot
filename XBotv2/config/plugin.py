@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-from xcore import Context
-
-from XBotv2.config.contracts import ConfigPluginConfig
+from xcore.api.context import Context
+from XBotv2.config.contracts import ConfigPluginConfig, GET_POLICY, UPDATE_POLICY
 from XBotv2.config.service import ConfigService
-from XBotv2.config.contracts import GET_POLICY, UPDATE_POLICY
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.protocol import build_router
 from XBotv2.server import contribute_router
 

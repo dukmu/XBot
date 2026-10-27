@@ -1,12 +1,10 @@
 """Caption requests are auxiliary projections of canonical human input."""
 
 import asyncio
-
 import xcore
 import pytest
-
-from XBotv2.agentloop.events import BeforeContextBuild
-from XBotv2.agentloop.outputs import LoopError
+from XBotv2.agentloop.api.events import BeforeContextBuild
+from XBotv2.agentloop.api.outputs import LoopError
 from XBotv2.caption.api.models import CaptionConfig, CaptionRequest, CaptionResult
 from XBotv2.caption.impl.service import (
     CaptionService,
@@ -14,8 +12,8 @@ from XBotv2.caption.impl.service import (
     _fallback_title,
     caption_request,
 )
-from XBotv2.context_builder.events import ContextBuildRequest
-from XBotv2.core.domain import (
+from XBotv2.context_builder.api.events import ContextBuildRequest
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     GenerationSettings,
     MeasurementUnavailable,
@@ -27,13 +25,14 @@ from XBotv2.core.domain import (
     StandardGenerationMode,
     TokenCounters,
     UsageDelta,
+    MessageId,
 )
-from XBotv2.core.domain import MessageId
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderSystem, ProviderUser
-from XBotv2.core.stream import ModelFailed
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.agentloop.impl.metadata import ThreadMetadataState
+from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderSystem, ProviderUser
+from XBotv2.core.api.stream import ModelFailed
 from XBotv2.llm import ModelPort
 from XBotv2.llm.mock import MockLLM
 
@@ -119,11 +118,11 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
     automatic_response,
     automatic_title,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
     from XBotv2.application.app import start_application
-    from XBotv2.core.messages import ToolMessage
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.messages import ToolMessage
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.permissions.contracts import PermissionPolicy
 
     llm = MockLLM(responses=[
@@ -184,10 +183,10 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
     auto,
     allow_access,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
     from XBotv2.application.app import start_application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.permissions.contracts import PermissionPolicy
 
     responses = []
@@ -245,10 +244,10 @@ async def test_caption_agent_tool_is_not_registered_for_a_child_application(
     temp_data_dir,
     temp_workspace,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
     from XBotv2.application.app import start_application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     llm = MockLLM(responses=[{"content": "Child response."}])
     application = await start_application(
@@ -284,12 +283,12 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
     temp_workspace,
     invalid_title,
 ):
-    from XBotv2.agentloop import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
     from XBotv2.application.app import start_application
-    from XBotv2.core.messages import ToolMessage
-    from XBotv2.core.paths import RuntimePaths
-    from XBotv2.core.tools import ToolFailed
+    from XBotv2.core.api.messages import ToolMessage
+    from XBotv2.core.api.paths import RuntimePaths
+    from XBotv2.core.api.tools import ToolFailed
     from XBotv2.permissions.contracts import PermissionPolicy
 
     llm = MockLLM(responses=[

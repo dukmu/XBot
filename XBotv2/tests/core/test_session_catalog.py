@@ -3,11 +3,9 @@
 import asyncio
 import os
 import time
-
 import pytest
-
-from XBotv2.core.domain import MessageId
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
+    MessageId,
     AgentExecutionLimits,
     GenerationSettings,
     ModelRoute,
@@ -15,17 +13,18 @@ from XBotv2.core.domain import (
     ResolvedRuntimeSelection,
     StandardGenerationMode,
 )
-from XBotv2.core.metadata import ThreadMetadata
-from XBotv2.core.messages import HumanInputMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.core.api.messages import HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.persistence.plugin import thread_persistence_factory
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.session.contracts import SESSION_RESOURCE_REMOVED, SessionNotFound
-from XBotv2.session.manager import ResourceEvents, SessionManager
+from xcore.api.events import EventEmitter
+from XBotv2.session.manager import SessionManager
 
 
-class _Events(ResourceEvents):
+class _Events(EventEmitter):
     def __init__(self):
         self.events = []
 

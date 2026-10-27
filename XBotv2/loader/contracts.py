@@ -7,11 +7,9 @@ import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
-
 import yaml
 from pydantic import JsonValue, TypeAdapter
-
-from XBotv2.core.variables import expand_env_refs
+from XBotv2.core.api.variables import expand_env_refs
 
 
 class LoadError(RuntimeError):

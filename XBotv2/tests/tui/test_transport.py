@@ -13,14 +13,12 @@ Invariants under test:
 from __future__ import annotations
 
 import asyncio
-
 import pytest
-
 from XBotv2.client import XBotClientError
-from XBotv2.core.domain import TokenCounters, UsageSnapshot
+from XBotv2.core.api.domain import TokenCounters, UsageSnapshot
 from XBotv2.usage.api.events import UsageUpdated as UsageUpdatedPayload
 from XBotv2.protocol import ErrorResponse
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
@@ -33,8 +31,9 @@ from XBotv2.tests.tui.factories import (
     snapshot,
     stream,
     thread,
+    history_page,
+    human_record,
 )
-from XBotv2.tests.tui.factories import history_page, human_record
 from XBotv2.tui.events import (
     AssistantDelta,
     ClientNoticeReceived,

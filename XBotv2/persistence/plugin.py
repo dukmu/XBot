@@ -2,17 +2,18 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.state import LOOP_STATE
 from pydantic import JsonValue
-from xcore import Context, StateService
-
-from XBotv2.agentloop import Events
-from XBotv2.core.metadata import (
+from xcore.api.context import Context
+from xcore import StateService
+from XBotv2.agentloop.api.events import Events
+from XBotv2.core.api.metadata import (
     THREAD_METADATA_CHANGED,
     THREAD_METADATA_INITIALIZED,
     ThreadMetadataChanged,
     ThreadMetadataInitialized,
 )
-from XBotv2.core.paths import SessionPaths
+from XBotv2.core.api.paths import SessionPaths
 from XBotv2.persistence.store import (
     DeferredThreadMetadataStore,
     ThreadMetadataStore,
@@ -50,13 +51,13 @@ def thread_persistence_factory(
 
 
 class ThreadPersistenceComponent:
-    inject = ["loop_state", "thread_persistence", "runtime_log"]
+    inject = [LOOP_STATE, "thread_persistence", "runtime_log"]
     name = "xbot.persistence"
 
     async def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        state = ctx.loop_state
+        state = ctx.require(LOOP_STATE)
         persistence = ctx.thread_persistence
         ctx.dispose(persistence.materialize)
         if state.resumed is False and isinstance(

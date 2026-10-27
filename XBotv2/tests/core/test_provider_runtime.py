@@ -3,10 +3,8 @@
 import asyncio
 import json
 from contextlib import asynccontextmanager
-
 import pytest
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     CompletedStop,
     GenerationSettings,
     MeasurementUnavailable,
@@ -17,16 +15,11 @@ from XBotv2.core.domain import (
     TokenCounters,
     UsageDelta,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ModelRequest, ProviderUser
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ModelRequest, ProviderUser
+from XBotv2.llm.impl.base import BaseProvider
 from XBotv2.llm.provider_errors import normalize_sdk_provider_error
-from XBotv2.core.stream import (
-    ModelCompleted,
-    ModelFailed,
-    ModelResponse,
-    TextDelta,
-)
+from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ModelResponse, TextDelta
 
 
 def request() -> ModelRequest:
@@ -159,7 +152,7 @@ async def test_sdk_timeout_retry_can_recover_and_complete():
 
 @pytest.mark.asyncio
 async def test_live_reasoning_stream_can_outlast_transport_timeout():
-    from XBotv2.core.stream import ReasoningDelta
+    from XBotv2.core.api.stream import ReasoningDelta
 
     async with streaming_provider("openai", "live", timeout=0.15) as (provider, calls):
         events = [event async for event in provider.astream(request())]

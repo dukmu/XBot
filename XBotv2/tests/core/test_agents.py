@@ -1,11 +1,10 @@
 """Agent definition and registry contract tests."""
 
 import pytest
-
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.agents import AgentDefinition
-from XBotv2.agentloop import AllTools
-from XBotv2.core import RuntimeVariables
+from XBotv2.agentloop.api.contracts import AllTools
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.permissions.system import PermissionSystem
 from XBotv2.agents.loader import load_definition

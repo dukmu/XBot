@@ -1,17 +1,16 @@
 """Session identity, paths, and history mutations."""
 
 from __future__ import annotations
-
+from xcore.api.events import EventEmitter
 import secrets
 import shutil
 from typing import Protocol
-
-from XBotv2.agentloop import LoopState
-from XBotv2.core.errors import OperationError
-from XBotv2.core.domain import ReasoningGenerationMode
-from XBotv2.core.messages import ConversationMessage, HumanInputMessage
-from XBotv2.core.paths import RuntimePaths, SessionPaths
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.agentloop.api.state import LoopState
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.domain import ReasoningGenerationMode
+from XBotv2.core.api.messages import ConversationMessage, HumanInputMessage
+from XBotv2.core.api.paths import RuntimePaths, SessionPaths
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     PREPARE_FORK,
@@ -51,17 +50,13 @@ def _new_fork_id() -> str:
     return f"{stamp}-{secrets.token_hex(2)}"
 
 
-class SessionEventsPort(Protocol):
-    async def emit(self, event: str, *args: object) -> None: ...
-
-
 class Session:
     """One active session's identity, path allocation, and history surface."""
 
     def __init__(
         self,
         *,
-        events: SessionEventsPort,
+        events: EventEmitter,
         paths: RuntimePaths,
         variables: RuntimeVariables,
         state: LoopState,

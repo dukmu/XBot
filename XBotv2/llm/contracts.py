@@ -5,11 +5,9 @@ from __future__ import annotations
 from collections.abc import AsyncIterator, Callable
 from dataclasses import dataclass
 from typing import Literal, Protocol
-
 from pydantic import BaseModel, ConfigDict, Field, JsonValue, field_validator, model_validator
-
-from XBotv2.core.provider import ModelRequest, ProviderMessage, ToolSchema
-from XBotv2.core.stream import (
+from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ToolSchema
+from XBotv2.core.api.stream import (
     ModelCancelled,
     ModelCompleted,
     ModelFailed,
@@ -19,8 +17,8 @@ from XBotv2.core.stream import (
     TextDelta,
     ToolCallDelta,
 )
-from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.providers import BaseProvider, ProviderFailure
+from XBotv2.core.api.operations import EmptyRequest, Operation
+from XBotv2.core.api.providers import Provider, ProviderFailure
 
 
 class ModelConfig(BaseModel):
@@ -209,7 +207,7 @@ async def invoke_llm(
 class LlmServicePort(LlmCatalogPort, Protocol):
     """Provider directory service mounted as ``ctx.llm``."""
 
-    def register(self, provider: str, factory: Callable[..., BaseProvider]) -> None: ...
+    def register(self, provider: str, factory: Callable[..., Provider]) -> None: ...
     def unregister(self, provider: str) -> bool: ...
     def providers(self) -> tuple[str, ...]: ...
     def has(self, provider: str) -> bool: ...
@@ -222,7 +220,7 @@ class LlmServicePort(LlmCatalogPort, Protocol):
         model_config: ModelConfig | None = None,
         *,
         model: str | None = None,
-    ) -> BaseProvider: ...
+    ) -> Provider: ...
 
 
 @dataclass(frozen=True, slots=True)

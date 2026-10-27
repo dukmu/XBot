@@ -1,17 +1,15 @@
 """Process-level durable Workspace registry."""
 
 from __future__ import annotations
-
+from xcore.api.events import EventEmitter
 import asyncio
 from collections.abc import Mapping
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Protocol
 import uuid
-
 from xcore.state import StateService
-
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.workspaces.contracts import (
     WorkspaceRecord,
     WorkspaceListing,
@@ -41,10 +39,6 @@ class SessionListing(Protocol):
     async def list_sessions(self) -> tuple[SessionSummary, ...]: ...
 
 
-class ResourceEvents(Protocol):
-    async def emit(self, event: str, *args: object) -> None: ...
-
-
 class WorkspaceRegistry(WorkspacesPort):
     """Own Workspace identity, ordering, titles, and session membership."""
 
@@ -52,7 +46,7 @@ class WorkspaceRegistry(WorkspacesPort):
         self,
         state: StateService,
         sessions: SessionListing,
-        events: ResourceEvents,
+        events: EventEmitter,
         runtime_log: RuntimeLog = DEFAULT_RUNTIME_LOG,
     ) -> None:
         self._state = state

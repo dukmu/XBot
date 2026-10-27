@@ -9,15 +9,10 @@ from collections.abc import AsyncIterator, Iterable, Mapping
 from datetime import datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeVar
-
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
-from XBotv2.core.artifacts import ArtifactRef, ImageRef
-from XBotv2.core.history import (
-    HistoryPage,
-    TrajectoryRead,
-)
-from XBotv2.core.messages import (
+from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
+from XBotv2.core.api.history import HistoryPage, TrajectoryRead
+from XBotv2.core.api.messages import (
     AssistantMessage,
     CompactionSummaryMessage,
     ConversationMessage,
@@ -25,23 +20,23 @@ from XBotv2.core.messages import (
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.operations import Operation
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.timing import SessionStats
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.domain import Cursor, EventScope, InboxTarget, UsageSnapshot
+from XBotv2.core.api.metadata import ThreadMetadata, Metadata
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.operations import Operation
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.timing import SessionStats
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.domain import Cursor, EventScope, InboxTarget, UsageSnapshot
 from XBotv2.session.records import ConversationRecord, project_message
 from XBotv2.interactions.contracts import InteractionReceipt
 from XBotv2.interactions.models import UserInputRequest
 from XBotv2.permissions.contracts import PermissionRequest
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop.contracts import InboxItem
+    from XBotv2.agentloop.api.contracts import InboxItem
     from XBotv2.agents import AgentDefinition
     from XBotv2.application import AgentApplicationPort
-    from XBotv2.core.providers import BaseProvider
+    from XBotv2.core.api.providers import Provider
     from XBotv2.permissions import PermissionsPort
 
 
@@ -83,33 +78,6 @@ class SessionEvent(Protocol):
 class SessionKey:
     session_id: str
     thread_id: str
-
-
-@dataclass(slots=True)
-class SessionRuntimeState:
-    """Mutable runtime state for one Agent thread.
-
-    Identity is carried by ``key``. Workspace and effective runtime selection
-    are always read through the single thread-metadata owner.
-    """
-
-    key: SessionKey
-    metadata: ThreadMetadataState
-    status: str = "active"
-    turn_count: int = 0
-    event_cursor: int = 0
-
-    @property
-    def session_id(self) -> str:
-        return self.key.session_id
-
-    @property
-    def thread_id(self) -> str:
-        return self.key.thread_id
-
-    @property
-    def workspace_root(self) -> str:
-        return self.metadata.value.workspace_root
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,7 +140,7 @@ class OpenSession:
     mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
     plugin_configs: dict[str, dict[str, JsonValue]] | None = None
 
 
@@ -186,7 +154,7 @@ class OpenThread:
     mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
 
 
 class OpenedThread(BaseModel):
@@ -357,7 +325,7 @@ class AgentApplicationOptions:
     workspace_root: Path
     no_plugins: bool
     plugin_configs: dict[str, dict[str, JsonValue]] | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
     parent_thread_id: str = ""
@@ -538,7 +506,6 @@ __all__ = [
     "SessionEventCursorExpired",
     "SessionExists",
     "SessionKey",
-    "SessionRuntimeState",
     "SessionMode",
     "SessionNotFound",
     "SessionResourceChanged",

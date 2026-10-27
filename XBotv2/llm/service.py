@@ -17,11 +17,10 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Callable
-from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
-from XBotv2.core.providers import BaseProvider
-from XBotv2.core.provider import ModelRequest
-from XBotv2.core.stream import ModelStreamEvent
 from XBotv2.llm.contracts import (
+    LlmConfig,
+    ModelConfig,
+    ProviderConfig,
     UnknownProviderError,
     LlmServicePort,
     ModelDescription,
@@ -29,8 +28,11 @@ from XBotv2.llm.contracts import (
     ProviderCatalog,
     ProviderDescription,
 )
+from XBotv2.core.api.providers import Provider
+from XBotv2.core.api.provider import ModelRequest
+from XBotv2.core.api.stream import ModelStreamEvent
 
-ProviderFactory = Callable[..., BaseProvider]
+ProviderFactory = Callable[..., Provider]
 
 
 class LlmService(LlmServicePort):
@@ -110,7 +112,7 @@ class LlmService(LlmServicePort):
         model_config: "ModelConfig | None" = None,
         *,
         model: str | None = None,
-    ) -> BaseProvider:
+    ) -> Provider:
         """Create a provider client: protocol -> adapter instance -> model.
 
         ``model_config`` (from ``provider_config.resolve(model)``) supplies
@@ -129,13 +131,13 @@ class ModelService(ModelPort):
     """Mutable binding for the model selected for the active Agent."""
 
     def __init__(self) -> None:
-        self._provider: BaseProvider | None = None
+        self._provider: Provider | None = None
 
-    def replace(self, provider: BaseProvider) -> None:
+    def replace(self, provider: Provider) -> None:
         self._provider = provider
 
     @property
-    def provider(self) -> BaseProvider:
+    def provider(self) -> Provider:
         if self._provider is None:
             raise RuntimeError("model port is not bound")
         return self._provider

@@ -6,11 +6,10 @@ import base64
 from pathlib import Path
 from collections.abc import Mapping
 from xml.etree import ElementTree
-
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderMessage, ProviderTool, ResolvedImagePart
-from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.core.domain import (
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderMessage, ProviderTool, ResolvedImagePart
+from XBotv2.core.api.prompts import prompt_container, prompt_element
+from XBotv2.core.api.domain import (
     MeasurementUnavailable,
     ObservedContext,
     ProviderMeasured,

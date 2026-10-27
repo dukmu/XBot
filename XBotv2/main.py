@@ -11,19 +11,17 @@ import sys
 import webbrowser
 from pathlib import Path
 from traceback import format_exception_only
-
 from xcore import ServiceNotFoundError
-
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop.outputs import (
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,
     ToolCompleted,
     TurnCancelled,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.interactions import ClientNotice
 
 __version__ = "0.2.0"

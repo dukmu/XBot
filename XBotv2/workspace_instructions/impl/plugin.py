@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from pydantic import JsonValue
-
-from xcore import Context
-
-from XBotv2.context_builder import (
-    CONTEXT_COMPONENTS_BUILT,
-    BuiltContext,
-    FilePromptComponent,
-)
-from XBotv2.core.variables import RuntimeVariables
+from xcore.api.context import Context
+from XBotv2.context_builder.api.events import CONTEXT_COMPONENTS_BUILT
+from XBotv2.context_builder.api.contracts import BuiltContext, FilePromptComponent
+from XBotv2.core.api.variables import RuntimeVariables
 
 
 class WorkspaceInstructionsPlugin:

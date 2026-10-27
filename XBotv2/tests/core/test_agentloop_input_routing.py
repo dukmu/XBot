@@ -5,11 +5,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
-
 import pytest
-
-from XBotv2.agentloop.contracts import HumanInput, InboxItem, RuntimeInput
-from XBotv2.core.domain import InboxTarget
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, RuntimeInput
+from XBotv2.core.api.domain import InboxTarget
 from XBotv2.session.records import (
     AssistantRecord,
     HumanInputRecord,
@@ -17,17 +15,16 @@ from XBotv2.session.records import (
     ToolRecord,
     project_message,
 )
-from XBotv2.core.tools import ToolFailed, ToolSucceeded
+from XBotv2.core.api.tools import ToolFailed, ToolSucceeded, Tool
 from XBotv2.session.runtime import SessionRuntime
 from XBotv2.session.contracts import conversation_replay
 from XBotv2.application.app import create_agent_application, start_application
 from XBotv2.application.host import mounted_application
-from XBotv2.core.messages import AssistantMessage
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.messages import AssistantMessage
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.filesystem.session_lock import acquire_session
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderUser
-from XBotv2.core.tools import Tool
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderUser
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.llm.mock import MockLLM
 from XBotv2.persistence.plugin import thread_persistence_factory
@@ -46,8 +43,8 @@ def _record_text(record):
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("short_circuit", ["reject", "complete"])
 async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, persistent, short_circuit):
-    from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
-    from XBotv2.agentloop.outputs import LoopError
+    from XBotv2.agentloop.api.events import CompleteTurn, Events, RejectInput
+    from XBotv2.agentloop.api.outputs import LoopError
 
     provider = MockLLM(responses=[{"content": "answered"}])
     application = await start_application(
@@ -98,8 +95,8 @@ async def test_short_circuited_batch_preserves_unprocessed_user_input(tmp_path, 
 @pytest.mark.parametrize("short_circuit", ["reject", "complete"])
 @pytest.mark.parametrize("with_tool", [False, True])
 async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_path, persistent, short_circuit, with_tool):
-    from XBotv2.agentloop.events import CompleteTurn, Events, RejectInput
-    from XBotv2.agentloop.outputs import LoopError
+    from XBotv2.agentloop.api.events import CompleteTurn, Events, RejectInput
+    from XBotv2.agentloop.api.outputs import LoopError
 
     first_response = (
         {"tool_calls": [{"id": "call-1", "name": "observe", "args": {}}]}
@@ -164,7 +161,7 @@ async def test_step_short_circuit_is_published_and_leaves_suffix_pending(tmp_pat
 @pytest.mark.parametrize("runtime_notice", [False, True])
 @pytest.mark.parametrize("hook", ["accept", "canonicalize"])
 async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_notice, hook):
-    from XBotv2.agentloop.events import AcceptInput, Events, InputAccepted
+    from XBotv2.agentloop.api.events import AcceptInput, Events, InputAccepted
 
     provider = MockLLM(responses=[{"content": "retried"}])
     application = await start_application(
@@ -202,7 +199,7 @@ async def test_input_hooks_cannot_break_consumption_identity(tmp_path, runtime_n
 @pytest.mark.asyncio
 @pytest.mark.parametrize("operation", ["compact", "clear"])
 async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_path, operation):
-    from XBotv2.core.messages import CompactionSummaryMessage
+    from XBotv2.core.api.messages import CompactionSummaryMessage
     from XBotv2.persistence.store import ThreadPersistence
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -235,7 +232,7 @@ async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_pat
     store = ThreadPersistence.open(paths.session("reconcile-trace"), thread_id="main")
     # Model the crash boundary: history committed, inbox inputs not retired.
     # A subsequent surface replacement must not erase that commit evidence.
-    from XBotv2.agentloop.contracts import Inserted
+    from XBotv2.agentloop.api.contracts import Inserted
     for item in (notice, user, pending):
         store.inbox.append(Inserted(item=item, wake=False))
     source_ids = tuple(message.id for message in store.history.load_surface())
@@ -258,7 +255,7 @@ async def test_resume_reconciles_inbox_against_trace_not_current_surface(tmp_pat
 @pytest.mark.asyncio
 @pytest.mark.parametrize("rejected", [False, True])
 async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rejected):
-    from XBotv2.agentloop.events import Events, RejectInput
+    from XBotv2.agentloop.api.events import Events, RejectInput
     from XBotv2.session.events import InputConsumedEvent, MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -319,8 +316,8 @@ async def test_live_human_input_is_projected_from_accepted_history(tmp_path, rej
 @pytest.mark.parametrize("persistent", [True, False])
 @pytest.mark.parametrize("cancelled", [True, False])
 async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, cancelled):
-    from XBotv2.agentloop.events import Events
-    from XBotv2.core.messages import HumanInputMessage
+    from XBotv2.agentloop.api.events import Events
+    from XBotv2.core.api.messages import HumanInputMessage
 
     application = await start_application(
         paths=RuntimePaths.from_data_dir(tmp_path / "data"),
@@ -383,8 +380,8 @@ async def test_failed_step_input_is_released_for_retry(tmp_path, persistent, can
 @pytest.mark.asyncio
 @pytest.mark.parametrize("persistent", [True, False])
 async def test_partial_input_batch_does_not_replay_committed_notice(tmp_path, persistent):
-    from XBotv2.agentloop.events import Events
-    from XBotv2.core.messages import RuntimeNoticeMessage
+    from XBotv2.agentloop.api.events import Events
+    from XBotv2.core.api.messages import RuntimeNoticeMessage
     from XBotv2.session.events import MessagePublishedEvent
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -663,10 +660,10 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 
 async def main():
@@ -790,10 +787,10 @@ async def test_inflight_provider_stream_is_discarded_but_input_history_survives_
 import asyncio
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.records import project_message
 
@@ -925,11 +922,11 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import Tool
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import Tool
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 

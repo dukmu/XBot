@@ -1,15 +1,14 @@
 """Task-list state owns identity, dependency, and transition invariants."""
 
 import pytest
-
-from XBotv2.core.messages import ToolMessage
-from XBotv2.todolist.api.models import (
-    DependencyEdge,
-    Task,
-    TaskList,
-    TaskValidationError,
+from XBotv2.core.api.messages import ToolMessage
+from XBotv2.todolist.api.models import DependencyEdge, Task, TaskList, TaskValidationError
+from XBotv2.todolist.impl.parsing import (
+    parse_task_id,
+    parse_task_ids,
+    parse_task_status,
+    parse_task_text,
 )
-from XBotv2.todolist.impl.parsing import parse_task_id, parse_task_ids, parse_task_status, parse_task_text
 
 
 def test_task_list_allocates_stable_numeric_identity():
@@ -85,7 +84,7 @@ def _tool_messages(messages):
 
 
 def _outcome_text(outcome) -> str:
-    from XBotv2.core.parts import TextPart
+    from XBotv2.core.api.parts import TextPart
 
     return "".join(
         part.text
@@ -95,7 +94,7 @@ def _outcome_text(outcome) -> str:
 
 
 def _prompt(request) -> str:
-    from XBotv2.core.parts import TextPart
+    from XBotv2.core.api.parts import TextPart
 
     return "\n".join(
         part.text
@@ -106,8 +105,8 @@ def _prompt(request) -> str:
 
 
 async def _run_turn(engine, content: str) -> list:
-    from XBotv2.agentloop import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
 
     item = InboxItem(
         target=InboxTarget.NEXT_TURN,
@@ -125,7 +124,7 @@ async def _start(
     additional_plugins=(),
 ):
     from XBotv2.application.app import start_application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.llm.mock import MockLLM
     from XBotv2.permissions.contracts import PermissionPolicy
 
@@ -157,11 +156,11 @@ async def test_task_tool_failures_are_typed_and_the_turn_continues(
     Production path: application factory → plugin tree mount →
     ``ctx.tools.register`` → engine tool dispatch → durable history.
     """
-    from XBotv2.agentloop.outputs import LoopError
-    from XBotv2.core.messages import AssistantMessage, ToolMessage
-    from XBotv2.core.parts import TextPart
-    from XBotv2.core.tools import ToolFailed, ToolSucceeded
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.agentloop.api.outputs import LoopError
+    from XBotv2.core.api.messages import AssistantMessage, ToolMessage
+    from XBotv2.core.api.parts import TextPart
+    from XBotv2.core.api.tools import ToolFailed, ToolSucceeded
+    from XBotv2.core.api.paths import RuntimePaths
 
     application, _llm = await _start(temp_data_dir, temp_workspace, [
         {"tool_calls": [
@@ -304,7 +303,7 @@ async def test_plan_can_be_revised_without_false_progress_or_forced_delegation(
     temp_data_dir, temp_workspace,
 ):
     from XBotv2.application import RUNTIME_EVENT
-    from XBotv2.core.operations import EmptyRequest, dispatch_operation
+    from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.events import TaskChanged
 
@@ -361,7 +360,7 @@ async def test_dependency_revisions_are_atomic_and_survive_resume(
     temp_data_dir, temp_workspace,
 ):
     from XBotv2.application import RUNTIME_EVENT
-    from XBotv2.core.operations import EmptyRequest, dispatch_operation
+    from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.events import TaskChanged
 
@@ -427,7 +426,7 @@ async def test_stale_reminder_queues_folds_into_one_turn_and_resets_on_use(
 ):
     """The reminder is a queued runtime notice: it reaches the turn after the
     threshold exactly once, and any task mutation resets the counter."""
-    from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
+    from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 
     application, llm = await _start(
         temp_data_dir, temp_workspace,
@@ -488,8 +487,8 @@ async def test_reminder_counter_and_snapshot_survive_close_and_resume(
 ):
     """Plugin state is durable: the resumed application continues the counter
     and serves the same list through the production operation."""
-    from XBotv2.core.operations import EmptyRequest, dispatch_operation
-    from XBotv2.core.messages import RuntimeNoticeMessage
+    from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
+    from XBotv2.core.api.messages import RuntimeNoticeMessage
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.models import TaskList
 
@@ -553,13 +552,13 @@ async def test_compaction_restates_unfinished_tasks_once(
     runtime notice. The test crosses the application command, compact service,
     history mutation, plugin event, engine input, and durable history paths.
     """
-    from XBotv2.agentloop.events import Events, InputAccepted
+    from XBotv2.agentloop.api.events import Events, InputAccepted
     from XBotv2.commands import EXECUTE_COMMAND, ExecuteCommand
     from XBotv2.compact.protocol import CompactionCompleted
-    from XBotv2.core.paths import RuntimePaths
-    from XBotv2.core.messages import RuntimeNoticeMessage
+    from XBotv2.core.api.paths import RuntimePaths
+    from XBotv2.core.api.messages import RuntimeNoticeMessage
     from XBotv2.application import RUNTIME_EVENT
-    from XBotv2.core.operations import EmptyRequest, dispatch_operation
+    from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
     from XBotv2.persistence.store import ThreadPersistence
     from XBotv2.todolist.api.service import GET_TODOS
     from XBotv2.todolist.api.models import TaskList
@@ -678,7 +677,7 @@ def test_dependency_ids_accept_integer_strings():
 
 def test_task_update_parameters_schema_accepts_integer_id_lists():
     """Schema validation must allow int-id arrays, not just strings."""
-    from XBotv2.core.tools import tool_parameters_schema
+    from XBotv2.core.api.tools import tool_parameters_schema
     from XBotv2.todolist.impl.plugin import TaskService, _task_tool, TaskConfig
     from jsonschema import Draft202012Validator
 

@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from acp import run_agent
-
 from XBotv2.application.acp import start_acp_application
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 
 
 async def run_acp(

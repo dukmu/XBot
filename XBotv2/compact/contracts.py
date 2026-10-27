@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
-
 from XBotv2.compact.protocol import CompactionMetrics, CompactionReason
-from XBotv2.core.domain import HistoryRevision, MessageId
-from XBotv2.core.messages import CompactionSummaryMessage
+from XBotv2.core.api.domain import HistoryRevision, MessageId
+from XBotv2.core.api.messages import CompactionSummaryMessage
 
 
 class CompactConfig(BaseModel):

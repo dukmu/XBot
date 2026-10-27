@@ -5,10 +5,8 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from pathlib import Path
-
 import yaml
 from pydantic import BaseModel, JsonValue
-
 from XBotv2.loader import (
     plugin_config_json_schema,
     plugin_config_schema,
@@ -24,7 +22,7 @@ from XBotv2.config.contracts import (
     PluginConfigUnavailable,
 )
 from XBotv2.core.filesystem.atomic import write_text_atomic
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader.contracts import PluginEntry, PluginOverlay
 
 

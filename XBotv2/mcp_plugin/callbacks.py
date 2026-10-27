@@ -8,22 +8,20 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
-
 from mcp import types
 from mcp.shared.context import RequestContext
-
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.provider import (
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.provider import (
     ModelRequest,
     ProviderAssistant,
     ProviderMessage,
     ProviderSystem,
     ProviderUser,
 )
-from XBotv2.core import prompt_element
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.domain import AuxiliaryRequest, RequestObservation, ResolvedModelSelection
-from XBotv2.core.tokens import estimate_request_tokens
+from XBotv2.core.api.prompts import prompt_element
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.domain import AuxiliaryRequest, RequestObservation, ResolvedModelSelection
+from XBotv2.core.api.tokens import estimate_request_tokens
 from XBotv2.interactions.contracts import InteractionsPort
 from XBotv2.interactions.models import Answered
 from XBotv2.llm import invoke_llm

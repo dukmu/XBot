@@ -35,7 +35,7 @@ Textual TUI); it is not an Agent, server, or ACP process.
 | `jobs` | `jobs` | agent, server | Agent: `commands`, `engine`; server: `server`, `sessions` | `jobs`; task HTTP routes |
 | `commands` | `commands` | agent, server, client | server route integration waits for `server`, `sessions` | human command registry; command HTTP routes |
 | `llm` | `llm` | agent, server | runtime log; Agent commands wait for Agent runtime; HTTP waits for sessions | `llm`, `model`; provider catalog, commands, HTTP routes |
-| `agentloop` | `agentloop` | agent, server | Agent launch/runtime log; server routes wait for sessions | Tool registry/executor and Agent loop factory; Tool HTTP routes |
+| `agentloop` | `agentloop` | agent, server | Launch/variables; optional persistence; runtime log; HTTP waits for sessions | Loop working set/inbox, tool registry/executor and Agent loop factory; Tool HTTP routes |
 | `context_builder` | `context_builder` | agent | `runtime_log`, `artifacts` | `context_builder`; typed context compilation and prompt component registry |
 | `prompts` | `prompts` | agent | `context_builder` | `prompts`; prompt fragment registry |
 | `sandbox` | `sandbox` | agent | thread paths, session, tools, data/workspace roots, variables, commands, settings | `sandbox`; sandbox guard and context facts |
@@ -104,7 +104,7 @@ and both are easy to miss when reading the tree table:
 
 Use the contracts in `XBotv2.application` and constructors in the owning
 application modules, together with
-`XBotv2.core.paths` in a test harness. `Context(data_dir=...)` supplies the
+`XBotv2.core.api.paths` in a test harness. `Context(data_dir=...)` supplies the
 XCore `state` service; the Agent test harness must still provide every other
 declared dependency explicitly.
 

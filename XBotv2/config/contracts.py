@@ -5,17 +5,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Literal, Protocol
-from pydantic import (
-    BaseModel,
-    ConfigDict,
-    Field,
-    JsonValue,
-)
-
-from XBotv2.core.operations import EmptyRequest, Operation
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from XBotv2.core.api.operations import EmptyRequest, Operation
 from XBotv2.loader.contracts import PluginTree
 from XBotv2.permissions.contracts import PermissionPolicy
-from XBotv2.agentloop.contracts import AllTools, ToolSelection
+from XBotv2.agentloop.api.contracts import AllTools, ToolSelection
 
 
 class StrictModel(BaseModel):

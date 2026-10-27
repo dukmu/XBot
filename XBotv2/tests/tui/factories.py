@@ -14,14 +14,13 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable
-
 from XBotv2.commands import (
     CommandDescription,
     CommandExecution,
     CommandListResponse,
     CommandResponse,
 )
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     GenerationSettings,
     ModelRoute,
@@ -31,11 +30,13 @@ from XBotv2.core.domain import (
     SessionScope,
     StandardGenerationMode,
     UsageSnapshot,
+    CompletedStop,
+    ModelTiming,
+    ToolTiming,
 )
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.metadata import ThreadMetadata
-from XBotv2.core.domain import CompletedStop, ModelTiming, ToolTiming
-from XBotv2.core.tools import ToolCallRef, ToolSucceeded, text_output
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.core.api.tools import ToolCallRef, ToolSucceeded, text_output
 from XBotv2.interactions.protocol import InteractionResponse
 from XBotv2.protocol import ServerEvent, server_event
 from XBotv2.session.contracts import OpenedThread, SessionKey, ThreadSummary
@@ -229,7 +230,7 @@ def catalog(**overrides: Any) -> Any:
 def agent_list(**overrides: Any) -> Any:
     from XBotv2.agents.protocol import AgentInfo, AgentListResponse
     from XBotv2.agents.contracts import AgentModelPolicy, AgentToolPolicy
-    from XBotv2.core.domain import AgentExecutionLimits
+    from XBotv2.core.api.domain import AgentExecutionLimits
 
     def info(name: str, description: str) -> AgentInfo:
         return AgentInfo(

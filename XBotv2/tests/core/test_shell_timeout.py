@@ -1,16 +1,15 @@
 """Shell deadlines through the production tool dispatch and job lifecycle."""
 
+from XBotv2.agentloop.api.contracts import TOOLS
 import asyncio
 import sys
-
 import pytest
 from pydantic import ValidationError
-
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_runtime import execute_tools
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_runtime import execute_tools
 from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ToolCall, ToolFailed, ToolSucceeded
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import ToolCall, ToolFailed, ToolSucceeded
 from XBotv2.coretools.contracts import CoreToolsConfig
 from XBotv2.coretools.shell import shell_tools, wait_shell
 from XBotv2.jobs.registry import JobRegistry
@@ -163,7 +162,7 @@ async def test_plugin_configuration_controls_dispatch_deadline(tmp_path, monkeyp
         ],
     )
     try:
-        results = await context.tools.execute_all([
+        results = await context.require(TOOLS).execute_all([
             ToolCall(id="read", name="read", args={}),
             ToolCall(id="shell", name="shell", args={"command": "sleep 0.4"}),
         ])

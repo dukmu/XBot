@@ -1,10 +1,8 @@
 """SSE framing validates the single canonical server-event envelope."""
 
 import json
-
 import pytest
-
-from XBotv2.core.domain import SessionScope
+from XBotv2.core.api.domain import SessionScope
 from XBotv2.protocol.models import server_event
 from XBotv2.protocol.sse import (
     SseDecodeError,

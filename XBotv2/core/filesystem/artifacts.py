@@ -4,11 +4,10 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-
-from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.filesystem.atomic import write_bytes_atomic
-from XBotv2.core.paths import ThreadPaths
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.api.paths import ThreadPaths
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 
 
 class ArtifactStore:

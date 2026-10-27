@@ -16,7 +16,7 @@ from XBotv2.workspaces.contracts import (
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
 )
-from XBotv2.core.replay import ReplaySubscriber, ReplaySubscription, fan_out
+from XBotv2.workspaces.impl.replay import ReplaySubscriber, ReplaySubscription, fan_out
 
 
 WorkspaceCatalogChange = (

@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field
-
-from XBotv2.core.messages import ConversationMessage
+from XBotv2.core.api.messages import ConversationMessage
 
 
 class CaptionConfig(BaseModel):

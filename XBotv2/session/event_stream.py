@@ -6,15 +6,14 @@ import asyncio
 from collections import deque
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
-
-from XBotv2.core.domain import EventScope, SessionScope
+from XBotv2.core.api.domain import EventScope, SessionScope
 from XBotv2.session.contracts import (
     SessionEventCursorExpired,
     SessionEventFrame,
     SessionEventSubscription as SessionEventSubscriptionPort,
     SessionEvent,
-    SessionRuntimeState,
 )
+from XBotv2.agentloop.api.state import ThreadExecution
 
 
 @dataclass(slots=True, eq=False)
@@ -66,7 +65,7 @@ class _SessionEventSubscription(AsyncIterator[SessionEventFrame]):
 class SessionEventStream:
     def __init__(
         self,
-        state: SessionRuntimeState,
+        state: ThreadExecution,
         *,
         capacity: int = 512,
     ) -> None:

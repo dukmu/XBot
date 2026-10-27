@@ -6,9 +6,8 @@ import re
 from collections.abc import Iterable
 from pathlib import Path
 from pydantic import JsonValue
-
 import yaml
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader.contracts import PluginOverlay
 
 

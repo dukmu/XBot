@@ -14,11 +14,10 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-
 from pydantic import JsonValue
-from XBotv2.core.variables import RuntimeVariables
-from XBotv2.core.tools import GuardDecision, ToolCall
-from XBotv2.agentloop.contracts import ToolRegistration
+from XBotv2.core.api.variables import RuntimeVariables
+from XBotv2.core.api.tools import GuardDecision, ToolCall
+from XBotv2.agentloop.api.contracts import ToolRegistration
 from XBotv2.core.filesystem import operations as filesystem_ops
 from XBotv2.sandbox.bwrap import BubblewrapBackend, SandboxMountSpec, backend_available
 from XBotv2.sandbox.contracts import PathAccess, SandboxConfig, SandboxPort

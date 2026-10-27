@@ -12,9 +12,8 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from weakref import WeakValueDictionary
-
 from XBotv2.core.filesystem.atomic import write_text_atomic
-from XBotv2.core.history import (
+from XBotv2.core.api.history import (
     DurableEvent,
     HistoryPage,
     HistoryCursorInvalid,
@@ -27,9 +26,15 @@ from XBotv2.core.history import (
     page_messages,
     resolve_transcript_sources,
 )
-from XBotv2.core.domain import Cursor, HistoryRevision, TransactionEnded, TransactionStarted
-from XBotv2.core.messages import ConversationMessage, HumanInputMessage, RuntimeNoticeMessage
-from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.core.api.domain import (
+    Cursor,
+    HistoryRevision,
+    TransactionEnded,
+    TransactionStarted,
+    InboxTarget,
+)
+from XBotv2.core.api.messages import ConversationMessage, HumanInputMessage, RuntimeNoticeMessage
+from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.persistence.contracts import (
     HistoryPort,
     InboxPersistencePort,
@@ -37,17 +42,20 @@ from XBotv2.persistence.contracts import (
     ThreadPersistencePort,
 )
 from pydantic import JsonValue
-from XBotv2.core.paths import SessionPaths, ThreadPaths
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop.contracts import (
-    InboxItem, InboxMutation, HumanInput,
-    Inserted, Edited, Removed, Retargeted, Consumed, Discarded,
+from XBotv2.core.api.paths import SessionPaths, ThreadPaths
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.agentloop.api.contracts import (
+    InboxItem,
+    InboxMutation,
+    HumanInput,
+    Inserted,
+    Edited,
+    Removed,
+    Retargeted,
+    Consumed,
+    Discarded,
 )
-from XBotv2.core.domain import InboxTarget
-from XBotv2.persistence.models import (
-    StoredInboxRecord,
-    StoredTrajectoryRecord,
-)
+from XBotv2.persistence.models import StoredInboxRecord, StoredTrajectoryRecord
 from xcore.state import StateService
 
 # Ordinary telemetry is flushed with a bounded delay; callers that declare a
@@ -629,8 +637,6 @@ class MessageHistoryStore(HistoryPort):
         _append_bytes(self._path, payload, sync=flush)
         if flush:
             state.last_sync = now
-
-
 
 
 def _trajectory_item(record: TrajectoryRecord) -> (

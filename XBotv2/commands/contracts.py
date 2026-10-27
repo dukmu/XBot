@@ -6,9 +6,8 @@ import re
 import shlex
 from dataclasses import dataclass, field
 from typing import Awaitable, Callable, Literal, Protocol
-
-from XBotv2.core.errors import OperationError
-from XBotv2.core.operations import EmptyRequest, Operation
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field
 from xcore.api.context import Context
 

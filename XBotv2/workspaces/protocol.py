@@ -4,19 +4,14 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from typing import Literal
-
 from fastapi import APIRouter, Query
 from fastapi.responses import StreamingResponse
 from pydantic import Field, JsonValue
-
 from XBotv2.protocol import WireModel, server_event
 from XBotv2.protocol.http_util import _SSE_RESPONSE, _sse_response, HttpServerError
 from XBotv2.protocol.sse import encode_server_event
-from XBotv2.core.domain import SessionScope
-from XBotv2.session.contracts import (
-    SessionResourceChanged,
-    SessionResourceRemoved,
-)
+from XBotv2.core.api.domain import SessionScope
+from XBotv2.session.contracts import SessionResourceChanged, SessionResourceRemoved
 from XBotv2.workspaces.contracts import (
     DirectoriesPort,
     DirectoryListing,
@@ -35,10 +30,7 @@ from XBotv2.workspaces.contracts import (
     WorkspaceResourceChanged,
     WorkspaceResourceRemoved,
 )
-from XBotv2.workspaces.events import (
-    WorkspaceCursorExpired,
-    WorkspaceEventFrame,
-)
+from XBotv2.workspaces.events import WorkspaceCursorExpired, WorkspaceEventFrame
 
 
 class WorkspaceListResponse(WireModel):

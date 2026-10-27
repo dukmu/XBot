@@ -6,13 +6,11 @@ import re
 import subprocess
 import sys
 from pathlib import Path
-
 import pytest
-
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
-from XBotv2.core.domain import InboxTarget
-from XBotv2.agentloop.events import Events, LoopFailure, TurnEnded
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.agentloop.api.events import Events, LoopFailure, TurnEnded
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     AssistantReasoningDelta,
     AssistantTextDelta,
@@ -22,22 +20,17 @@ from XBotv2.agentloop.outputs import (
     UsageObserved,
 )
 from XBotv2.application.app import start_application
-from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.messages import AssistantMessage
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.provider import ProviderAssistant, ProviderTool, ProviderUser
-from XBotv2.core.stream import ModelCompleted, TextDelta
-from XBotv2.core.tools import Tool, ToolCall, ToolFailed, ToolSucceeded
+from XBotv2.core.api.artifacts import ArtifactKind
+from XBotv2.core.api.messages import AssistantMessage
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.provider import ProviderAssistant, ProviderTool, ProviderUser
+from XBotv2.core.api.stream import ModelCompleted, TextDelta
+from XBotv2.core.api.tools import Tool, ToolCall, ToolFailed, ToolSucceeded
 from XBotv2.llm.mock import MockLLM
 from XBotv2.llm.provider_errors import normalize_sdk_provider_error
 from XBotv2.permissions import PermissionPolicy, PermissionRule
-from XBotv2.session.records import (
-    AssistantRecord,
-    HumanInputRecord,
-    ToolRecord,
-    project_message,
-)
+from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord, project_message
 from XBotv2.session.contracts import conversation_replay
 
 
@@ -130,8 +123,8 @@ async def test_hook_can_complete_a_turn_without_sending_a_model_request(
     plugin_dir = tmp_path / plugin_name
     plugin_dir.mkdir()
     (plugin_dir / "__init__.py").write_text(
-        "from XBotv2.agentloop.events import CompleteTurn, Events\n"
-        "from XBotv2.agentloop.outputs import LoopError\n"
+        "from XBotv2.agentloop.api.events import CompleteTurn, Events\n"
+        "from XBotv2.agentloop.api.outputs import LoopError\n"
         "\n"
         "class HookPlugin:\n"
         "    def apply(self, ctx, _config):\n"
@@ -331,11 +324,11 @@ import asyncio
 import os
 import sys
 from pathlib import Path
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
-from XBotv2.agentloop.outputs import LoopTurnEnded
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.outputs import LoopTurnEnded
 from XBotv2.application.app import start_application
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.records import project_message
 

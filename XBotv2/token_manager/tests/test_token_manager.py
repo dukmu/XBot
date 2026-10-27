@@ -1,15 +1,11 @@
 """Token manager observes typed requests; it does not own context policy."""
 
 from types import SimpleNamespace
-
 import pytest
-from xcore import Context
-
-from XBotv2.agentloop import HumanInput, InboxItem
-from XBotv2.core.domain import InboxTarget
-from XBotv2.agentloop.events import ModelRequestReady, ModelResponseObserved
-from XBotv2.application.app import start_application
-from XBotv2.core.domain import (
+from xcore.api.context import Context
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.core.api.domain import (
+    InboxTarget,
     CompletedStop,
     GenerationSettings,
     MeasurementUnavailable,
@@ -26,10 +22,12 @@ from XBotv2.core.domain import (
     TurnRequest,
     UsageDelta,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ModelRequest, ProviderUser, ToolSchema
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tokens import estimate_model_request_tokens
+from XBotv2.agentloop.api.events import ModelRequestReady, ModelResponseObserved
+from XBotv2.application.app import start_application
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ModelRequest, ProviderUser, ToolSchema
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tokens import estimate_model_request_tokens
 from XBotv2.llm.mock import MockLLM
 from XBotv2.token_manager.impl.plugin import TokenManagerPlugin
 

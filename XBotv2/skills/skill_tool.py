@@ -6,7 +6,7 @@ import re
 from typing import TYPE_CHECKING, Protocol
 
 if TYPE_CHECKING:
-    from XBotv2.core.variables import RuntimeVariables
+    from XBotv2.core.api.variables import RuntimeVariables
     from XBotv2.skills.registry import SkillRegistry
 
 

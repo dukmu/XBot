@@ -2,17 +2,19 @@
 
 from __future__ import annotations
 
-from xcore import Context
-
+from XBotv2.agentloop.api.contracts import TOOLS
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.context_builder.api.contracts import CONTEXT_BUILDER
+from xcore.api.context import Context
 from XBotv2.commands import Command
-from XBotv2.agentloop import Events
+from XBotv2.agentloop.api.events import Events
 from XBotv2.compact.contracts import CompactConfig
 from XBotv2.compact.service import CompactService
 from XBotv2.compact.tools import build_compact_tool
 
 
 class CompactPlugin:
-    inject = ["tools", "commands", "model", "loop_state", "usage", "artifacts"]
+    inject = [TOOLS, "commands", "model", LOOP_STATE, "usage", "artifacts", CONTEXT_BUILDER]
     name = "compact"
     Config = CompactConfig
 
@@ -20,10 +22,11 @@ class CompactPlugin:
         service = CompactService(
             events=ctx,
             model=ctx.model,
-            state=ctx.loop_state,
+            state=ctx.require(LOOP_STATE),
             usage=ctx.usage,
             config=config,
             artifacts=ctx.artifacts,
+            compiler=ctx.require(CONTEXT_BUILDER),
         )
 
         ctx.dispose(service._dispose)
@@ -32,7 +35,7 @@ class CompactPlugin:
         ctx.on(Events.MODEL_REQUEST_ERROR, service._on_model_request_error)
         ctx.on(Events.MODEL_RESPONSE_OBSERVED, service._on_after_model_response)
         ctx.on(Events.TURN_END, service._on_turn_end)
-        ctx.tools.register(build_compact_tool(service))
+        ctx.require(TOOLS).register(build_compact_tool(service))
         ctx.commands.register(Command(
             name="compact",
             effects=("history", "thread"),

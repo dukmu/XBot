@@ -8,7 +8,6 @@ loop composition.
 from __future__ import annotations
 
 from pydantic import JsonValue
-
 from XBotv2.agents.contracts import (
     AgentCreateOptions,
     AgentDefinition,
@@ -16,32 +15,28 @@ from XBotv2.agents.contracts import (
     AgentSelection,
     AllTools,
     InheritGeneration,
+    AgentCatalogPort,
 )
 from XBotv2.agents.events import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.application import ApplicationEventsPort, SessionLaunch
-from XBotv2.agentloop import (
+from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized, SessionLaunch
+from xcore.api.context import Context
+from XBotv2.agentloop.api.contracts import (
     DEFAULT_MAX_ITERATIONS,
-    AgentInbox,
     AgentLoopDriverPort,
     AgentLoopFactoryPort,
     LoopFactoryOptions,
     ToolsPort,
-    LoopState,
+    Inbox,
 )
-from XBotv2.config import RuntimeConfig
-from XBotv2.config import SettingsPort
+from XBotv2.agentloop.api.state import LoopState
+from XBotv2.config import RuntimeConfig, SettingsPort
 from XBotv2.config.contracts import ConfigPluginConfig
 from XBotv2.coretools.contracts import CoreToolsConfig
 from XBotv2.loader.contracts import PluginTree
-from XBotv2.core.errors import OperationError
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.metadata import (
-    MetadataReady,
-    MetadataUninitialized,
-    ThreadMetadata,
-)
-from XBotv2.core.domain import (
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.metadata import MetadataReady, MetadataUninitialized, ThreadMetadata
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     ReasoningGenerationMode,
     StandardGenerationMode,
@@ -50,7 +45,7 @@ from XBotv2.core.domain import (
     ResolvedModelSelection,
     ResolvedRuntimeSelection,
 )
-from XBotv2.core.runtime_logging import RuntimeLog
+from XBotv2.core.api.runtime_logging import RuntimeLog
 from XBotv2.session.contracts import SessionKey
 from XBotv2.llm import (
     EffortSelection,
@@ -60,7 +55,6 @@ from XBotv2.llm import (
     ProviderConfig,
     ProviderSelection,
 )
-from XBotv2.agents.contracts import AgentCatalogPort
 
 
 class AgentsService(AgentRuntimePort):
@@ -71,14 +65,14 @@ class AgentsService(AgentRuntimePort):
         *,
         catalog: AgentCatalogPort,
         factory: AgentLoopFactoryPort,
-        events: ApplicationEventsPort,
+        events: Context,
         state: LoopState,
         settings: SettingsPort,
         providers: LlmServicePort,
         model: ModelPort,
         tools: ToolsPort,
         artifacts: ArtifactStorePort,
-        inbox: AgentInbox,
+        inbox: Inbox,
         runtime_log: RuntimeLog,
     ) -> None:
         self.catalog = catalog

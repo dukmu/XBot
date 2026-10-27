@@ -5,19 +5,17 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
-
 import pytest
 from xcore import ServiceNotFoundError
-
 from XBotv2.core.filesystem.session_lock import acquire_session
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.errors import OperationError
 
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _TRY_ACQUIRE = """
 import sys
 from pathlib import Path
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.errors import OperationError
 from XBotv2.core.filesystem.session_lock import acquire_session
 
 try:
@@ -150,7 +148,7 @@ def test_process_exit_releases_its_session_lock(tmp_path):
 @pytest.mark.asyncio
 async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
     from XBotv2.application.app import start_application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.llm.mock import MockLLM
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -177,7 +175,7 @@ async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
 @pytest.mark.asyncio
 async def test_refused_start_does_not_remove_the_winning_runtime_files(tmp_path, monkeypatch):
     import XBotv2.application.app as application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     root = paths.session("contended").root
@@ -202,7 +200,7 @@ async def test_refused_start_does_not_remove_the_winning_runtime_files(tmp_path,
 @pytest.mark.asyncio
 async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_path, monkeypatch, caplog):
     import XBotv2.application.app as application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.persistence.store import ThreadPersistence
     from XBotv2.llm.mock import MockLLM
 
@@ -237,7 +235,7 @@ async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_
 @pytest.mark.asyncio
 async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeypatch):
     import XBotv2.application.app as application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     session = paths.session("shared")
@@ -261,7 +259,7 @@ async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeyp
 @pytest.mark.asyncio
 async def test_failed_application_handle_creation_releases_the_runtime(tmp_path):
     from XBotv2.application.app import create_agent_application
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.llm.mock import MockLLM
     from XBotv2.session.contracts import AgentApplicationOptions
 

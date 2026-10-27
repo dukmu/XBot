@@ -9,8 +9,7 @@ import sys
 import traceback
 from collections.abc import Mapping
 from pathlib import Path
-
-from XBotv2.core.runtime_logging import render_log_fields, runtime_log_context
+from XBotv2.core.api.runtime_logging import render_log_fields, runtime_log_context
 
 _DEFAULT_LOG_DIRNAME = "logs"
 _DEFAULT_LOG_BASENAME = "xbotv2.log"

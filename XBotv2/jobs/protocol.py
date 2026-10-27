@@ -3,17 +3,10 @@
 from __future__ import annotations
 
 from typing import Literal
-
 from fastapi import APIRouter
 from pydantic import Field
-from XBotv2.core.operations import EmptyRequest
-from XBotv2.jobs.contracts import (
-    LIST_JOBS,
-    STOP_ALL_JOBS,
-    STOP_JOB,
-    StopJob,
-    JobView,
-)
+from XBotv2.core.api.operations import EmptyRequest
+from XBotv2.jobs.contracts import LIST_JOBS, STOP_ALL_JOBS, STOP_JOB, StopJob, JobView
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
 

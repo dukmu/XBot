@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from pydantic import JsonValue
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.session.contracts import (
     SESSION_RESOURCE_CHANGED,
     SESSION_RESOURCE_REMOVED,

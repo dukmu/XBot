@@ -2,24 +2,16 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS, ToolsPort, ToolRegistration, HumanInput
 from pathlib import Path
 from pydantic import JsonValue
 from xcore.api.context import Context
-
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.agentloop import ToolsPort
-from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core import (
-    prompt_container,
-    prompt_element,
-    Tool,
-    ToolOutcome,
-    succeeded_text,
-)
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.contracts import HumanInput
-from XBotv2.agentloop.events import (
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.prompts import prompt_container, prompt_element
+from XBotv2.core.api.tools import Tool, ToolOutcome, succeeded_text, GuardDecision, ToolCall
+from XBotv2.agentloop.api.events import (
+    Events,
     AcceptInput,
     BeforeModelRequest,
     OnTurnInput,
@@ -28,8 +20,6 @@ from XBotv2.agentloop.events import (
     TurnEnded,
 )
 from XBotv2.commands import Command
-from XBotv2.core.tools import GuardDecision, ToolCall
-
 from .permission_scope import SkillPermissionScope
 from .registry import Skill, SkillRegistry
 from .skill_tool import load_skill
@@ -57,7 +47,7 @@ class SkillToolHandler:
 
 
 class SkillsPlugin:
-    inject = ["tools", "commands", "variables", "sandbox", "runtime_paths"]
+    inject = [TOOLS, "commands", "variables", "sandbox", "runtime_paths"]
     name = "skills"
 
     def __init__(self) -> None:
@@ -75,7 +65,7 @@ class SkillsPlugin:
     ) -> None:
         del config
         self._owner = ctx
-        self._tools: ToolsPort = ctx.tools
+        self._tools: ToolsPort = ctx.require(TOOLS)
         self._commands = ctx.commands
         self._variables: RuntimeVariables = ctx.variables
         self._sandbox = ctx.sandbox
@@ -85,7 +75,7 @@ class SkillsPlugin:
         ctx.on(Events.ON_TURN_INPUT, self._on_before_user_message)
         ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_tool_schema)
         ctx.on(Events.TURN_END, self._on_turn_end)
-        ctx.tools.guard(self._guard_tool_scope)
+        ctx.require(TOOLS).guard(self._guard_tool_scope)
 
     def _cleanup_runtime(self) -> None:
         """Reset plugin state after its registrations are released."""

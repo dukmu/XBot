@@ -1,14 +1,12 @@
 """Server host and dumb web-carrier plugin tests."""
 
 from pathlib import Path
-
 import pytest
 import pytest_asyncio
 import httpx
 import yaml
 from fastapi import APIRouter, FastAPI
-
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
 from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution
 from XBotv2.server.plugin import WebServer, route_keys

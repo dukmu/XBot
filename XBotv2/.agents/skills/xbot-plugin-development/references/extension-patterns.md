@@ -13,7 +13,7 @@ the only core-provided invocation metadata is an optional keyword-only
 ```python
 from typing import Protocol
 
-from XBotv2.core import Tool, ToolCall, ToolOutcome, succeeded_text
+from XBotv2.core.api.tools import Tool, ToolCall, ToolOutcome, succeeded_text
 
 
 class WeatherClient(Protocol):
@@ -303,7 +303,7 @@ carrier so the route and its exception handlers are one fiber-owned effect:
 ```python
 from fastapi import APIRouter
 from XBotv2.server import contribute_router
-from xcore import Context
+from xcore.api.context import Context
 
 
 class NotesRoutes:

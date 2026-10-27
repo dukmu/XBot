@@ -10,11 +10,9 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import cast
-
 from pydantic import JsonValue
-
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.loader import resolve_agent_tree
 from XBotv2.loader.contracts import PluginTree
 

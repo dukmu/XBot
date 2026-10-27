@@ -4,22 +4,20 @@ from __future__ import annotations
 
 import logging
 from uuid import uuid4
-
-from xcore import Context
-from XBotv2.agentloop.events import BeforeContextBuild
-
+from xcore.api.context import Context
+from XBotv2.agentloop.api.events import BeforeContextBuild
 from XBotv2.caption.api.models import (
     CaptionConfig,
     CaptionRequest,
     CaptionResult,
     CaptionTitleError,
 )
-from XBotv2.core.messages import HumanInputMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ModelRequest, ProviderMessage, ProviderSystem, ProviderUser
-from XBotv2.core.metadata import ThreadMetadataState
-from XBotv2.core.domain import AuxiliaryRequest, RequestObservation
-from XBotv2.core.tokens import estimate_request_tokens
+from XBotv2.core.api.messages import HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ProviderSystem, ProviderUser
+from XBotv2.core.api.metadata import Metadata
+from XBotv2.core.api.domain import AuxiliaryRequest, RequestObservation
+from XBotv2.core.api.tokens import estimate_request_tokens
 from XBotv2.llm import invoke_llm
 from XBotv2.llm.contracts import ModelPort
 from XBotv2.usage.api.service import UsagePort
@@ -92,7 +90,7 @@ class CaptionService:
         *,
         events: Context,
         model: ModelPort,
-        state: ThreadMetadataState,
+        state: Metadata,
         usage: UsagePort,
         session_id: str,
         config: CaptionConfig,

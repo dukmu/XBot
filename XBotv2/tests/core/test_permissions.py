@@ -1,11 +1,9 @@
 """Permission evaluation over canonical typed policies and grants."""
 
 import re
-
 import pytest
-
-from XBotv2.core import ToolCall
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.permissions.rules import permission_rule_for_tool_call
 from XBotv2.permissions.system import PermissionSystem

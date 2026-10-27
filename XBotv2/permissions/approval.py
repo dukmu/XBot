@@ -2,18 +2,11 @@
 
 import asyncio
 from collections.abc import Awaitable, Callable
-
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
-from XBotv2.permissions.contracts import (
-    Allowed,
-    Approval,
-    ApprovalPort,
-    Denied,
-    PermissionRequest,
-)
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import SessionLifecycle
-from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
+from XBotv2.permissions.contracts import Allowed, Approval, ApprovalPort, Denied, PermissionRequest
+from XBotv2.agentloop.api.events import Events, SessionLifecycle
+from xcore.api.context import Context
+from XBotv2.application.contracts import ClientEventsPort
 from XBotv2.interactions import InteractionWaiterPort
 
 
@@ -22,7 +15,7 @@ class ApprovalService(ApprovalPort):
 
     def __init__(
         self,
-        events: ApplicationEventsPort,
+        events: Context,
         client_events: ClientEventsPort,
         waiter: InteractionWaiterPort,
     ) -> None:

@@ -2,11 +2,11 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import AGENT_LOOP_FACTORY, INBOX, TOOLS
+from XBotv2.agentloop.api.state import LOOP_STATE
 from pathlib import Path
 from pydantic import JsonValue
-
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.agents.builtins import BUILTIN_AGENT_DEFINITIONS
 from XBotv2.agents.catalog import AgentCatalog
 from XBotv2.agents.commands import build_agent_commands
@@ -21,7 +21,7 @@ from XBotv2.agents.contracts import (
 from XBotv2.agents.loader import load_definitions
 from XBotv2.agents.protocol import build_router
 from XBotv2.agents.service import AgentsService
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.llm import (
     EffortSelection,
     ProviderSelection,
@@ -40,20 +40,20 @@ _CATALOG_DEPENDENCIES = [
 ]
 _RUNTIME_DEPENDENCIES = [
     "agent_catalog",
-    "agent_loop_factory",
+    AGENT_LOOP_FACTORY,
     "settings",
     # A conversational runtime must not become usable before its tool policy
     # guard is installed; a failed policy plugin is not an allow-all mode.
     "permissions",
     "llm",
     "model",
-    "tools",
+    TOOLS,
     "artifacts",
-    "loop_state",
-    # The inbox is composed by session after state restoration; requiring it
+    LOOP_STATE,
+    # The inbox is composed by agentloop after state restoration; requiring it
     # here builds the engine only after restored input is on hand, with no
     # reliance on plugin-tree order.
-    "agent_inbox",
+    INBOX,
     "commands",
     "agent_options",
     "session_launch",
@@ -86,15 +86,15 @@ def mount_catalog(ctx: Context) -> None:
 async def mount_runtime(ctx: Context) -> None:
     service = AgentsService(
         catalog=ctx.agent_catalog,
-        factory=ctx.agent_loop_factory,
+        factory=ctx.require(AGENT_LOOP_FACTORY),
         events=ctx,
-        state=ctx.loop_state,
+        state=ctx.require(LOOP_STATE),
         settings=ctx.settings,
         providers=ctx.llm,
         model=ctx.model,
-        tools=ctx.tools,
+        tools=ctx.require(TOOLS),
         artifacts=ctx.artifacts,
-        inbox=ctx.agent_inbox,
+        inbox=ctx.require(INBOX),
         runtime_log=ctx.runtime_log,
     )
     ctx.set("agent_runtime", service)

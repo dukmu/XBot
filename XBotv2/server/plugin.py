@@ -12,16 +12,11 @@ from collections.abc import Iterator
 from functools import partial
 import time
 from pydantic import JsonValue
-
 from fastapi import APIRouter, FastAPI
 from starlette.routing import BaseRoute
-from xcore import Context, Disposer
-
-from XBotv2.server.contracts import (
-    REGISTER_ROUTE,
-    RouteContribution,
-)
-from XBotv2.server.contracts import ServerInfo
+from xcore.api.context import Context
+from xcore import Disposer
+from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution, ServerInfo
 from XBotv2.server.protocol import build_core_router
 
 

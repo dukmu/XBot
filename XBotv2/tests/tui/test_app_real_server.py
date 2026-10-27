@@ -25,7 +25,6 @@ from functools import partial
 from pathlib import Path
 from typing import AsyncIterator, Callable
 from urllib.parse import urlsplit
-
 import pytest
 import pytest_asyncio
 import uvicorn
@@ -34,13 +33,12 @@ from rich.cells import cell_len
 from fastapi import FastAPI, Request
 from fastapi.responses import StreamingResponse
 from textual.widgets import Static
-
 from XBotv2.client import XBotClient, XBotClientError
-from XBotv2.core.domain import ProviderError
-from XBotv2.core.history import SurfaceReplaced
-from XBotv2.core.messages import CompactionSummaryMessage
-from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta, TextDelta
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.domain import ProviderError
+from XBotv2.core.api.history import SurfaceReplaced
+from XBotv2.core.api.messages import CompactionSummaryMessage
+from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ReasoningDelta, TextDelta
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.interactions.models import UserInputRequest
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions.contracts import PermissionRequest

@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from typing import Generic, Literal, TypeVar
-
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.core.domain import EventScope
+from XBotv2.core.api.domain import EventScope
 
 
 class WireModel(BaseModel):

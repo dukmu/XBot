@@ -5,9 +5,16 @@ from __future__ import annotations
 import inspect
 import json
 from typing import Literal
-
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import Tool, ToolCall, ToolError, ToolFailed, ToolOutput, ToolSucceeded, ToolOutcome
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import (
+    Tool,
+    ToolCall,
+    ToolError,
+    ToolFailed,
+    ToolOutput,
+    ToolSucceeded,
+    ToolOutcome,
+)
 from XBotv2.interactions import Answered, InteractionsPort, UserInputOption
 
 

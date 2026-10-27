@@ -6,11 +6,9 @@ import json
 import re
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-
 from pydantic import JsonValue
-
 from XBotv2.core.filesystem.operations import PATH_ACCESS, resolve_operation
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.permissions.contracts import (
     PermissionDecision,
     PermissionPolicy,

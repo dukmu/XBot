@@ -2,8 +2,7 @@
 
 import pytest
 import yaml
-
-from XBotv2.core import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.config.loader import load_plugin_tree
 
 

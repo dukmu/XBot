@@ -1,10 +1,8 @@
 """Session replay retains typed events in a bounded, shared sequence."""
 
 from dataclasses import dataclass
-
 import pytest
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     GenerationSettings,
     ModelRoute,
@@ -12,8 +10,10 @@ from XBotv2.core.domain import (
     ResolvedRuntimeSelection,
     StandardGenerationMode,
 )
-from XBotv2.core.metadata import ThreadMetadata, ThreadMetadataState
-from XBotv2.session.contracts import SessionKey, SessionRuntimeState
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.agentloop.impl.metadata import ThreadMetadataState
+from XBotv2.session.contracts import SessionKey
+from XBotv2.agentloop.impl.state import SessionRuntimeState
 from XBotv2.session.event_stream import SessionEventCursorExpired, SessionEventStream
 
 

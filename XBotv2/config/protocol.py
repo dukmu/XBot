@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from typing import Literal
-
 from fastapi import APIRouter, Query
 from pydantic import Field, JsonValue, StrictBool, field_validator, model_validator
-
 from XBotv2.config.contracts import (
     GET_POLICY,
     UPDATE_POLICY,
@@ -18,9 +16,9 @@ from XBotv2.config.contracts import (
     PluginConfigScope,
     PluginConfigUnavailable,
 )
-from XBotv2.core.errors import OperationError
-from XBotv2.core.operations import EmptyRequest
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.operations import EmptyRequest
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.config.plugin_catalog import plugin_config_catalog, update_plugin_config
 from XBotv2.protocol import WireModel
 from XBotv2.protocol.http_util import HttpServerError

@@ -5,16 +5,10 @@ from __future__ import annotations
 from collections.abc import AsyncGenerator, Mapping
 from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
-
 import httpx
 from pydantic import JsonValue, TypeAdapter
-
-from XBotv2.agents import (
-    AgentListResponse,
-    AgentSelectionRequest,
-    AgentSelectionResponse,
-)
-from XBotv2.agentloop import ToolListResponse
+from XBotv2.agents import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
+from XBotv2.agentloop.api.protocol import ToolListResponse
 from XBotv2.config import (
     PermissionDecision,
     PatchPluginConfig,
@@ -25,10 +19,7 @@ from XBotv2.config import (
     SessionPolicyPatch,
     SessionPolicyResponse,
 )
-from XBotv2.interactions import (
-    InteractionResponse,
-    UserInputResponseRequest,
-)
+from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.jobs import JobListResponse, JobStopResponse
 from XBotv2.llm import (
     EffortSelectionRequest,
@@ -68,16 +59,12 @@ from XBotv2.session import (
     ThreadSummary,
     UndoRequest,
 )
-from XBotv2.commands import (
-    CommandListResponse,
-    CommandRequest,
-    CommandResponse,
-)
+from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.workspaces import WorkspaceSnapshot
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.core.domain import Cursor
-from XBotv2.core.history import HistoryPage, TrajectoryRead
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.records import ConversationRecord
 
 ResponseModel = TypeVar("ResponseModel")

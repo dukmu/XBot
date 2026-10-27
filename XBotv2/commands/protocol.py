@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import shlex
 from typing import Literal
-
 from fastapi import APIRouter
 from pydantic import Field
 from XBotv2.protocol.http_util import HttpServerError
@@ -16,7 +15,7 @@ from XBotv2.commands.contracts import (
     ExecuteCommand,
     LIST_COMMANDS,
 )
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.session.contracts import SessionsPort
 
 

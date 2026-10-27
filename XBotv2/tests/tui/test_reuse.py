@@ -11,11 +11,9 @@ server's ``Literal`` types, so the two cannot drift apart.
 from __future__ import annotations
 
 from typing import get_args, get_type_hints
-
 import pytest
 from pydantic import BaseModel
-
-from XBotv2.core.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.session.contracts import ThreadSummary
 from XBotv2.tui import events, protocol
 from XBotv2.tui.events import (

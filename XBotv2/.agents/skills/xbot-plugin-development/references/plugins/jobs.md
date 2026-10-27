@@ -261,14 +261,10 @@ class JobsCommandPort(Protocol):
     async def stop_all(self) -> list[JobView]: ...
 
 
-class JobEventPort(Protocol):
-    async def emit(self, event: str, *args: object) -> None: ...
 ```
 
 `JobRunner.run` returns the domain's own result object; the registry stores it
-in `Succeeded.result` without interpreting it. `JobEventPort` is exported from
-`jobs.contracts` but not re-exported from `jobs.__init__` — import it from
-`XBotv2.jobs.contracts` when you need the publisher type.
+in `Succeeded.result` without interpreting it. The publisher uses `EventEmitter` from `xcore.api.events`.
 
 ## `JobRegistry` (`XBotv2/jobs/registry.py`)
 
@@ -279,7 +275,7 @@ class JobRegistry(JobsPort):
         *,
         limits: dict[str, int] | None = None,
         prefix: str = "job",
-        publisher: JobEventPort | None = None,
+        publisher: EventEmitter | None = None,
     ) -> None: ...
 ```
 
@@ -374,7 +370,7 @@ turns into a 404.
 - `prepare/fork` is refused with a retryable `thread_busy` `OperationError`
   while a background job is active. Preserve that: forking a thread with live
   jobs would duplicate them.
-- Publish through `JobEventPort` rather than emitting bus events directly, so
+- Publish through `EventEmitter` rather than emitting bus events directly, so
   the registry stays the single source of id and ordering.
 - Return a domain result from `run()` and let the registry store it; do not
   invent an output-store abstraction for a new job kind.

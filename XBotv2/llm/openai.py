@@ -9,8 +9,7 @@ from typing import AsyncIterator
 from openai.types.chat.chat_completion_chunk import ChoiceDelta
 from openai.types.completion_usage import CompletionUsage
 from pydantic import JsonValue
-
-from XBotv2.core.provider import (
+from XBotv2.core.api.provider import (
     ProviderAssistant,
     ProviderMessage,
     ProviderSystem,
@@ -20,8 +19,8 @@ from XBotv2.core.provider import (
     ModelRequest,
     ToolSchema,
 )
-from XBotv2.core.parts import ImagePart, ReasoningPart, TextPart
-from XBotv2.core.stream import (
+from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.stream import (
     ModelCompleted,
     ModelResponse,
     ModelStreamEvent,
@@ -29,7 +28,7 @@ from XBotv2.core.stream import (
     ReasoningDelta,
     TextDelta,
 )
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     CompletedStop,
     LengthLimitedStop,
     MeasurementUnavailable,
@@ -40,20 +39,12 @@ from XBotv2.core.domain import (
     ToolCallsRequestedStop,
     UsageDelta,
 )
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.llm.impl.base import BaseProvider
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
-from XBotv2.llm.provider_errors import (
-    normalize_sdk_provider_error,
-    provider_context_overflow,
-)
-from XBotv2.llm.base import (
-    attachment_prompt,
-    tool_content,
-    provider_usage,
-    resolved_image_data,
-)
+from XBotv2.llm.provider_errors import normalize_sdk_provider_error, provider_context_overflow
+from XBotv2.llm.base import attachment_prompt, tool_content, provider_usage, resolved_image_data
 
 
 @dataclass(slots=True)

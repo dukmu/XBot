@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 from pydantic import JsonValue
-
-from XBotv2.core import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded, TextPart
+from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.core.api.parts import TextPart
 from XBotv2.mcp_plugin.mcp_client import MCPClient
 
 

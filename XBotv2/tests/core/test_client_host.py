@@ -5,12 +5,10 @@ from __future__ import annotations
 import asyncio
 import threading
 from pathlib import Path
-
 import pytest
-from xcore import Context
-
+from xcore.api.context import Context
 import XBotv2.application.client as client_host
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
 
 

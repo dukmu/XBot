@@ -5,23 +5,16 @@ from __future__ import annotations
 import base64
 import io
 from pathlib import Path
-
 import json
 import pytest
-
 from XBotv2.coretools import filesystem as filesystem_module
-from XBotv2.coretools.filesystem import (
-    edit,
-    path as manage_path,
-    read,
-    search,
-)
+from XBotv2.coretools.filesystem import edit, path as manage_path, read, search
 from XBotv2.sandbox.policy import SandboxPolicy
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem import operations as filesystem_operations
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.parts import ImagePart, TextPart
-from XBotv2.core.tools import ToolFailed, ToolOutcome, ToolSucceeded
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.tools import ToolFailed, ToolOutcome, ToolSucceeded
 
 
 def _success(result: ToolOutcome) -> ToolSucceeded:

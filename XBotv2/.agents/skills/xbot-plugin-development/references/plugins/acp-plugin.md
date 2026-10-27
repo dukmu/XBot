@@ -219,7 +219,7 @@ class ACPLaunch:
     provider_name: str | None
     no_plugins: bool
     selected_agent: str | None = None
-    llm_override: BaseProvider | None = None
+    llm_override: Provider | None = None
 ```
 
 ### `ACPEventMapper` (`XBotv2/acp_plugin/events.py`)

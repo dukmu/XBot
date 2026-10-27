@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.commands import CommandsPort
 from XBotv2.tui.commands import register_client_commands
 from XBotv2.tui.config import TextualTuiConfig

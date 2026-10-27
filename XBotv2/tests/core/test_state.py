@@ -1,11 +1,11 @@
 """Tests for ThreadPersistence message persistence."""
 
 from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.domain import MessageId
-from XBotv2.core.messages import HumanInputMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.paths import RuntimePaths
-from xcore import Context
+from XBotv2.core.api.domain import MessageId
+from XBotv2.core.api.messages import HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.paths import RuntimePaths
+from xcore.api.context import Context
 
 
 def _session_paths(data_dir, session_id="s1"):

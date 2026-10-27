@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict, Field, PositiveFloat, field_validator
-from XBotv2.agentloop.contracts import AllTools, ToolSelection
+from XBotv2.agentloop.api.contracts import AllTools, ToolSelection
 
 
 class CoreToolsModel(BaseModel):

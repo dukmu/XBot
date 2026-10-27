@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from typing import Protocol
-
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_client_tree
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
 
 

@@ -58,25 +58,22 @@ def _write_runtime_config(data_dir, config):
     path.write_text(yaml.safe_dump(entries, sort_keys=False), encoding="utf-8")
 
 
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 import yaml
 from xcore import ServiceNotFoundError
-
-from XBotv2.application.app import start_application
-from XBotv2.application.app import create_agent_application
+from XBotv2.application.app import start_application, create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session.contracts import AgentApplicationOptions
-from XBotv2.agentloop import InboxItem, HumanInput
-from XBotv2.core.domain import InboxTarget
-from XBotv2.agentloop.outputs import AssistantCompleted, LoopError, ToolCompleted
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import ToolCall, ToolSucceeded
-from XBotv2.core.artifacts import ArtifactKind, ImageRef
-from XBotv2.core.messages import HumanInputMessage, ToolMessage
-from XBotv2.core.parts import ImagePart
-from XBotv2.core.provider import ProviderTool, ProviderUser, ResolvedImagePart
+from XBotv2.agentloop.api.contracts import InboxItem, HumanInput
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolCompleted
+from XBotv2.core.api.parts import TextPart, ImagePart
+from XBotv2.core.api.tools import ToolCall, ToolSucceeded
+from XBotv2.core.api.artifacts import ArtifactKind, ImageRef
+from XBotv2.core.api.messages import HumanInputMessage, ToolMessage
+from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedImagePart
 
 
 async def _run_turn(engine, content):
@@ -786,7 +783,7 @@ class TestApplicationStartupBasics:
             f"""
 from pathlib import Path
 from XBotv2.application import APPLICATION_INITIALIZED
-from XBotv2.core import Tool
+from XBotv2.core.api.tools import Tool
 
 def runtime_tool() -> str:
     return "ok"
@@ -854,8 +851,8 @@ plugin = InitFailPlugin()""",
             f"""
 from pathlib import Path
 from XBotv2.application import APPLICATION_INITIALIZED
-from XBotv2.agentloop import Events
-from XBotv2.core import Tool
+from XBotv2.agentloop.api.events import Events
+from XBotv2.core.api.tools import Tool
 
 LOG = Path({str(lifecycle_log)!r})
 
@@ -1075,7 +1072,7 @@ plugin = NormalClosePlugin()""",
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "__init__.py").write_text(
             """
-from XBotv2.core import Tool
+from XBotv2.core.api.tools import Tool
 
 def _plugin_tool() -> str:
     '''Plugin tool.'''
@@ -1118,7 +1115,7 @@ plugin = SimplePlugin()
         tools_dir = config_dir / "tools"
         tools_dir.mkdir(parents=True)
         (tools_dir / "greeting.py").write_text(
-            "from XBotv2.core import Tool\n\n"
+            "from XBotv2.core.api.tools import Tool\n\n"
             "async def workspace_greeting(name: str) -> str:\n"
             "    '''Greet one person from a workspace Tool.'''\n"
             "    return f'hello {name}'\n\n"
@@ -1488,7 +1485,7 @@ plugin = ConfiguredPlugin()
     async def test_subagent_runtime_does_not_require_persistence(
         self, temp_data_dir, temp_workspace
     ):
-        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.core.api.stream import ModelCompleted
 
         _write_plugins(temp_data_dir, {"persistence": {"disabled": True}})
         (temp_workspace / ".agents").mkdir()
@@ -1548,8 +1545,8 @@ plugin = ConfiguredPlugin()
     async def test_parent_agent_runs_a_subagent_application_through_jobs(
         self, temp_data_dir, temp_workspace
     ):
-        from XBotv2.core.provider import ProviderTool
-        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.core.api.provider import ProviderTool
+        from XBotv2.core.api.stream import ModelCompleted
         from XBotv2.permissions import PermissionPolicy, PermissionRule
 
         (temp_workspace / ".agents").mkdir()
@@ -1676,8 +1673,8 @@ plugin = ConfiguredPlugin()
     ):
         import asyncio
 
-        from XBotv2.core.domain import ProviderError
-        from XBotv2.core.stream import ModelCompleted, ModelFailed
+        from XBotv2.core.api.domain import ProviderError
+        from XBotv2.core.api.stream import ModelCompleted, ModelFailed
         from XBotv2.core.filesystem.session_lock import acquire_session
 
         (temp_workspace / ".agents").mkdir()
@@ -1780,7 +1777,7 @@ plugin = ConfiguredPlugin()
     ):
         import asyncio
 
-        from XBotv2.core.stream import ModelCompleted
+        from XBotv2.core.api.stream import ModelCompleted
         from XBotv2.core.filesystem.session_lock import acquire_session
 
         (temp_workspace / ".agents").mkdir()
@@ -1869,9 +1866,9 @@ plugin = ConfiguredPlugin()
     async def test_parent_reads_failed_subagent_and_continues_the_turn(
         self, temp_data_dir, temp_workspace
     ):
-        from XBotv2.core.domain import ProviderError
-        from XBotv2.core.stream import ModelCompleted, ModelFailed
-        from XBotv2.core.tools import ToolFailed
+        from XBotv2.core.api.domain import ProviderError
+        from XBotv2.core.api.stream import ModelCompleted, ModelFailed
+        from XBotv2.core.api.tools import ToolFailed
 
         (temp_workspace / ".agents").mkdir()
         (temp_workspace / ".agents" / "reviewer.md").write_text(
@@ -1956,8 +1953,8 @@ plugin = ConfiguredPlugin()
         self, temp_data_dir, temp_workspace
     ):
         from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
-        from XBotv2.core.domain import ProviderError
-        from XBotv2.core.stream import ModelFailed
+        from XBotv2.core.api.domain import ProviderError
+        from XBotv2.core.api.stream import ModelFailed
         from XBotv2.goal.api.models import ActiveGoal
 
         class FailingGoalLLM(MockLLM):

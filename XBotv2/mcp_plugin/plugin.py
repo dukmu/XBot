@@ -2,21 +2,18 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS
+from XBotv2.agentloop.api.state import LOOP_STATE
 import json
-
 from XBotv2.application import APPLICATION_INITIALIZED, ApplicationInitialized
-from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import SessionLifecycle
+from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text
+from XBotv2.agentloop.api.events import Events, SessionLifecycle
 from xcore.api.context import Context
 from pydantic import JsonValue
-
 from .mcp_client import MCPClient
 from .callbacks import client_callbacks
-from .contracts import MCPConfig
-from .contracts import MCP_PLUGIN_ID
+from .contracts import MCPConfig, MCP_PLUGIN_ID
 from .tool import MCPTool
-
 import logging
 
 logger = logging.getLogger("xbotv2.mcp")
@@ -98,7 +95,7 @@ class MCPCompletionHandler:
 
 
 class MCPPlugin:
-    inject = ["tools", "model", "interactions", "session", "usage", "loop_state"]
+    inject = [TOOLS, "model", "interactions", "session", "usage", LOOP_STATE]
     name = MCP_PLUGIN_ID
     Config = MCPConfig
 
@@ -111,12 +108,12 @@ class MCPPlugin:
 
     def apply(self, ctx: Context, config: MCPConfig) -> None:
         self._owner = ctx
-        self._tools = ctx.tools
+        self._tools = ctx.require(TOOLS)
         self._model = ctx.model
         self._interactions = ctx.interactions
         self._session = ctx.session
         self._usage = ctx.usage
-        self._loop_state = ctx.loop_state
+        self._loop_state = ctx.require(LOOP_STATE)
         self._config = config
         ctx.dispose(self._dispose)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)
@@ -346,7 +343,6 @@ class MCPPlugin:
 
 def _protocol_result(data: dict[str, JsonValue]) -> ToolOutcome:
     return succeeded_text(json.dumps(data, ensure_ascii=False))
-
 
 
 plugin = MCPPlugin()

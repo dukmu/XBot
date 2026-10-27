@@ -5,21 +5,16 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, Protocol, TypeAlias
-
-from XBotv2.core.operations import EmptyRequest, Operation
-from XBotv2.core.providers import BaseProvider
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.core.api.operations import EmptyRequest, Operation
+from XBotv2.core.api.providers import Provider
+from XBotv2.core.api.variables import RuntimeVariables
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from XBotv2.core.domain import (
-    AgentExecutionLimits,
-    GenerationMode,
-    ModelRoute,
-)
-from XBotv2.agentloop.contracts import AllTools
+from XBotv2.core.api.domain import AgentExecutionLimits, GenerationMode, ModelRoute
+from XBotv2.agentloop.api.contracts import AllTools
 from XBotv2.permissions.contracts import PermissionPolicy
 
 if TYPE_CHECKING:
-    from XBotv2.agentloop import AgentLoopDriverPort
+    from XBotv2.agentloop.api.contracts import AgentLoopDriverPort
     from XBotv2.application import SessionLaunch
     from XBotv2.config import RuntimeConfig
     from XBotv2.llm import EffortSelection, ProviderSelection
@@ -81,7 +76,7 @@ class AgentDefinition(BaseModel):
 class AgentCreateOptions:
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
 
 
 @dataclass(frozen=True, slots=True)

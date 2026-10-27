@@ -1,10 +1,8 @@
 """Public prompt contribution contracts."""
 
 from typing import Protocol
-
 from xcore.api.services import ServiceKey
-
-from XBotv2.context_builder.contracts import PromptComponent
+from XBotv2.context_builder.api.contracts import PromptComponent
 
 
 class PromptsPort(Protocol):

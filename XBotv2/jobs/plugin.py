@@ -7,30 +7,18 @@ output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 from __future__ import annotations
 
 import json
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
-from XBotv2.core.errors import OperationError
-from XBotv2.agentloop import (
-    AgentLoopDriverPort,
-    EventPort,
-    Events,
-    InboxItem,
-    RuntimeInput,
-)
-from XBotv2.agentloop.events import SessionLifecycle
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.prompts import prompt_container, prompt_element
+from XBotv2.core.api.errors import OperationError
+from XBotv2.agentloop.api.contracts import AgentLoopDriverPort, InboxItem, RuntimeInput
+from xcore.api.events import EventDispatch
+from XBotv2.agentloop.api.events import Events, SessionLifecycle
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.prompts import prompt_container, prompt_element
 from XBotv2.jobs.commands import build_jobs_commands
-from XBotv2.jobs.contracts import JOB_COMPLETED, JOB_UPDATED
-from XBotv2.jobs.protocol import (
-    build_jobs_router,
-    job_completed_event,
-    job_updated_event,
-)
-from XBotv2.jobs.registry import JobRegistry
-from XBotv2.core.operations import EmptyRequest
 from XBotv2.jobs.contracts import (
+    JOB_COMPLETED,
+    JOB_UPDATED,
     JobsConfig,
     LIST_JOBS,
     STOP_ALL_JOBS,
@@ -40,6 +28,9 @@ from XBotv2.jobs.contracts import (
     JobCatalog,
     JobView,
 )
+from XBotv2.jobs.protocol import build_jobs_router, job_completed_event, job_updated_event
+from XBotv2.jobs.registry import JobRegistry
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.session.contracts import PREPARE_FORK, PrepareFork
 from XBotv2.server import contribute_router
 
@@ -89,7 +80,7 @@ class JobHandlers:
         self,
         registry: JobRegistry,
         engine: AgentLoopDriverPort,
-        events: EventPort,
+        events: EventDispatch,
     ) -> None:
         self._registry = registry
         self._engine = engine

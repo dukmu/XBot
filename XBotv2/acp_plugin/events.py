@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from typing import Any
-
 from acp import (
     start_tool_call,
     text_block,
@@ -15,7 +14,7 @@ from acp import (
     update_user_message_text,
 )
 from acp.schema import UsageUpdate
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     AssistantReasoningDelta,
     AssistantTextDelta,
@@ -30,8 +29,8 @@ from XBotv2.agentloop.outputs import (
     UsageObserved,
     is_loop_event,
 )
-from XBotv2.core.domain import TokenCounters
-from XBotv2.core.parts import ReasoningPart, TextPart
+from XBotv2.core.api.domain import TokenCounters
+from XBotv2.core.api.parts import ReasoningPart, TextPart
 from XBotv2.interactions import ClientNotice
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.session import (
@@ -42,13 +41,7 @@ from XBotv2.session import (
     RuntimeNoticeRecord,
     ToolRecord,
 )
-from XBotv2.core.tools import (
-    ToolCancelled,
-    ToolDenied,
-    ToolFailed,
-    ToolOutcome,
-    ToolSucceeded,
-)
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolOutcome, ToolSucceeded
 
 # The engine reports turn outcomes in its own vocabulary; ACP accepts a fixed
 # set of stop reasons, so the adapter translates at this boundary. Unknown

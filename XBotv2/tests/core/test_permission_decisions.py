@@ -1,10 +1,8 @@
 """Approval responses remain typed at the interaction boundary."""
 
 import asyncio
-
 import pytest
-
-from XBotv2.core import ToolCall
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.permissions import Allowed, Denied, PermissionRequest
 from XBotv2.permissions.approval import ApprovalService, request_decision
 from XBotv2.permissions.contracts import ToolPermission

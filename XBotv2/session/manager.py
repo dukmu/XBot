@@ -1,7 +1,7 @@
 """Live thread ownership and persisted session resource summaries."""
 
 from __future__ import annotations
-
+from xcore.api.events import EventEmitter
 import asyncio
 import base64
 import binascii
@@ -11,49 +11,35 @@ from collections.abc import Mapping
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Literal, Protocol
-
-from XBotv2.core.paths import RuntimePaths, SessionPaths
-from XBotv2.core.runtime_logging import (
+from XBotv2.core.api.paths import RuntimePaths, SessionPaths
+from XBotv2.core.api.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
     RuntimeLog,
     push_log_context,
     reset_log_context,
 )
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.errors import OperationError
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.filesystem.artifacts import ArtifactStore
-from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ImageRef
-from XBotv2.core.messages import (
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef, ImageRef
+from XBotv2.core.api.messages import (
     AssistantMessage,
     ConversationMessage,
     HumanInputMessage,
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.parts import ImagePart
-from XBotv2.core.tools import ToolFailed, ToolSucceeded
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import StateChanged
+from XBotv2.core.api.parts import ImagePart
+from XBotv2.core.api.tools import ToolFailed, ToolSucceeded
+from XBotv2.agentloop.api.events import Events, StateChanged
 from pydantic import JsonValue
 from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
-from XBotv2.usage.api.service import (
-    USAGE_COUNTERS_KEY,
-    USAGE_STATE_NAMESPACE,
-)
-from XBotv2.core.domain import (
-    Cursor,
-    ReasoningGenerationMode,
-    TokenCounters,
-    UsageSnapshot,
-)
-from XBotv2.core.providers import BaseProvider
+from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE
+from XBotv2.core.api.domain import Cursor, ReasoningGenerationMode, TokenCounters, UsageSnapshot
+from XBotv2.core.api.providers import Provider
 from XBotv2.permissions import Allowed, Denied, PermissionsPort
-from XBotv2.interactions import (
-    Answered,
-    InteractionNotPending,
-    InteractionResolution,
-)
-from XBotv2.core.timing import conversation_stats
+from XBotv2.interactions import Answered, InteractionNotPending, InteractionResolution
+from XBotv2.core.api.timing import conversation_stats
 from XBotv2.session.runtime import SessionRuntime, require_idle, start_regenerate_turn
 from XBotv2.session.contracts import (
     AgentApplicationFactory,
@@ -86,18 +72,9 @@ from XBotv2.session.contracts import (
     new_session_id,
 )
 from XBotv2.session.session import delete_persisted_session, fork_persisted_session
-from XBotv2.core.history import HistoryPage, HistoryCursorInvalid, TrajectoryRead
-from XBotv2.core.operations import (
-    Operation,
-    RequestT,
-    ResponseT,
-    dispatch_operation,
-)
-from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
-
-
-class ResourceEvents(Protocol):
-    async def emit(self, event: str, *args: object) -> None: ...
+from XBotv2.core.api.history import HistoryPage, HistoryCursorInvalid, TrajectoryRead
+from XBotv2.core.api.operations import Operation, RequestT, ResponseT, dispatch_operation
+from XBotv2.core.api.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
 
 
 class SessionManager(SessionsPort):
@@ -106,7 +83,7 @@ class SessionManager(SessionsPort):
     def __init__(
         self,
         paths: RuntimePaths,
-        events: ResourceEvents,
+        events: EventEmitter,
         *,
         idle_timeout: float | None = 3600.0,
         reap_interval: float = 60.0,
@@ -315,7 +292,7 @@ class SessionManager(SessionsPort):
         mode: str = "new",
         no_plugins: bool,
         plugin_configs: dict[str, dict[str, JsonValue]] | None = None,
-        llm_override: BaseProvider | None = None,
+        llm_override: Provider | None = None,
         parent_thread_id: str = "",
         parent_permission_system: PermissionsPort | None = None,
         is_subagent: bool = False,
@@ -414,7 +391,7 @@ class SessionManager(SessionsPort):
         mode: str,
         no_plugins: bool,
         plugin_configs: dict[str, dict[str, JsonValue]] | None,
-        llm_override: BaseProvider | None,
+        llm_override: Provider | None,
         parent_thread_id: str,
         parent_permission_system: PermissionsPort | None,
         is_subagent: bool,

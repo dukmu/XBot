@@ -15,21 +15,21 @@ import asyncio
 import threading
 from contextlib import asynccontextmanager
 from typing import AsyncIterator
-
 import pytest
 from textual.app import App, ComposeResult
-
-from XBotv2.agentloop.outputs import AssistantReasoningDelta, AssistantTextDelta
-from XBotv2.core.domain import CompletedStop, ModelTiming
-from XBotv2.session.records import AssistantRecord
-from XBotv2.session.records import HumanInputRecord
+from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, AssistantTextDelta
+from XBotv2.core.api.domain import CompletedStop, ModelTiming
+from XBotv2.session.records import AssistantRecord, HumanInputRecord
 from XBotv2.tests.tui.factories import (
     assistant_record,
     history_page,
     human_record,
     tool_record,
+    SESSION,
+    THREAD,
+    frames,
+    snapshot,
 )
-from XBotv2.tests.tui.factories import SESSION, THREAD, frames, snapshot
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,
@@ -41,11 +41,7 @@ from XBotv2.tui.protocol import FrameTranslator
 from XBotv2.tui.state import SessionState, reduce
 from XBotv2.tui.status import Connection
 from XBotv2.tui.view.entries import BlockVisibility
-from XBotv2.tui.view.transcript import (
-    ThinkingActivity,
-    TranscriptScroll,
-    TranscriptView,
-)
+from XBotv2.tui.view.transcript import ThinkingActivity, TranscriptScroll, TranscriptView
 
 
 def build_state(*pairs: tuple[str, dict]) -> SessionState:

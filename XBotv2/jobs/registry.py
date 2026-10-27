@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
-
 from XBotv2.jobs.contracts import (
     JOB_COMPLETED,
     JOB_UPDATED,
@@ -16,7 +15,6 @@ from XBotv2.jobs.contracts import (
     FailedRunning,
     Job,
     JobError,
-    JobEventPort,
     JobId,
     JobIdentity,
     JobNotFound,
@@ -33,6 +31,7 @@ from XBotv2.jobs.contracts import (
     WaitMode,
     WaitResult,
 )
+from xcore.api.events import EventEmitter
 
 logger = logging.getLogger("xbotv2.jobs")
 
@@ -43,7 +42,7 @@ class JobRegistry(JobsPort):
         *,
         limits: dict[str, int] | None = None,
         prefix: str = "job",
-        publisher: JobEventPort | None = None,
+        publisher: EventEmitter | None = None,
     ) -> None:
         self._jobs: dict[JobId, Job] = {}
         self._completion_events: dict[JobId, asyncio.Event] = {}

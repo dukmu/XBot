@@ -12,30 +12,29 @@ batch) must:
 
 from __future__ import annotations
 
+from XBotv2.agentloop.impl.tool_runtime import invoke_tool_function
 import asyncio
 import json
 from pathlib import Path
-
 import pytest
 import pytest_asyncio
 import yaml
 import httpx
-
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.agentloop import AllTools
-from XBotv2.core.tools import Tool, ToolSucceeded
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.agentloop.api.contracts import AllTools
+from XBotv2.core.api.tools import Tool, ToolSucceeded
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.llm.mock import MockLLM
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     LoopError,
     LoopTurnEnded,
     TurnCancelled,
     ToolCompleted,
 )
-from XBotv2.core.parts import TextPart
+from XBotv2.core.api.parts import TextPart
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.session.events import MessagePublishedEvent
 from XBotv2.session.runtime import start_regenerate_turn
@@ -282,9 +281,9 @@ async def test_foldin_emits_turn_started_and_no_duplicate(foldin_app) -> None:
 
 @pytest.mark.asyncio
 async def test_default_steer_is_wrapped_only_for_model_and_survives_resume(foldin_app):
-    from XBotv2.core.messages import HumanInputMessage, ToolMessage
-    from XBotv2.core.provider import ProviderUser
-    from XBotv2.agentloop.outputs import TurnCancelled
+    from XBotv2.core.api.messages import HumanInputMessage, ToolMessage
+    from XBotv2.core.api.provider import ProviderUser
+    from XBotv2.agentloop.api.outputs import TurnCancelled
 
     llm = MockLLM(responses=[
         {"tool_calls": [{"id": "wait-steer", "name": "wait_for_release", "args": {"value": "finished"}}]},
@@ -495,7 +494,7 @@ async def test_background_task_completion_reaches_tui_job_panel(foldin_app) -> N
         "justification",
         "timeout_seconds",
     }
-    started = await tools["shell"].ainvoke(
+    started = await invoke_tool_function(tools["shell"],
         {"command": "echo done", "background": True},
     )
     job_id = started.output.parts[0].text.removeprefix("Started ")
@@ -554,7 +553,7 @@ async def test_background_job_failure_and_cancel_notices_are_consumed_once(
     }
 
     async def start(command: str) -> str:
-        result = await tools["shell"].ainvoke(
+        result = await invoke_tool_function(tools["shell"],
             {"command": command, "background": True},
         )
         return result.output.parts[0].text.removeprefix("Started ")
@@ -634,7 +633,7 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
             ctx.application._context.artifacts,
         )
     }
-    started = await tools["shell"].ainvoke(
+    started = await invoke_tool_function(tools["shell"],
         {"command": "emit output", "background": True},
     )
     job_id = started.output.parts[0].text.removeprefix("Started ")
@@ -644,10 +643,10 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
     assert job.result.output_ref.kind.value == "tool_results"
     assert ctx.application._context.artifacts.read(job.result.output_ref) == b"abcdef"
 
-    first = await tools["read_shell"].ainvoke(
+    first = await invoke_tool_function(tools["read_shell"],
         {"id": job_id, "cursor": None, "max_bytes": 3},
     )
-    second = await tools["read_shell"].ainvoke(
+    second = await invoke_tool_function(tools["read_shell"],
         {"id": job_id, "cursor": 3, "max_bytes": 3},
     )
     assert isinstance(first, ToolSucceeded)
@@ -665,12 +664,12 @@ async def test_shell_output_pages_are_continuable_through_shell_tools(
         "truncated": False,
     }
 
-    empty_started = await tools["shell"].ainvoke(
+    empty_started = await invoke_tool_function(tools["shell"],
         {"command": "emit empty", "background": True},
     )
     empty_id = empty_started.output.parts[0].text.removeprefix("Started ")
     await jobs.wait([empty_id], timeout=1)
-    empty_page = await tools["read_shell"].ainvoke({"id": empty_id})
+    empty_page = await invoke_tool_function(tools["read_shell"], {"id": empty_id})
     assert isinstance(empty_page, ToolSucceeded)
     assert json.loads(empty_page.output.parts[0].text) == {
         "data": "",
@@ -719,7 +718,7 @@ async def test_session_close_cancels_and_removes_owned_background_job(
         )
         if tool.name == "shell"
     )
-    result = await shell_tool.ainvoke(
+    result = await invoke_tool_function(shell_tool,
         {"command": "block", "background": True},
     )
     job_id = result.output.parts[0].text.removeprefix("Started ")

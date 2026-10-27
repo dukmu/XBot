@@ -1,10 +1,9 @@
 """Usage aggregation over provider-neutral request observations."""
 
 import pytest
-from xcore import Context
+from xcore.api.context import Context
 from xcore.state import StateService
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     AuxiliaryRequest,
     GenerationSettings,
     MeasurementUnavailable,

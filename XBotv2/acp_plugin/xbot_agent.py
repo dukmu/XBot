@@ -10,12 +10,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape, quoteattr
-
-from acp import (
-    PROTOCOL_VERSION,
-    RequestError,
-    update_agent_message_text,
-)
+from acp import PROTOCOL_VERSION, RequestError, update_agent_message_text
 from acp.schema import (
     AgentCapabilities,
     AllowedOutcome,
@@ -55,29 +50,17 @@ from acp.schema import (
     ToolCallProgress,
     Usage,
 )
-
 from XBotv2.main import __version__
-from XBotv2.agentloop.outputs import LoopError, LoopTurnEnded
+from XBotv2.agentloop.api.outputs import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session import SessionEventFrame, conversation_replay
 from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
-from XBotv2.commands import (
-    EXECUTE_COMMAND,
-    LIST_COMMANDS,
-    CommandCatalog,
-    ExecuteCommand,
-)
+from XBotv2.commands import EXECUTE_COMMAND, LIST_COMMANDS, CommandCatalog, ExecuteCommand
 from pydantic import JsonValue
-
-from XBotv2.core import EmptyRequest
-from XBotv2.core.domain import TokenCounters, TurnScope
+from XBotv2.core.api.operations import EmptyRequest
+from XBotv2.core.api.domain import TokenCounters, TurnScope
 from XBotv2.interactions.contracts import InteractionRequest, InteractionResolution
-from XBotv2.interactions.models import (
-    Answered,
-    InputCancelled,
-    InputTimedOut,
-    UserInputRequest,
-)
+from XBotv2.interactions.models import Answered, InputCancelled, InputTimedOut, UserInputRequest
 from XBotv2.permissions.contracts import (
     Allowed,
     Denied,
@@ -85,8 +68,8 @@ from XBotv2.permissions.contracts import (
     PermissionRequest,
     ToolPermission,
 )
-from XBotv2.core.errors import OperationError
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
 from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin import MCP_PLUGIN_ID
 from XBotv2.session.contracts import (
@@ -97,8 +80,8 @@ from XBotv2.session.contracts import (
     SessionNotFound,
     ThreadSummary,
     ThreadNotActive,
+    SessionsPort,
 )
-from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.events import AgentConfiguredEvent
 
 _MCP_NAME = re.compile(r"^[A-Za-z0-9._-]+$")

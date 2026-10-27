@@ -33,7 +33,7 @@ class ConfigService(SettingsPort):
         *,
         session_id: str,
         workspace_root: Path,
-        events: ApplicationEventsPort,
+        events: Context,
         runtime_log: RuntimeLog,
         extra_plugins: list[dict[str, JsonValue]] | None = None,
         plugin_dirs: list[Path | str] | None = None,

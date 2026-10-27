@@ -3,22 +3,12 @@
 from __future__ import annotations
 
 import logging
-
-from xcore import Context
-
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import (
-    AfterToolExecution,
-    InputAccepted,
-    ReplaceExecution,
-)
-from XBotv2.content_cache.impl.content_cache import (
-    cache_tool_execution,
-    cache_user_message,
-)
+from xcore.api.context import Context
+from XBotv2.agentloop.api.events import Events, AfterToolExecution, InputAccepted, ReplaceExecution
+from XBotv2.content_cache.impl.content_cache import cache_tool_execution, cache_user_message
 from XBotv2.content_cache.api.models import ContentCachePolicy
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import HumanInputMessage
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.messages import HumanInputMessage
 
 logger = logging.getLogger(__name__)
 

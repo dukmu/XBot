@@ -28,6 +28,9 @@ They parse source with AST and do not import application modules. Migrated
 plugins define public declarations in `api/`, keep implementation in `impl/`,
 and expose no package-root facade. The audits check cross-plugin imports
 against that boundary and report remaining legacy declarations separately.
+The [core](../core/doc/design.md), [loop](../agentloop/doc/design.md) and
+[context builder](../context_builder/doc/design.md) owner guides define their
+current boundaries and remaining storage/runtime migration work.
 Focused tests live beside their plugin; the default pytest discovery includes
 them and the central integration/client suites. A green test suite does not prove interactive
 Web/TUI behavior, provider interoperability, socket permissions, or

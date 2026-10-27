@@ -1,31 +1,28 @@
 """Session component: the active session and session-level runtime services.
 
-Provides the session identity, thread paths, Agentloop ``LoopState``, and
-session-level runtime services. Persistence may hydrate and observe that state,
-but it does not create the state consumed by the loop.
+Provides the session identity, thread paths, artifacts, and
+session-level runtime services. Agentloop owns working-state construction and
+hydration; persistence supplies its durable stores.
 """
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import INBOX
+from XBotv2.agentloop.api.state import LOOP_STATE
 from functools import partial
 from pathlib import Path
 from pydantic import JsonValue
-from xcore import Context, StateService
-from XBotv2.agentloop import AgentInbox, EphemeralInboxSink, LoopState
-from XBotv2.core.variables import RuntimeVariables
-from XBotv2.core.errors import OperationError
-from XBotv2.core.history import ConversationHistory
+from xcore.api.context import Context
+from xcore import StateService
+from XBotv2.core.api.variables import RuntimeVariables
+from XBotv2.core.api.errors import OperationError
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.session.session import Session
 from XBotv2.session.commands import build_session_commands
-from XBotv2.session.contracts import SessionKey, SessionNotFound, ThreadNotActive
+from XBotv2.session.contracts import SessionNotFound, ThreadNotActive
 from XBotv2.session.manager import SessionManager
 from XBotv2.session.config import SessionConfig
-from XBotv2.session.protocol import (
-    _session_not_found,
-    _thread_not_active,
-    build_session_router,
-)
+from XBotv2.session.protocol import _session_not_found, _thread_not_active, build_session_router
 from XBotv2.server import QUERY_STATUS, ServerStatus, contribute_router
 
 
@@ -77,59 +74,30 @@ class SessionRuntimeComponent:
         variables = RuntimeVariables.for_thread(
             paths, workspace_root, thread_paths
         )
-        key = SessionKey(
-            session_id=session_id,
-            thread_id=thread_id,
-        )
         ctx.set("state", persistence.state if persistence is not None else StateService.memory())
-        # The loop state and its metadata register themselves on the context
-        # at construction; the inbox service (durable or transient) is composed
-        # separately and the loop driver requires it as a constructor argument,
-        # so availability, not plugin-tree order, decides when the engine can
-        # be built.
-        state = LoopState(
-            ctx,
-            key=key,
-            variables=variables,
-        )
-        if persistence is None:
-            pending_inputs = ()
-            inbox_sink = EphemeralInboxSink()
-        else:
-            state.set_history(ConversationHistory(
-                persistence.history.load_surface(), sink=persistence.history,
-            ))
-            state.restore_turn_count(persistence.history.count_turns())
-            state.restore_resumed(persistence.has_persisted_state())
-            if stored_metadata is not None:
-                await state.metadata.initialize(stored_metadata)
-            pending_inputs = persistence.inbox.reconcile(
-                persistence.history.committed_input_ids(),
-            )
-            inbox_sink = persistence.inbox
-        ctx.set("agent_inbox", AgentInbox(
-            events=ctx, sink=inbox_sink, items=pending_inputs,
-        ))
-        session = Session(
-            events=ctx,
-            paths=paths,
-            variables=variables,
-            state=state,
-            session_paths=session_paths,
-        )
-
-        ctx.set("session", session)
         ctx.set("paths", paths)
         ctx.set("workspace_root", workspace_root)
         ctx.set("data_root", data_root)
         ctx.set("variables", variables)
         ctx.set("thread_paths", thread_paths)
-        for command in build_session_commands(
-            session,
-            pending_input_count=lambda: ctx.engine.pending_input_count,
-        ):
-            ctx.commands.register(command)
+        ctx.inject([LOOP_STATE, INBOX], mount_session)
 
+
+def mount_session(ctx: Context) -> None:
+    launch = ctx.session_launch
+    session = Session(
+        events=ctx,
+        paths=ctx.paths,
+        variables=ctx.variables,
+        state=ctx.require(LOOP_STATE),
+        session_paths=launch.session_paths,
+    )
+    ctx.set("session", session)
+    for command in build_session_commands(
+        session,
+        pending_input_count=lambda: ctx.engine.pending_input_count,
+    ):
+        ctx.commands.register(command)
 
 
 async def mount_runtime(ctx: Context) -> None:

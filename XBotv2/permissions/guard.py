@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 from typing import Awaitable, Callable
-
-from XBotv2.agentloop.contracts import ToolRegistration
-from XBotv2.core.tools import GuardDecision, ToolCall
-from XBotv2.permissions import Allowed, Approval, ApprovalPort
+from XBotv2.agentloop.api.contracts import ToolRegistration
+from XBotv2.core.api.tools import GuardDecision, ToolCall
+from XBotv2.permissions import Allowed, Approval, ApprovalPort, PermissionsPort
 from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
-from XBotv2.permissions import PermissionsPort
 from XBotv2.permissions.events import PERMISSION_REQUESTED, PermissionRequested
 from XBotv2.permissions.approval import request_decision
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
 
 
 class PermissionGuard:

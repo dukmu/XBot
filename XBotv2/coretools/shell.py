@@ -22,10 +22,8 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Literal
-
 from pydantic import JsonValue
-
-from XBotv2.core.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef, ArtifactStorePort
 from XBotv2.jobs import (
     Job,
     JobNotFound,
@@ -35,8 +33,8 @@ from XBotv2.jobs import (
     WaitResult,
     parse_job_status,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import (
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import (
     SandboxEscape,
     Tool,
     ToolError,

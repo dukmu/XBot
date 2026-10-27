@@ -7,8 +7,7 @@ from dataclasses import dataclass
 from typing import AsyncIterator
 from anthropic.types import MessageDeltaUsage, Usage
 from pydantic import JsonValue
-
-from XBotv2.core.provider import (
+from XBotv2.core.api.provider import (
     ProviderMessage,
     ProviderUser,
     ProviderAssistant,
@@ -18,12 +17,12 @@ from XBotv2.core.provider import (
     ModelRequest,
     ToolSchema,
 )
-from XBotv2.core.parts import (
+from XBotv2.core.api.parts import (
     ImagePart as CanonicalImagePart,
     ReasoningPart as CanonicalReasoningPart,
     TextPart as CanonicalTextPart,
 )
-from XBotv2.core.stream import (
+from XBotv2.core.api.stream import (
     ModelCompleted,
     ModelResponse,
     ModelStreamEvent,
@@ -31,7 +30,7 @@ from XBotv2.core.stream import (
     ReasoningDelta,
     TextDelta,
 )
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     CompletedStop,
     LengthLimitedStop,
     ModelStop,
@@ -41,20 +40,12 @@ from XBotv2.core.domain import (
     ToolCallsRequestedStop,
     UsageDelta,
 )
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.providers import BaseProvider
-from XBotv2.llm.base import (
-    attachment_prompt,
-    provider_usage,
-    resolved_image_data,
-    tool_content,
-)
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.llm.impl.base import BaseProvider
+from XBotv2.llm.base import attachment_prompt, provider_usage, resolved_image_data, tool_content
 from XBotv2.llm.config import merge_request_extras
 from XBotv2.llm.client import _parse_tool_args, _provider_arguments
-from XBotv2.llm.provider_errors import (
-    normalize_sdk_provider_error,
-    provider_context_overflow,
-)
+from XBotv2.llm.provider_errors import normalize_sdk_provider_error, provider_context_overflow
 
 
 @dataclass(slots=True)

@@ -15,8 +15,7 @@ import os
 import threading
 from datetime import datetime, timezone
 from pathlib import Path
-
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.errors import OperationError
 
 try:
     import fcntl

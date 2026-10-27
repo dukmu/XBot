@@ -1,6 +1,6 @@
 # Built-in plugins
 
-Migrated plugins place public contracts in `api/`, implementation and loader entry in `impl/`, documentation in `doc/`, and focused tests in `tests/`. Cross-plugin imports use the owning plugin’s `api` modules. Usage, token manager, and todolist follow this layout; other plugins are being migrated.
+Migrated plugins place public contracts in `api/`, implementation and loader entry in `impl/`, documentation in `doc/`, and focused tests in `tests/`. Cross-plugin imports use the owning plugin’s `api` modules. Migrated owners include usage, token_manager, todolist, prompts, goal, content_cache, caption, workspace_instructions, agentloop and context_builder; shared product declarations live in core/api. Other owners are being migrated.
 
 This page is also the navigation map. The complete contracts, dependencies,
 effects, state ownership, client/server facets, and examples are maintained in
@@ -30,7 +30,7 @@ The persistence plugin constructs its own thread store and file-backed state
 from `SessionLaunch`. The launch carries the deferred-materialization choice;
 the application entry neither creates the store nor tests a plugin ID to choose
 storage. Session publishes the store's state service, or memory state when no
-store is available. It owns history/metadata restoration and inbox construction;
+store is available. Agentloop owns history/metadata restoration and inbox construction;
 persistence subscribes to subsequent metadata changes and materialization
 boundaries. Consumers use the same registered XCore state service.
 
@@ -76,11 +76,11 @@ ownership, not proof of durable consumption.
 | persistence | agent, server, acp | thread store, durable subscribers and reader factory | session launch; subscriber: loop state, thread persistence, runtime log |
 | usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
 | agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, agent inbox, session launch |
-| session | agent, server, acp | SessionManager, thread runtime, hydration, inbox, artifacts, history routes | launch, paths, commands, runtime log, application factory; optional thread persistence |
+| session | agent, server, acp | SessionManager, thread runtime, artifacts, history routes | launch, paths, commands, runtime log, application factory; optional thread persistence |
 | jobs | agent, server | shell/subagent job registry | commands, engine, sessions |
 | commands | agent, server, client | human command catalog and dispatch | sessions/server where mounted |
 | llm | agent, server | provider/model directory and selection | runtime log, agent runtime, sessions |
-| agentloop | agent, server | Tool registry and AgentLoop factory | runtime log, session launch, sessions |
+| agentloop | agent, server | Working set, inbox, tool registry and AgentLoop factory | variables, runtime log, session launch; optional thread persistence; HTTP sessions |
 | context_builder | agent | provider-facing context compiler and prompt components | runtime log, artifacts |
 | prompts | agent | prompt component registry | context builder |
 | sandbox | agent | filesystem/process/network ceiling | paths, session, tools, settings |
@@ -92,7 +92,7 @@ ownership, not proof of durable consumption.
 | skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
 | mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session, usage, loop state |
 | content_cache | agent | lossless externalization of oversized current user input and Tool output text | artifacts |
-| compact | agent | append-only semantic history replacement | tools, commands, model, loop state, artifacts |
+| compact | agent | append-only semantic history replacement | tools, commands, model, loop state, artifacts, context builder |
 | browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
 | token_manager | agent | request/context observation | session |
 | workspace_instructions | agent | AGENTS.md context contribution | variables, workspace root |

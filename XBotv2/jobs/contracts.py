@@ -5,8 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass, field
 from typing import Literal, Protocol
-
-from XBotv2.core.operations import EmptyRequest, Operation
+from XBotv2.core.api.operations import EmptyRequest, Operation
 from pydantic import BaseModel, ConfigDict, Field
 
 
@@ -223,10 +222,6 @@ JOB_UPDATED = "job/updated"
 JOB_COMPLETED = "job/completed"
 
 
-class JobEventPort(Protocol):
-    async def emit(self, event: str, *args: object) -> None: ...
-
-
 def parse_job_status(value: str | None) -> JobStateName | None:
     if value is None: return None
     allowed = {"queued", "running", "succeeded", "failed_before_start", "failed_running", "cancelled_before_start", "cancelled_running"}
@@ -235,7 +230,7 @@ def parse_job_status(value: str | None) -> JobStateName | None:
 
 __all__ = [
     "CancelResult", "CancelledBeforeStart", "CancelledRunning", "FailedBeforeStart", "FailedRunning",
-    "Job", "JobCatalog", "JobError", "JobEventPort", "JobId", "JobIdentity", "JobNotFound",
+    "Job", "JobCatalog", "JobError", "JobId", "JobIdentity", "JobNotFound",
     "JobRegistryClosed", "JobRunner",
     "JobSpec", "JobState", "JobStateName", "JobView", "JobsCommandPort", "JobsPort",
     "JOB_COMPLETED", "JOB_UPDATED", "LIST_JOBS", "MAX_SUMMARY_CHARS", "OutputPage", "Queued",

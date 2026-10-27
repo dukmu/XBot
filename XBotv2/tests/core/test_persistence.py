@@ -3,20 +3,19 @@
 import json
 import os
 from pathlib import Path
-
 import pytest
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     MessageId,
     TransactionCommitted,
     TransactionEnded,
     TransactionRef,
     TransactionStarted,
 )
-from XBotv2.core.history import ConversationHistory, HistoryCursorInvalid, MessageAppended, SurfaceReplaced
-from XBotv2.core.messages import CompactionSummaryMessage, HumanInputMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.agentloop.impl.history import ConversationHistory
+from XBotv2.core.api.history import HistoryCursorInvalid, MessageAppended, SurfaceReplaced
+from XBotv2.core.api.messages import CompactionSummaryMessage, HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.persistence.models import StoredTrajectoryRecord
 from XBotv2.persistence.store import ThreadPersistence, _TrajectoryState
 
@@ -49,9 +48,9 @@ def test_append_round_trips_canonical_message_identity(tmp_path):
 @pytest.mark.parametrize("count", [20, 40])
 async def test_inbox_growth_writes_only_new_records(tmp_path, monkeypatch, count):
     import XBotv2.persistence.store as storage
-    from XBotv2.agentloop import AgentInbox
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.impl.inbox import AgentInbox
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
 
     class Events:
         async def emit(self, *args):
@@ -92,9 +91,9 @@ async def test_inbox_growth_writes_only_new_records(tmp_path, monkeypatch, count
 
 @pytest.mark.asyncio
 async def test_inbox_trace_replays_mutations_without_rewriting_prefix(tmp_path):
-    from XBotv2.agentloop import AgentInbox
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.impl.inbox import AgentInbox
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
 
     class Events:
         async def emit(self, *args):
@@ -130,9 +129,9 @@ async def test_inbox_trace_replays_mutations_without_rewriting_prefix(tmp_path):
 @pytest.mark.asyncio
 @pytest.mark.parametrize("partial", [False, True])
 async def test_failed_inbox_append_preserves_prefix_and_allows_retry(tmp_path, monkeypatch, partial):
-    from XBotv2.agentloop import AgentInbox
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.impl.inbox import AgentInbox
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+    from XBotv2.core.api.domain import InboxTarget
 
     class Events:
         async def emit(self, *args):
@@ -165,8 +164,8 @@ async def test_failed_inbox_append_preserves_prefix_and_allows_retry(tmp_path, m
 
 
 def test_failed_first_inbox_write_does_not_materialize_a_thread(tmp_path, monkeypatch):
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem, Inserted
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, Inserted
+    from XBotv2.core.api.domain import InboxTarget
     from XBotv2.session.manager import thread_has_evidence
 
     store = _store(tmp_path)
@@ -184,8 +183,8 @@ def test_failed_first_inbox_write_does_not_materialize_a_thread(tmp_path, monkey
 
 
 def test_inbox_rejects_invalid_transition_before_append(tmp_path):
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem, Inserted, Consumed
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, Inserted, Consumed
+    from XBotv2.core.api.domain import InboxTarget
 
     store = _store(tmp_path)
     item = InboxItem(id="one", target=InboxTarget.NEXT_TURN, input=HumanInput(content="one"))
@@ -201,8 +200,8 @@ def test_inbox_rejects_invalid_transition_before_append(tmp_path):
 
 
 def test_inbox_drops_uncommitted_tail_before_next_append(tmp_path):
-    from XBotv2.agentloop.contracts import HumanInput, InboxItem, Inserted, Consumed
-    from XBotv2.core.domain import InboxTarget
+    from XBotv2.agentloop.api.contracts import HumanInput, InboxItem, Inserted, Consumed
+    from XBotv2.core.api.domain import InboxTarget
 
     store = _store(tmp_path)
     item = InboxItem(id="one", target=InboxTarget.NEXT_TURN, input=HumanInput(content="one"))

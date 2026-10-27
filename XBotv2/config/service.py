@@ -26,9 +26,9 @@ from XBotv2.config.contracts import (
 )
 from XBotv2.config.events import POLICY_CHANGED, PolicyChanged
 from XBotv2.loader.contracts import PluginTree
-from XBotv2.core.runtime_logging import RuntimeLog
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.application.contracts import ApplicationEventsPort
+from XBotv2.core.api.runtime_logging import RuntimeLog
+from XBotv2.core.api.paths import RuntimePaths
+from xcore.api.context import Context
 from XBotv2.permissions.contracts import PermissionPolicy
 
 
@@ -41,7 +41,7 @@ class ConfigService(SettingsPort):
         *,
         session_id: str,
         workspace_root: Path,
-        events: ApplicationEventsPort,
+        events: Context,
         runtime_log: RuntimeLog,
         extra_plugins: list[dict[str, JsonValue]] | None = None,
         plugin_dirs: list[Path | str] | None = None,

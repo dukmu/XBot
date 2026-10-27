@@ -1,9 +1,8 @@
 """History pagination uses typed cursors internally and complete page values."""
 
 from pydantic import TypeAdapter
-
-from XBotv2.core.domain import Cursor, HistoryRevision
-from XBotv2.core.history import (
+from XBotv2.core.api.domain import Cursor, HistoryRevision
+from XBotv2.core.api.history import (
     HistoryPage,
     TrajectoryRead,
     decode_history_cursor,

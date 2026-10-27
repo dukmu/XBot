@@ -1,10 +1,10 @@
 """Skill discovery and per-turn permission scope stay plugin-owned."""
 
+from XBotv2.agentloop.api.contracts import TOOLS
 import pytest
-
 from XBotv2.application.app import start_application
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import Tool, ToolCall, ToolDenied, ToolSucceeded
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import Tool, ToolCall, ToolDenied, ToolSucceeded
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import PermissionPolicy, PermissionRule
 from XBotv2.skills.permission_scope import SkillPermissionScope, validate_tool_patterns
@@ -126,16 +126,16 @@ async def test_active_skill_scope_keeps_other_skill_tools_callable(tmp_path):
         context.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
-        context.tools.register(
+        context.require(TOOLS).register(
             Tool.from_function(mutate_workspace), cleanup="caller",
         )
-        first = await context.tools.execute_all([
+        first = await context.require(TOOLS).execute_all([
             ToolCall(id="load-review", name="review", args={}),
         ])
-        second = await context.tools.execute_all([
+        second = await context.require(TOOLS).execute_all([
             ToolCall(id="load-verify", name="verify", args={}),
         ])
-        ordinary = await context.tools.execute_all([
+        ordinary = await context.require(TOOLS).execute_all([
             ToolCall(id="mutate", name="mutate_workspace", args={}),
         ])
 

@@ -25,10 +25,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Callable, Iterable, Mapping
-
 from pydantic import BaseModel, ValidationError
-
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,
@@ -37,17 +35,9 @@ from XBotv2.agentloop.outputs import (
     ToolCallsStarted as LoopToolCallsStarted,
     TurnCancelled as CancelledOutcome,
 )
-from XBotv2.compact.protocol import (
-    CompactionCompleted,
-    CompactionFailed,
-    CompactionStarted,
-)
+from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
 from XBotv2.usage.api.events import UsageUpdated
-from XBotv2.interactions.models import (
-    ClientNotice,
-    UserInputRequest,
-    UserInputRecorded,
-)
+from XBotv2.interactions.models import ClientNotice, UserInputRequest, UserInputRecorded
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged

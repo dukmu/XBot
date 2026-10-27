@@ -8,43 +8,28 @@ import uuid
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import AsyncIterator
-
 from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
-from XBotv2.agentloop import AgentLoopDriverPort, Claimed, Consumed, Inserted
-from XBotv2.agentloop.outputs import (
-    LoopError,
-    LoopTurnStarted,
-    LoopTurnEnded,
-    TurnFinished,
+from XBotv2.agentloop.api.contracts import (
+    AgentLoopDriverPort,
+    Claimed,
+    Consumed,
+    Inserted,
+    HumanInput,
+    InboxItem,
 )
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
-from XBotv2.application import (
-    RUNTIME_EVENT,
-    AgentApplicationPort,
-    RuntimeEvent,
-)
-from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.artifacts import ImageRef
-from XBotv2.core.errors import OperationError
-from XBotv2.core.domain import (
-    EventScope,
-    InboxTarget,
-    SessionScope,
-    TurnId,
-    TurnScope,
-)
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import ObserveInbox
-from XBotv2.core.timing import conversation_stats
-from XBotv2.core.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.messages import HumanInputMessage, RuntimeNoticeMessage
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.interactions import (
-    InteractionRequest,
-    InteractionResolution,
-)
+from XBotv2.agentloop.api.outputs import LoopError, LoopTurnStarted, LoopTurnEnded, TurnFinished
+from XBotv2.application import RUNTIME_EVENT, AgentApplicationPort, RuntimeEvent
+from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.domain import EventScope, InboxTarget, SessionScope, TurnId, TurnScope
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.agentloop.api.events import Events, ObserveInbox
+from XBotv2.core.api.timing import conversation_stats
+from XBotv2.core.api.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChanged
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.interactions import InteractionRequest, InteractionResolution
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     HistoryChanged,
@@ -53,6 +38,7 @@ from XBotv2.session.contracts import (
     SessionPort,
     SessionKey,
     conversation_replay,
+    PendingInputData,
 )
 from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.session.events import (
@@ -64,12 +50,7 @@ from XBotv2.session.events import (
     MessagePublishedEvent,
     QueueReplacedEvent,
 )
-from XBotv2.session.contracts import PendingInputData
-from XBotv2.session.records import (
-    InputRecordPayload,
-    project_human_input,
-    project_message,
-)
+from XBotv2.session.records import InputRecordPayload, project_human_input, project_message
 
 
 class SessionBusy(RuntimeError):

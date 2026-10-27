@@ -4,22 +4,12 @@ from __future__ import annotations
 
 import time
 from typing import Protocol
-
 from fastapi import APIRouter
-
-from XBotv2.core.errors import OperationError
+from XBotv2.core.api.errors import OperationError
 from XBotv2.protocol.http_util import HttpServerError
-from XBotv2.protocol import (
-    HealthResponse,
-    HelloRequest,
-    HelloResponse,
-)
+from XBotv2.protocol import HealthResponse, HelloRequest, HelloResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
-from XBotv2.server.contracts import (
-    QUERY_STATUS,
-    ServerInfo,
-    ServerStatus,
-)
+from XBotv2.server.contracts import QUERY_STATUS, ServerInfo, ServerStatus
 
 
 class EventDispatcher(Protocol):

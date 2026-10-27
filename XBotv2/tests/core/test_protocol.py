@@ -1,15 +1,13 @@
 """Tests for protocol-adjacent provider and configuration behavior."""
 
 from collections.abc import AsyncIterator
-
 import yaml
 import pytest
-
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.domain import SessionScope
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.domain import SessionScope
 from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.timing import SessionStats
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.timing import SessionStats
 from XBotv2.session.contracts import HistoryMutation, SessionEventFrame
 from XBotv2.session.events import HistoryUpdatedEvent
 
@@ -309,7 +307,7 @@ class TestProviderConfigLoader:
     def test_missing_env_var_is_rejected(self, tmp_path, monkeypatch):
         """An unset $${env:NAME} fails closed at the config-load boundary."""
         from XBotv2.config.loader import load_plugin_tree
-        from XBotv2.core.paths import RuntimePaths
+        from XBotv2.core.api.paths import RuntimePaths
 
         (tmp_path / "config").mkdir(parents=True, exist_ok=True)
         (tmp_path / "config" / "plugins.yaml").write_text(

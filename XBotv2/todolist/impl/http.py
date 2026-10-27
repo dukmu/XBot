@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter
-
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.session.contracts import SessionsPort
 from XBotv2.todolist.api.service import GET_TODOS
 from XBotv2.todolist.api.models import TaskList

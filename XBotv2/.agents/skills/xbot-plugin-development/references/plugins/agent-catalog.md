@@ -100,7 +100,7 @@ not flat fields. There is no `provider`, `model`, `temperature`,
 `tools`, or `disabled_tools` key on `AgentDefinition`: those concerns live in
 `model_policy` (`route`, `generation`, `temperature`, `max_output_tokens`,
 `context_window`), `limits` (`AgentExecutionLimits`, owned by
-`XBotv2.core.domain`), `permission_policy`, and `tool_policy` (`enabled`,
+`XBotv2.core.api.domain`), `permission_policy`, and `tool_policy` (`enabled`,
 `disabled`).
 
 Because the model is `extra="forbid"`, passing a flat `provider=`/`model=`

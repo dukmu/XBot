@@ -25,13 +25,11 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import urlsplit
 from weakref import WeakKeyDictionary
-
 import httpx
 from pydantic import JsonValue
-
-from XBotv2.core.artifacts import ArtifactKind, ArtifactStorePort, ImageRef
-from XBotv2.core.parts import ImagePart, TextPart
-from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactStorePort, ImageRef
+from XBotv2.core.api.parts import ImagePart, TextPart
+from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
 from XBotv2.sandbox.contracts import SandboxPort
 

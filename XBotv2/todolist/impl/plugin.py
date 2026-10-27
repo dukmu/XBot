@@ -2,29 +2,19 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopDriverPort, InboxItem, RuntimeInput
+from XBotv2.agentloop.api.state import LOOP_STATE
 import copy
 from collections.abc import Mapping
 from dataclasses import replace
 from xml.sax.saxutils import escape
-
 from xcore.api.context import Context
 from xcore.state import StateService
-
-from XBotv2.agentloop import (
-    AgentLoopDriverPort,
-    Events,
-    InboxItem,
-    RuntimeInput,
-)
-from XBotv2.agentloop.events import TurnStarted
-from XBotv2.application import (
-    ApplicationEventsPort,
-    RUNTIME_EVENT,
-    RuntimeEvent,
-)
-from XBotv2.core import Tool, ToolOutcome, failed_text, succeeded_text
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.operations import EmptyRequest
+from XBotv2.agentloop.api.events import Events, TurnStarted
+from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
+from XBotv2.core.api.tools import Tool, ToolOutcome, failed_text, succeeded_text
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.server import contribute_router
 from XBotv2.session import HISTORY_CHANGED, HistoryChanged
 from XBotv2.todolist.api.models import (
@@ -37,7 +27,12 @@ from XBotv2.todolist.api.models import (
 )
 from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.todolist.api.service import GET_TODOS
-from XBotv2.todolist.impl.parsing import parse_task_id, parse_task_ids, parse_task_status, parse_task_text
+from XBotv2.todolist.impl.parsing import (
+    parse_task_id,
+    parse_task_ids,
+    parse_task_status,
+    parse_task_text,
+)
 from XBotv2.todolist.impl.http import build_router
 
 _STALE_TURNS_KEY = "stale_turns"
@@ -76,7 +71,7 @@ class TaskService:
         *,
         agent_name: str,
         engine: AgentLoopDriverPort,
-        events: ApplicationEventsPort,
+        events: Context,
         config: TaskConfig,
     ) -> None:
         self._store = store
@@ -541,7 +536,7 @@ def _render_compaction_reminder(
 
 
 class TodolistRuntimeComponent:
-    inject = {"required": ["tools", "state", "engine", "loop_state"]}
+    inject = {"required": [TOOLS, "state", "engine", LOOP_STATE]}
     name = "todolist"
     Config = TaskConfig
 
@@ -552,7 +547,7 @@ class TodolistRuntimeComponent:
         resolved = config or TaskConfig()
         service = TaskService(
             ctx.state.namespace(self.name),
-            agent_name=ctx.loop_state.metadata.value.runtime_selection.agent_name,
+            agent_name=ctx.require(LOOP_STATE).metadata.value.runtime_selection.agent_name,
             engine=engine,
             events=ctx,
             config=resolved,
@@ -568,7 +563,7 @@ class TodolistRuntimeComponent:
             service.task_delete,
             service.task_list,
         ):
-            ctx.tools.register(_task_tool(function, resolved))
+            ctx.require(TOOLS).register(_task_tool(function, resolved))
 
 
 class TodolistPlugin:

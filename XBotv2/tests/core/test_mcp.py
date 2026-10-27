@@ -1,19 +1,17 @@
 """MCP tools translate one external result into canonical ToolOutcome values."""
 
+from XBotv2.agentloop.api.contracts import TOOLS, HumanInput, InboxItem
 import asyncio
 import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
-
 import pytest
-
-from XBotv2.agentloop import HumanInput, InboxItem
-from XBotv2.core.domain import InboxTarget
-from XBotv2.agentloop.outputs import ToolCompleted
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.agentloop.api.outputs import ToolCompleted
 from XBotv2.application.app import start_application
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import ToolFailed, ToolSucceeded
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import ToolFailed, ToolSucceeded
 from XBotv2.llm.mock import MockLLM
 from XBotv2.mcp_plugin.callbacks import _form_content, _sampling_text
 from XBotv2.mcp_plugin.tool import MCPTool
@@ -122,13 +120,13 @@ server.run("stdio")
         }],
     )
     pid = int(pid_file.read_text(encoding="utf-8"))
-    tools = context.tools
+    tools = context.require(TOOLS)
     try:
         context.permissions.replace_policies((PermissionPolicy(rules=(
             PermissionRule(tool_pattern=".*", decision="allow"),
         )),))
         assert "mcp__local__echo" in {
-            tool.name for tool in context.tools.enabled()
+            tool.name for tool in context.require(TOOLS).enabled()
         }
         events = [event async for event in context.engine.run_turn(InboxItem(
             target=InboxTarget.NEXT_TURN,

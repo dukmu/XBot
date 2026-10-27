@@ -3,11 +3,9 @@
 from __future__ import annotations
 
 from typing import Annotated, Literal
-
 from pydantic import BaseModel, ConfigDict, Field
-
-from XBotv2.agentloop.contracts import InboxMutation
-from XBotv2.core.history import (
+from XBotv2.agentloop.api.contracts import InboxMutation
+from XBotv2.core.api.history import (
     DurableEventRecorded,
     MessageAppended,
     SurfaceReplaced,

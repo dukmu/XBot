@@ -26,9 +26,8 @@ import uuid
 from dataclasses import dataclass
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, AsyncGenerator, Callable, Literal, Protocol, Sequence
-
 from XBotv2.agents import AgentListResponse, AgentSelectionResponse
-from XBotv2.agentloop.outputs import LoopError
+from XBotv2.agentloop.api.outputs import LoopError
 from XBotv2.commands import (
     CommandDescription,
     CommandExecution,
@@ -36,8 +35,8 @@ from XBotv2.commands import (
     CommandResponse,
 )
 from XBotv2.client import XBotClientError
-from XBotv2.core.domain import Cursor
-from XBotv2.core.history import HistoryPage
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.history import HistoryPage
 from XBotv2.interactions.protocol import InteractionResponse
 from XBotv2.jobs.protocol import JobListResponse
 from XBotv2.llm import EffortSelectionResponse, ProviderCatalog, ProviderSelectionResponse
@@ -70,11 +69,7 @@ from XBotv2.tui.events import (
     UserInputSubmitted,
     ThreadRead,
 )
-from XBotv2.tui.protocol import (
-    FrameRejected,
-    FrameTranslator,
-    replay_pending_interactions,
-)
+from XBotv2.tui.protocol import FrameRejected, FrameTranslator, replay_pending_interactions
 from XBotv2.tui.status import Connection
 from XBotv2.tui.config import DEFAULT_HISTORY_WINDOW, DEFAULT_HISTORY_RETENTION
 

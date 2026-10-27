@@ -3,21 +3,17 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from pydantic import JsonValue
 from xcore.api.context import Context
-
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import ModelRequestReady, ModelResponseObserved
-from XBotv2.core.domain import (
+from XBotv2.agentloop.api.events import Events, ModelRequestReady, ModelResponseObserved
+from XBotv2.core.api.domain import (
     MeasurementUnavailable,
     ObservedContext,
     ProviderMeasured,
     ResolvedModelSelection,
     TokenCounters,
 )
-from XBotv2.core.tokens import TokenBudget, estimate_model_request_tokens
-
+from XBotv2.core.api.tokens import TokenBudget, estimate_model_request_tokens
 from XBotv2.token_manager.api.models import EstimatedContext
 
 

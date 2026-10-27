@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 from pathlib import Path
-
 import yaml
 from pydantic import JsonValue, TypeAdapter
-
-from XBotv2.agents.contracts import (
-    AgentDefinition,
-    AgentModelPolicy,
-    AgentToolPolicy,
-)
-from XBotv2.core.domain import AgentExecutionLimits
-from XBotv2.core.variables import RuntimeVariables
+from XBotv2.agents.contracts import AgentDefinition, AgentModelPolicy, AgentToolPolicy
+from XBotv2.core.api.domain import AgentExecutionLimits
+from XBotv2.core.api.variables import RuntimeVariables
 from XBotv2.permissions.contracts import PermissionPolicy
 
 _FRONTMATTER = "---"

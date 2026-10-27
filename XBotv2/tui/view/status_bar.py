@@ -13,21 +13,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Iterator, Mapping
-
 import regex
 from rich.text import Text
 from rich.cells import cell_len
 from textual.widgets import Static
-
-from XBotv2.core.domain import ProviderMeasured, UsageSnapshot
+from XBotv2.core.api.domain import ProviderMeasured, UsageSnapshot
 from XBotv2.tui.state import SUBAGENT_THREAD_KIND, SessionState
-from XBotv2.tui.status import (
-    ServerTurn,
-    Status,
-    StatusFacts,
-    derive,
-    status_label,
-)
+from XBotv2.tui.status import ServerTurn, Status, StatusFacts, derive, status_label
 
 #: Job states that mean "still running", as the server spells them.
 _RUNNING_JOB_STATUSES = frozenset({"queued", "running"})

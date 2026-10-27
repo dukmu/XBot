@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
 from XBotv2.compact.contracts import CompactionPlan
-from XBotv2.core.messages import ConversationMessage
-from XBotv2.session.contracts import SessionRuntimeState
+from XBotv2.core.api.messages import ConversationMessage
+from XBotv2.agentloop.api.state import ThreadExecution
 
 
 PRE_COMPACT = "before/compact"
@@ -16,7 +15,7 @@ POST_COMPACT = "after/compact"
 @dataclass(frozen=True, slots=True)
 class BeforeCompact:
     plan: CompactionPlan
-    session: SessionRuntimeState | None = None
+    session: ThreadExecution | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -27,7 +26,7 @@ class AfterCompact:
     messages: tuple[ConversationMessage, ...]
     previous_message_count: int
     current_message_count: int
-    session: SessionRuntimeState | None = None
+    session: ThreadExecution | None = None
 
 
 __all__ = [

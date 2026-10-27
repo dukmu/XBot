@@ -3,9 +3,8 @@
 import pytest
 from types import SimpleNamespace
 from pydantic import TypeAdapter, ValidationError
-
-from XBotv2.agentloop.outputs import LoopEvent, LoopTurnStarted, is_loop_event
-from XBotv2.core.domain import (
+from XBotv2.agentloop.api.outputs import LoopEvent, LoopTurnStarted, is_loop_event
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     Cursor,
     GenerationSettings,
@@ -18,9 +17,10 @@ from XBotv2.core.domain import (
     StandardGenerationMode,
     TurnId,
     TurnScope,
+    UsageSnapshot,
 )
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.timing import SessionStats
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.timing import SessionStats
 from XBotv2.protocol.models import server_event
 from XBotv2.protocol.sse import (
     SseDecodeError,
@@ -37,16 +37,8 @@ from XBotv2.session.contracts import (
     ThreadMetadata,
     PendingInputData,
 )
-from XBotv2.core.domain import UsageSnapshot
-from XBotv2.session.events import (
-    AgentConfiguredEvent,
-    HistoryUpdatedEvent,
-    InputAcceptedEvent,
-)
-from XBotv2.session.protocol import (
-    _format_sse,
-    _open_session_response,
-)
+from XBotv2.session.events import AgentConfiguredEvent, HistoryUpdatedEvent, InputAcceptedEvent
+from XBotv2.session.protocol import _format_sse, _open_session_response
 from XBotv2.session.records import HumanInputRecord
 from XBotv2.session.runtime import TurnEventRouter
 

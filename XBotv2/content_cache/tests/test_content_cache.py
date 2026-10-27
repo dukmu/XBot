@@ -1,7 +1,6 @@
 """Lossless content-cache projections and their ArtifactStore references."""
 
 import pytest
-
 from XBotv2.content_cache.impl.content_cache import (
     cache_tool_execution,
     cache_user_message,
@@ -9,17 +8,14 @@ from XBotv2.content_cache.impl.content_cache import (
 )
 from XBotv2.content_cache.api.models import ContentCachePolicy
 from XBotv2.content_cache.impl.plugin import ContentCacheService
-from XBotv2.agentloop.contracts import HumanInput, InboxItem
-from XBotv2.agentloop.events import (
-    AfterToolExecution,
-    InputAccepted,
-)
-from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.domain import InboxTarget, MessageId, ToolCallId, ToolTiming
-from XBotv2.core.messages import HumanInputMessage, ToolMessage
-from XBotv2.core.parts import TextPart
-from xcore import Context
-from XBotv2.core.tools import (
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.events import AfterToolExecution, InputAccepted
+from XBotv2.core.api.artifacts import ArtifactKind
+from XBotv2.core.api.domain import InboxTarget, MessageId, ToolCallId, ToolTiming
+from XBotv2.core.api.messages import HumanInputMessage, ToolMessage
+from XBotv2.core.api.parts import TextPart
+from xcore.api.context import Context
+from XBotv2.core.api.tools import (
     ContinueTurn,
     ToolCallRef,
     ToolExecution,

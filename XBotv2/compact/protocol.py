@@ -3,12 +3,10 @@
 from __future__ import annotations
 
 from typing import Literal
-
 from pydantic import Field
-
 from XBotv2.protocol import WireModel
-from XBotv2.core.messages import CompactionSummaryMessage
-from XBotv2.core.domain import TokenCounters
+from XBotv2.core.api.messages import CompactionSummaryMessage
+from XBotv2.core.api.domain import TokenCounters
 
 # Why a compaction ran; the only reason vocabulary shared with clients.
 CompactionReason = Literal["automatic", "manual", "context-overflow"]

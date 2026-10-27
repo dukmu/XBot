@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 import secrets
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.permissions import Allowed, Approval, ApprovalPort, NamedPermission, PermissionRequest
 from XBotv2.permissions.approval import request_decision
 from XBotv2.permissions.patterns import compile_pattern

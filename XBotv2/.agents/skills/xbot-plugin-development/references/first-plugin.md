@@ -107,8 +107,8 @@ in `plugin.py`.
 
 ```python
 from pydantic import BaseModel, ConfigDict
-from XBotv2.core import Tool, succeeded_text
-from xcore import Context
+from XBotv2.core.api.tools import Tool, succeeded_text
+from xcore.api.context import Context
 
 
 class HelloHandler:
@@ -176,10 +176,12 @@ as each owner moves to the layout described in the plugin README.
 ```python
 from pathlib import Path
 
-from xcore import Context, FiberState
+from xcore.api.context import Context
+from xcore import FiberState
 
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_service import ToolsService
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_service import ToolsService
 from my_xbot_plugin.plugin import plugin
 
 
@@ -194,8 +196,10 @@ async def test_hello_registers_invokes_and_unloads(tmp_path: Path) -> None:
     assert handle.state is FiberState.RUNNING
     tool = tools.resolve("hello")
     assert tool is not None
-    result = await tool.ainvoke({"name": "Ada"})
-    assert result.content == "Welcome, Ada!"
+    [execution] = await tools.execute_all([
+        ToolCall(id="hello-test", name="hello", args={"name": "Ada"})
+    ])
+    assert execution.message.outcome.output.parts[0].text == "Welcome, Ada!"
     assert tool.provider_schema()["function"]["parameters"]["required"] == ["name"]
 
     await ctx.stop()
@@ -217,7 +221,7 @@ For a plugin that injects application-only services, provide the typed values
 at the test composition boundary instead of weakening `inject`:
 
 ```python
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 
 paths = RuntimePaths.from_data_dir(tmp_path / "data")
 ctx = Context(data_dir=paths.data_dir)
@@ -318,7 +322,7 @@ If the Tool must know which final model call invoked it, use the standard
 `ToolCall` parameter rather than a session or invocation wrapper:
 
 ```python
-from XBotv2.core import ToolCall, succeeded_text
+from XBotv2.core.api.tools import ToolCall, succeeded_text
 
 
 async def inspect_call(value: str, *, tool_call: ToolCall):

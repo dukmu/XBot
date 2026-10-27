@@ -21,18 +21,10 @@ from __future__ import annotations
 import secrets
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Literal
-
 from pydantic import JsonValue
-
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
-from XBotv2.permissions import (
-    Allowed,
-    Approval,
-    ApprovalPort,
-    NamedPermission,
-    PermissionRequest,
-)
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
+from XBotv2.permissions import Allowed, Approval, ApprovalPort, NamedPermission, PermissionRequest
 from XBotv2.permissions.approval import request_decision
 from XBotv2.sandbox.contracts import PathAccess, SandboxResourceConfig
 

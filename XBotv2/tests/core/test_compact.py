@@ -1,13 +1,12 @@
+from XBotv2.context_builder.impl.builder import ContextBuilder
 """Compaction preserves typed history boundaries and bounded summaries."""
 
 import asyncio
 from pathlib import Path
-
 import pytest
-
-from XBotv2.agentloop import HumanInput, InboxItem
-from XBotv2.agentloop.outputs import LoopError, ToolCompleted
-from XBotv2.agentloop.events import Events, ModelRequestReady
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.outputs import LoopError, ToolCompleted
+from XBotv2.agentloop.api.events import Events, ModelRequestReady
 from XBotv2.application.app import start_application
 from XBotv2.application import RUNTIME_EVENT
 from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
@@ -20,8 +19,8 @@ from XBotv2.compact.summary import (
     strip_summary_heading,
     summary_request,
 )
-from XBotv2.core.artifacts import ArtifactKind, ArtifactRef
-from XBotv2.core.domain import (
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+from XBotv2.core.api.domain import (
     InboxTarget,
     MessageId,
     ProviderError,
@@ -32,28 +31,23 @@ from XBotv2.core.domain import (
     TransactionRef,
     TransactionStarted,
 )
-from XBotv2.core.tokens import (
+from XBotv2.core.api.tokens import (
     context_token_limit,
     estimate_messages_tokens,
     estimate_model_request_tokens,
 )
-from XBotv2.core.history import DurableEventRecorded
-from XBotv2.core.messages import (
+from XBotv2.core.api.history import DurableEventRecorded
+from XBotv2.core.api.messages import (
     AssistantMessage,
     CompactionSummaryMessage,
     HumanInputMessage,
     ToolMessage,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderSystem, ProviderTool, ProviderUser
-from XBotv2.core.stream import ModelFailed
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import (
-    ToolCall,
-    ToolCallRef,
-    ToolOutput,
-    ToolSucceeded,
-)
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderSystem, ProviderTool, ProviderUser
+from XBotv2.core.api.stream import ModelFailed
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutput, ToolSucceeded
 from XBotv2.llm.mock import MockLLM
 
 
@@ -108,7 +102,7 @@ def test_summary_normalization_removes_heading_and_keeps_full_text():
 
 def test_summary_request_is_provider_typed_and_does_not_mutate_history():
     message = _human(1, "important decision")
-    request = summary_request((message,), max_chars=500)
+    request = summary_request((message,), max_chars=500, compiler=ContextBuilder())
     assert isinstance(request[0], ProviderSystem)
     assert isinstance(request[1], ProviderUser)
     assert isinstance(request[-1], ProviderUser)
@@ -122,6 +116,7 @@ def test_summary_request_resolves_tool_artifacts_through_the_store(artifact_stor
         (message,),
         max_chars=500,
         artifacts=artifact_store,
+        compiler=ContextBuilder(),
     )
 
     tool = next(item for item in request if isinstance(item, ProviderTool))
@@ -154,7 +149,7 @@ def test_summary_request_requires_a_store_for_artifact_bearing_history():
     )
 
     with pytest.raises(RuntimeError, match="ArtifactStore for tool outputs"):
-        summary_request((message,), max_chars=500)
+        summary_request((message,), max_chars=500, compiler=ContextBuilder())
 
 
 def test_compacted_message_has_its_own_canonical_kind_and_identity():

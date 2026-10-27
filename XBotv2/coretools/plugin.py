@@ -8,22 +8,18 @@ to the content_cache plugin.
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS
 from dataclasses import dataclass
 from collections.abc import Callable
 from pathlib import Path
-from xcore import Context
-
-from XBotv2.agentloop import Events
-from XBotv2.core.tools import Tool
-from XBotv2.coretools.contracts import (
-    CoreToolsConfig,
-    HookConfig,
-    WorkspaceToolConfig,
-)
+from xcore.api.context import Context
+from XBotv2.agentloop.api.events import Events
+from XBotv2.core.api.tools import Tool
+from XBotv2.coretools.contracts import CoreToolsConfig, HookConfig, WorkspaceToolConfig
 
 class CoreToolsComponent:
     inject = {
-        "required": ["tools", "session", "artifacts", "sandbox", "jobs", "workspace_root"],
+        "required": [TOOLS, "session", "artifacts", "sandbox", "jobs", "workspace_root"],
         # The approval layer is optional: without it, escalating shell calls
         # fail closed at call time instead of running unsandboxed.
         "optional": ["permissions"],
@@ -77,7 +73,7 @@ class CoreToolsComponent:
                 f"tool_timeouts contains unsupported tools: {', '.join(sorted(unknown))}"
             )
         for tool in tools:
-            ctx.tools.register(
+            ctx.require(TOOLS).register(
                 tool,
                 timeout_seconds=(
                     None if tool.name == "shell"
@@ -103,7 +99,7 @@ class CoreToolsComponent:
                         f"Workspace Tool export {declaration.target!r} must contain "
                         "XBotv2.core.Tool values"
                     )
-                ctx.tools.register(tool, namespace="workspace")
+                ctx.require(TOOLS).register(tool, namespace="workspace")
 
 
 @dataclass(frozen=True)

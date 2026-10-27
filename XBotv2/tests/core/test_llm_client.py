@@ -1,7 +1,6 @@
 """Provider adapters translate canonical requests without owning conversation state."""
 
 from types import SimpleNamespace
-
 from anthropic.types import (
     RawContentBlockDeltaEvent,
     RawContentBlockStartEvent,
@@ -12,8 +11,7 @@ from anthropic.types import (
 from openai.types.chat import ChatCompletionChunk
 from openai.types.completion_usage import CompletionUsage
 import pytest
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     GenerationSettings,
     MeasurementUnavailable,
     ModelRoute,
@@ -22,8 +20,8 @@ from XBotv2.core.domain import (
     StandardGenerationMode,
     ToolCallId,
 )
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.provider import (
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.provider import (
     ModelRequest,
     ProviderAssistant,
     ProviderSystem,
@@ -31,8 +29,8 @@ from XBotv2.core.provider import (
     ProviderTool,
     ToolSchema,
 )
-from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ReasoningDelta
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.llm.anthropic import (
     AnthropicProvider,
     anthropic_messages,
@@ -40,8 +38,7 @@ from XBotv2.llm.anthropic import (
     anthropic_tool_schema,
 )
 from XBotv2.llm.base import provider_usage
-from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args
-from XBotv2.llm.client import _provider_arguments
+from XBotv2.llm.client import ToolArgumentsError, _parse_tool_args, _provider_arguments
 from XBotv2.llm.contracts import ModelConfig, ProviderConfig
 from XBotv2.llm.openai import (
     OpenAICompatibleProvider,

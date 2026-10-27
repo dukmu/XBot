@@ -15,12 +15,11 @@ input. Three rules matter:
 from __future__ import annotations
 
 import pytest
-
 from XBotv2.compact.protocol import CompactionStarted
 from XBotv2.protocol import ServerEvent, server_event
 from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.domain import SessionScope
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.domain import SessionScope
 from XBotv2.tui.events import (
     AssistantCompleted,
     AssistantDelta,

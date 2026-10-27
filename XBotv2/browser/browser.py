@@ -8,17 +8,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlsplit
-
 from XBotv2.browser.contracts import BrowserSessionPolicy, NetworkPolicy
-from XBotv2.core import (
-    ArtifactKind,
-    ArtifactStorePort,
-    ToolOutcome,
-    failed_text,
-    succeeded_text,
-)
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactStorePort
+from XBotv2.core.api.tools import ToolOutcome, failed_text, succeeded_text
 from XBotv2.sandbox.contracts import SandboxPort
-
 from .network import BrowserProxy, network_disabled, validate_url
 
 logger = logging.getLogger("xbotv2.browser")

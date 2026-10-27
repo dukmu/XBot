@@ -4,12 +4,8 @@ import pytest
 import httpx
 from anthropic import APIStatusError as AnthropicAPIStatusError
 from openai import APIStatusError as OpenAIAPIStatusError
-
-from XBotv2.core.domain import ProviderError
-from XBotv2.llm.provider_errors import (
-    normalize_sdk_provider_error,
-    provider_context_overflow,
-)
+from XBotv2.core.api.domain import ProviderError
+from XBotv2.llm.provider_errors import normalize_sdk_provider_error, provider_context_overflow
 
 
 def _sdk_error(*, status_code, body, message="provider failed", sdk="openai"):

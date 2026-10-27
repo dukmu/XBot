@@ -1,15 +1,14 @@
 """Dynamic registrations follow the lifetime of their explicit owner."""
 
 import asyncio
-
 import pytest
-from xcore import Context, InactiveEffectError
-
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_service import ToolsService
+from xcore.api.context import Context
+from xcore import InactiveEffectError
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_service import ToolsService
 from XBotv2.commands import Command
 from XBotv2.commands.plugin import CommandsService
-from XBotv2.core.tools import Tool, ToolCall, ToolSucceeded
+from XBotv2.core.api.tools import Tool, ToolCall, ToolSucceeded
 
 
 async def test_dynamic_registration_drains_and_keeps_sibling_owner():

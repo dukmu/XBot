@@ -4,14 +4,12 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from uuid import uuid4
-
-from XBotv2.core import prompt_element
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import CompactionSummaryMessage, ConversationMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ProviderMessage, ProviderSystem, ProviderUser
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.context_builder.contracts import BuiltContext, HistoryComponent
+from XBotv2.core.api.prompts import prompt_element
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.messages import CompactionSummaryMessage, ConversationMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderMessage, ProviderSystem, ProviderUser
+from XBotv2.context_builder.api.contracts import ContextCompiler, BuiltContext, HistoryComponent
 
 
 _SUMMARY_HEADING = "## Conversation Summary"
@@ -21,6 +19,7 @@ def summary_request(
     messages: Sequence[ConversationMessage],
     max_chars: int,
     *,
+    compiler: ContextCompiler,
     stable_prefix: ProviderMessage | Sequence[ProviderMessage] | None = None,
     artifacts: ArtifactStorePort | None = None,
 ) -> list[ProviderMessage]:
@@ -47,7 +46,7 @@ def summary_request(
     return [
         *stable,
         ProviderSystem(parts=(TextPart(text=prompt_element("summary_instructions", instruction)),)),
-        *ContextBuilder.messages_from_components(
+        *compiler.messages_from_components(
             BuiltContext([HistoryComponent(message) for message in messages]),
             artifacts=artifacts,
         ),

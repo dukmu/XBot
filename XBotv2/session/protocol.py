@@ -14,27 +14,21 @@ from pathlib import Path
 from traceback import format_exception_only
 from typing import AsyncIterator, Literal, Protocol, TypeAlias
 from urllib.parse import quote
-
 from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, JsonValue, model_validator
-from XBotv2.protocol.http_util import (
-    _SSE_RESPONSE,
-    error_payload,
-    _sse_response,
-    HttpServerError,
-)
+from XBotv2.protocol.http_util import _SSE_RESPONSE, error_payload, _sse_response, HttpServerError
 from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
 from XBotv2.permissions import PermissionResponseRequest
 from XBotv2.protocol import ResourceResponse, ServerEvent, WireModel
 from XBotv2.protocol.sse import encode_server_event
-from XBotv2.core.errors import OperationError
-from XBotv2.core.domain import Cursor
-from XBotv2.core.history import HistoryPage, TrajectoryRead
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.history import HistoryPage, TrajectoryRead
 from XBotv2.session.config import SessionConfig
 from XBotv2.session.events import MessagePublishedEvent
-from XBotv2.session.contracts import SessionsPort
 from XBotv2.session.contracts import (
+    SessionsPort,
     AttachmentInput,
     HistoryMutation,
     ImageInput,
@@ -213,7 +207,7 @@ async def _interaction_response(
 
 def _session_event_payload(event: object) -> dict[str, JsonValue]:
     """Encode a typed internal event at the sole SSE boundary."""
-    from XBotv2.agentloop.outputs import (
+    from XBotv2.agentloop.api.outputs import (
         AssistantCompleted,
         LoopEvent,
         ToolCompleted,

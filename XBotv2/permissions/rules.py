@@ -5,8 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 from pydantic import JsonValue
-
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.permissions.contracts import PermissionDecision, PermissionRule
 from XBotv2.permissions.patterns import compile_pattern
 

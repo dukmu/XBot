@@ -2,15 +2,11 @@
 
 from __future__ import annotations
 
-from xcore import Context
-
-from XBotv2.subagents.service import (
-    SubagentCatalogPrompt,
-    SubagentLauncher,
-    SubagentTools,
-)
-from XBotv2.context_builder import CONTEXT_COMPONENTS_BUILT
-from XBotv2.core import Tool
+from XBotv2.agentloop.api.contracts import TOOLS
+from xcore.api.context import Context
+from XBotv2.subagents.service import SubagentCatalogPrompt, SubagentLauncher, SubagentTools
+from XBotv2.context_builder.api.events import CONTEXT_COMPONENTS_BUILT
+from XBotv2.core.api.tools import Tool
 from XBotv2.subagents.contracts import SubagentsConfig
 
 
@@ -22,7 +18,7 @@ class SubagentsRuntimeComponent:
         "session_launch",
         "no_plugins",
         "jobs",
-        "tools",
+        TOOLS,
     ]
     name = "xbot.subagents"
 
@@ -50,7 +46,7 @@ class SubagentsRuntimeComponent:
             launcher=launcher,
         )
         ctx.dispose(launcher.close)
-        ctx.tools.register(
+        ctx.require(TOOLS).register(
             Tool.from_function(handlers.spawn_subagent),
             timeout_seconds=timeout_seconds,
         )
@@ -62,7 +58,7 @@ class SubagentsRuntimeComponent:
             handlers.read_subagent,
             handlers.cancel_subagent,
         ):
-            ctx.tools.register(Tool.from_function(handler))
+            ctx.require(TOOLS).register(Tool.from_function(handler))
 
 
 class SubagentsPlugin:

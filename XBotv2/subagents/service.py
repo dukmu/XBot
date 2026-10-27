@@ -10,30 +10,17 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import dataclass
-
-from XBotv2.agentloop import InboxItem, RuntimeInput
-from XBotv2.agentloop.outputs import (
-    AssistantCompleted,
-    LoopError,
-    LoopTurnEnded,
-    TurnCancelled,
-)
+from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
+from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, LoopTurnEnded, TurnCancelled
 from XBotv2.agents import AgentDefinition
 from XBotv2.agents.contracts import AgentCatalogPort
-from XBotv2.context_builder import BuiltContext
-from XBotv2.context_builder.contracts import InlinePromptComponent
-from XBotv2.core import ToolOutcome, failed_text, succeeded_text
-from XBotv2.core.domain import InboxTarget
-from XBotv2.core.errors import OperationError
-from XBotv2.core.parts import TextPart
-from XBotv2.core.prompts import prompt_container, prompt_element
-from XBotv2.jobs import (
-    Job,
-    JobNotFound,
-    JobRegistryClosed,
-    JobsPort,
-    parse_job_status,
-)
+from XBotv2.context_builder.api.contracts import BuiltContext, InlinePromptComponent
+from XBotv2.core.api.tools import ToolOutcome, failed_text, succeeded_text
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.prompts import prompt_container, prompt_element
+from XBotv2.jobs import Job, JobNotFound, JobRegistryClosed, JobsPort, parse_job_status
 from XBotv2.session.contracts import (
     OpenThread,
     PendingInputUpdate,
@@ -44,11 +31,7 @@ from XBotv2.session.contracts import (
     ThreadSummary,
 )
 from XBotv2.session.events import InputClaimedEvent
-from XBotv2.subagents.contracts import (
-    SubagentAgentError,
-    SubagentExecutionError,
-    SubagentResult,
-)
+from XBotv2.subagents.contracts import SubagentAgentError, SubagentExecutionError, SubagentResult
 
 _MAX_PROMPT_PREVIEW = 100
 

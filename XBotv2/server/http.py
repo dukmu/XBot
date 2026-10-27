@@ -16,20 +16,16 @@ from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Message as ASGIMessage, Receive, Scope, Send
-
-from XBotv2.core.errors import OperationError
-from XBotv2.core.runtime_logging import (
+from XBotv2.core.api.errors import OperationError
+from XBotv2.core.api.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
     RuntimeLog,
     push_log_context,
     reset_log_context,
 )
-from XBotv2.protocol.http_util import HttpServerError, error_payload
+from XBotv2.protocol.http_util import HttpServerError, error_payload, _SSE_RESPONSE
 from XBotv2.protocol import ErrorResponse
 from XBotv2.protocol.version import PROTOCOL_VERSION
-
-# Preserve the established helper import surface.
-from XBotv2.protocol.http_util import _SSE_RESPONSE  # noqa: F401
 
 
 class ApiLoggingMiddleware:

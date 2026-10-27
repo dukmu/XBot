@@ -29,7 +29,7 @@ and the component source before depending on one.
 
 | Inject name | Typical owner | Use |
 |---|---|---|
-| `tools` | `agentloop.tool_service` | register/resolve standard Tools |
+| `tools` | `agentloop.impl.tool_service` | register/resolve standard Tools |
 | `commands` | `commands` | register human slash commands |
 | `model` | LLM/session composition | selected model service for auxiliary model work |
 | `interactions` | `interactions` | typed user input and cancellation |

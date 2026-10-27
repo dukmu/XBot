@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 from typing import Literal, Protocol
-
 from XBotv2.caption.api.models import CaptionResult, CaptionTitleError
-from XBotv2.core import Tool, failed_text, succeeded_text, ToolOutcome
+from XBotv2.core.api.tools import Tool, failed_text, succeeded_text, ToolOutcome
 
 
 class _CaptionToolOwner(Protocol):

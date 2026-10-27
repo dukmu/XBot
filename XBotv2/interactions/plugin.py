@@ -9,10 +9,10 @@ events through the installed live sink (the protocol) or the waiter.
 
 from __future__ import annotations
 
-from xcore import Context
+from XBotv2.agentloop.api.contracts import TOOLS
+from xcore.api.context import Context
 import uuid
 from pydantic import JsonValue
-
 from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.interactions.router import ClientEventRouter
 from XBotv2.interactions.contracts import (
@@ -23,9 +23,8 @@ from XBotv2.interactions.contracts import (
     InteractionWaiterPort,
     ResolutionFactory,
 )
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import SessionLifecycle
-from XBotv2.application.contracts import ApplicationEventsPort, ClientEventsPort
+from XBotv2.agentloop.api.events import Events, SessionLifecycle
+from XBotv2.application.contracts import ClientEventsPort
 from XBotv2.interactions.tools import build_ask_user_tool, notify_user
 from XBotv2.interactions.models import (
     Answered,
@@ -61,7 +60,7 @@ class InteractionsService(InteractionsPort):
 
     def __init__(
         self,
-        events: ApplicationEventsPort,
+        events: Context,
         client_events: ClientEventsPort,
     ) -> None:
         self._events = events
@@ -129,7 +128,7 @@ class InteractionsService(InteractionsPort):
 class InteractionsComponent:
     """Register the interactions service as ``ctx.interactions``."""
 
-    inject = ["tools", "session_launch"]
+    inject = [TOOLS, "session_launch"]
     name = "xbot.interactions"
 
     def apply(
@@ -149,9 +148,9 @@ class InteractionsComponent:
                 recorded_event=_user_input_recorded,
             )
         ))
-        ctx.tools.register(notify_user)
+        ctx.require(TOOLS).register(notify_user)
         if ctx.session_launch.interactive:
-            ctx.tools.register(build_ask_user_tool(service))
+            ctx.require(TOOLS).register(build_ask_user_tool(service))
         ctx.on(Events.SESSION_CLOSE, service.session_closed)
 
 

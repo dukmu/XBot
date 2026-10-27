@@ -132,7 +132,7 @@ class OpenSession:
     mode: SessionMode                      # Literal["new", "resume"]
     no_plugins: bool
     selected_agent: str | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
     plugin_configs: dict[str, dict[str, JsonValue]] | None = None
 
 @dataclass(frozen=True, slots=True)
@@ -145,7 +145,7 @@ class OpenThread:
     mode: SessionMode
     no_plugins: bool
     selected_agent: str | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
 ```
 
 `provider_name` is **optional** in both commands: it is `str | None`, and

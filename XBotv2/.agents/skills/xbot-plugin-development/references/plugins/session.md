@@ -40,20 +40,19 @@ the runtime `Session` object; nothing registers a service named
 it: the inject set selects the fiber scope, and dropping it would mount the
 runtime before the session scope owns `workspace_root`.
 
-`loop_state` and `thread_metadata` are not injected here either — constructing
-`LoopState(ctx, key=..., variables=...)` provides both on the context for the
-owning fiber's lifetime. `SessionRuntimeComponent` builds that state and then
-registers `session`, `paths`, `workspace_root`, `data_root`, `variables`, and
-`thread_paths`.
+Session prepares paths, artifacts and variables. The agentloop plugin waits for
+those inputs, constructs and hydrates the working set/metadata/inbox, and
+publishes `loop_state`, `thread_metadata` and `agent_inbox`. Session then waits
+for these services before publishing its Session object and commands. See the
+[loop owner guide](../../../../../agentloop/doc/design.md).
 
 Use the typed services from `Context`; do not derive filesystem paths from
 `data_root` or retain the whole context in a plugin.
 
 ## Thread identity
 
-Loop lifecycle events carry `SessionRuntimeState` from
-`XBotv2.session.contracts`. It owns a `SessionKey` and a `ThreadMetadataState`,
-and derives `session_id`, `thread_id`, and `workspace_root` from them; it is
+Loop observations use the `ThreadExecution` contract from
+`XBotv2.agentloop.api.state`. The loop owns its concrete runtime state and metadata. The contract derives `session_id`, `thread_id`, and `workspace_root` from them; it is
 not an older `SessionInfo` read model or the runtime `Session` service object.
 Public client-facing summaries are separate `SessionSummary` and
 `ThreadSummary` projections.
@@ -74,7 +73,7 @@ class OpenThread:
     mode: SessionMode                      # Literal["new", "resume"]
     no_plugins: bool
     selected_agent: str | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
 ```
 
 `provider_name` is optional (`str | None`) in both `OpenThread` and

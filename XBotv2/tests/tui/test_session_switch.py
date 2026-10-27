@@ -11,10 +11,8 @@ Written before the transport grew a ``switch``.
 from __future__ import annotations
 
 import asyncio
-
 import pytest
-
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.tools import ToolCall
 from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
@@ -30,12 +28,7 @@ from XBotv2.tests.tui.factories import (
     thread,
 )
 from XBotv2.tui.controller import TuiController
-from XBotv2.tui.events import (
-    ConnectionChanged,
-    ErrorFrame,
-    SnapshotAdopted,
-    TurnStarted,
-)
+from XBotv2.tui.events import ConnectionChanged, ErrorFrame, SnapshotAdopted, TurnStarted
 from XBotv2.tui.status import Connection, Status, derive
 from XBotv2.tui.transport import TransportConfig, TransportSession
 

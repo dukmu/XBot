@@ -2,15 +2,14 @@
 
 from __future__ import annotations
 
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.acp_plugin import ACPLaunch
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_acp_tree
 from XBotv2.config.seed import ensure_initial_config
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.providers import BaseProvider
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.providers import Provider
 from XBotv2.loader import PluginOverlay
 
 
@@ -20,7 +19,7 @@ async def start_acp_application(
     provider_name: str | None,
     no_plugins: bool,
     selected_agent: str | None,
-    llm_override: BaseProvider | None = None,
+    llm_override: Provider | None = None,
 ) -> Context:
     """Start the ACP carrier and its shared process-level services."""
     ensure_initial_config(paths)

@@ -1,7 +1,12 @@
 """Validate task tool arguments."""
 from collections.abc import Sequence
 from typing import cast
-from XBotv2.todolist.api.models import TASK_STATUSES, TaskStatusInput, TaskValidationError, _sort_ids
+from XBotv2.todolist.api.models import (
+    TASK_STATUSES,
+    TaskStatusInput,
+    TaskValidationError,
+    _sort_ids,
+)
 
 def parse_task_status(value: object) -> TaskStatusInput:
     if not isinstance(value, str) or value not in TASK_STATUSES:

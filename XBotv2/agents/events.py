@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from XBotv2.core.domain import ResolvedRuntimeSelection
+from XBotv2.core.api.domain import ResolvedRuntimeSelection
 from XBotv2.session.contracts import SessionKey
 
 

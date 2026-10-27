@@ -16,22 +16,19 @@ registers the resulting Tool when the session is interactive.
 
 from __future__ import annotations
 
-from xcore import Context
-
+from XBotv2.agentloop.api.contracts import TOOLS
+from xcore.api.context import Context
 from XBotv2.config import POLICY_CHANGED, PolicyChanged
-from XBotv2.context_builder import CONTEXT_BUILD_INPUTS_READY, ContextBuildRequest
+from XBotv2.context_builder.api.events import CONTEXT_BUILD_INPUTS_READY, ContextBuildRequest
 from XBotv2.sandbox.commands import build_sandbox_commands
 from XBotv2.sandbox.contracts import SandboxConfig
 from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.sandbox.tools import (
-    RequestSandboxAccessTool,
-    build_apply_sandbox_access,
-)
+from XBotv2.sandbox.tools import RequestSandboxAccessTool, build_apply_sandbox_access
 
 
 class SandboxComponent:
     inject = [
-        "thread_paths", "session", "tools", "data_root", "variables",
+        "thread_paths", "session", TOOLS, "data_root", "variables",
         "workspace_root", "commands", "settings", "approval",
         "session_launch",
     ]
@@ -49,7 +46,7 @@ class SandboxComponent:
             variables=ctx.variables,
         )
         ctx.set("sandbox", policy)
-        ctx.tools.guard(policy.make_guard())
+        ctx.require(TOOLS).guard(policy.make_guard())
         for command in build_sandbox_commands(ctx.settings):
             ctx.commands.register(command)
         handlers = SandboxHandlers(policy)
@@ -67,7 +64,7 @@ class SandboxComponent:
                 ctx.approval,
                 apply_decision=build_apply_sandbox_access(ctx.settings),
             )
-            ctx.tools.register(tool.as_tool())
+            ctx.require(TOOLS).register(tool.as_tool())
 
 
 class SandboxHandlers:

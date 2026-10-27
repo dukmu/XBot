@@ -2,26 +2,22 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.state import LOOP_STATE, LoopState
 from XBotv2.usage.api.service import USAGE
-
 from dataclasses import dataclass
-
-from xcore import Context
-
-from XBotv2.agentloop import AgentLoopDriverPort
+from xcore.api.context import Context
+from XBotv2.agentloop.api.contracts import AgentLoopDriverPort
 from XBotv2.application.contracts import (
     ApplicationSnapshot,
-    ApplicationEventsPort,
     ClientEventsPort,
     COLLECT_STATUS_SLOTS,
-    LoopStateView,
     SessionHistoryPort,
     StatusSlots,
     UsageSnapshotPort,
 )
 from XBotv2.permissions import PermissionsPort
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.history import HistoryReader
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.history import HistoryReader
 
 
 @dataclass(slots=True)
@@ -29,14 +25,14 @@ class MountedAgentApplication:
     """Expose host operations without leaking the XCore service container."""
 
     _context: Context
-    events: ApplicationEventsPort
+    events: Context
     driver: AgentLoopDriverPort
     artifacts: ArtifactStorePort
     client_events: ClientEventsPort
     history: SessionHistoryPort
     history_pages: HistoryReader
     usage: UsageSnapshotPort
-    loop_state: LoopStateView
+    loop_state: LoopState
     parent_permissions: PermissionsPort
     persistence_available: bool
 
@@ -70,10 +66,10 @@ async def mounted_application(context: Context) -> MountedAgentApplication:
             history_pages=(
                 _TranscriptPages(context.thread_persistence.history)
                 if context.has("thread_persistence")
-                else _TranscriptPages(context.loop_state.history)
+                else _TranscriptPages(context.require(LOOP_STATE).history)
             ),
             usage=context.require(USAGE),
-            loop_state=context.require("loop_state"),
+            loop_state=context.require(LOOP_STATE),
             parent_permissions=context.require("permissions"),
             persistence_available=context.has("thread_persistence"),
         )

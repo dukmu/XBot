@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from typing import Literal
-
 from pydantic import BaseModel, ConfigDict, Field
-
-from XBotv2.core.domain import InboxTarget, MessageId, ResolvedRuntimeSelection
+from XBotv2.core.api.domain import InboxTarget, MessageId, ResolvedRuntimeSelection
 from XBotv2.session.contracts import HistoryMutation, PendingInputData
 from XBotv2.session.records import InputRecordPayload
 

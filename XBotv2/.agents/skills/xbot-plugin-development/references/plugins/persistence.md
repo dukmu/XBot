@@ -187,7 +187,7 @@ class InboxStore(InboxPersistencePort):
     def reconcile(self, committed_input_ids: set[str]) -> list[InboxItem]: ...
 ```
 
-The inbox stores `InboxItem` values (from `XBotv2.agentloop.contracts`), not an
+The inbox stores `InboxItem` values (from `XBotv2.agentloop.api.contracts`), not an
 `InboxInput` type. The envelope is `InboxSnapshot`: a frozen Pydantic model
 with an integer-literal `version: Literal[1] = 1` and `items`, **not** a
 `schema_version` field. There is no `InboxItemRecord`.

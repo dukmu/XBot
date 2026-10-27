@@ -6,14 +6,12 @@ import asyncio
 from functools import partial
 from pathlib import Path
 from tempfile import TemporaryDirectory
-
 import uvicorn
 import yaml
-
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
 from XBotv2.application.app import create_agent_application
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 
 

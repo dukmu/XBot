@@ -34,7 +34,7 @@ class AgentsService(AgentRuntimePort):
         *,
         catalog: AgentCatalogPort,
         factory: AgentLoopFactoryPort,
-        events: ApplicationEventsPort,
+        events: Context,
         state: LoopState,
         settings: SettingsPort,
         providers: LlmServicePort,
@@ -123,7 +123,7 @@ class AgentCreateOptions:
     provider_name: str | None = None
     selected_agent: str | None = None
     agent_definition: AgentDefinition | None = None
-    model_override: BaseProvider | None = None
+    model_override: Provider | None = None
     parent_thread_id: str = ""
     is_subagent: bool = False
 ```
@@ -204,10 +204,11 @@ mounts the capability's HTTP router when `server` and `sessions` exist.
 
 ```python
 from XBotv2.agents import LIST_AGENTS, AgentCatalog
-from XBotv2.core.operations import EmptyRequest, OperationContext, dispatch_operation
+from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
+from xcore.api.events import EventQuery
 
 class AgentAwareHandler:
-    def __init__(self, events: OperationContext):
+    def __init__(self, events: EventQuery):
         self._events = events
 
     async def inspect(self, _event) -> None:
@@ -222,7 +223,7 @@ class AgentAwarePlugin:
 ```
 
 For cross-plugin requests, prefer the typed `LIST_AGENTS` operation through an
-`OperationContext`; do not assume `AgentRuntimePort` exposes a generic
+`EventQuery`; do not assume `AgentRuntimePort` exposes a generic
 `dispatch` method and do not retain `ctx` in a nested closure.
 
 ## Cross-references

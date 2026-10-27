@@ -1,11 +1,10 @@
 """Tests for the plugin tree loader (cordis.yaml-style mechanism)."""
 
+from XBotv2.agentloop.api.contracts import TOOLS
 import sys
 from pathlib import Path
-
 import pytest
 import yaml
-
 from XBotv2.loader import PluginEntry, PluginTree
 from XBotv2.loader.contracts import PluginOverlay
 from XBotv2.loader.runtime import (
@@ -29,18 +28,18 @@ def _write_plugin(tmp_path, name: str, code: str) -> Path:
 
 def make_plugin_ctx(tmp_path):
     """A real XCore context with the capability services, for loader tests."""
-    from xcore import Context
+    from xcore.api.context import Context
     from XBotv2.jobs.registry import JobRegistry
-    from XBotv2.core.variables import RuntimeVariables
+    from XBotv2.core.api.variables import RuntimeVariables
     from XBotv2.agents.catalog import AgentCatalog
-    from XBotv2.context_builder.builder import ContextBuilder
-    from XBotv2.agentloop.tool_service import ToolsService
+    from XBotv2.context_builder.impl.builder import ContextBuilder
+    from XBotv2.agentloop.impl.tool_service import ToolsService
     from XBotv2.commands.plugin import CommandsService
     from XBotv2.prompts.impl.plugin import PromptsService
-    from XBotv2.agentloop.tool_registry import ToolRegistry
+    from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 
     ctx = Context(data_dir=tmp_path)
-    ctx.set("tools", ToolsService(ToolRegistry()))
+    ctx.provide(TOOLS, ToolsService(ToolRegistry()))
     ctx.set("commands", CommandsService(ownership="caller"))
     ctx.set("prompts", PromptsService(ContextBuilder()))
     ctx.set("agent_catalog", AgentCatalog(ownership="caller"))
@@ -69,7 +68,7 @@ async def start_plugin_tree(ctx, tree: PluginTree):
 @pytest.mark.asyncio
 async def test_cancelled_initialization_does_not_return_a_live_host(tmp_path):
     import asyncio
-    from xcore import Context
+    from xcore.api.context import Context
     from XBotv2.application.boot import boot_application
 
     marker = tmp_path / "cancelled-disposed"
@@ -93,7 +92,8 @@ plugin = Plugin()
 
 @pytest.mark.asyncio
 async def test_failed_capability_does_not_dispose_other_plugins(tmp_path):
-    from xcore import Context, ServiceNotFoundError
+    from xcore.api.context import Context
+    from xcore import ServiceNotFoundError
     from XBotv2.application.boot import boot_application
 
     marker = tmp_path / "healthy-disposed"
@@ -133,7 +133,7 @@ plugin = Plugin()
 
 def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tmp_path):
     from XBotv2.config.loader import load_plugin_tree
-    from XBotv2.core.paths import RuntimePaths
+    from XBotv2.core.api.paths import RuntimePaths
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     paths.config_dir.mkdir(parents=True)
@@ -152,7 +152,7 @@ def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tm
 async def test_failed_optional_plugin_is_cleaned_without_stopping_healthy_plugins(
     tmp_path, caplog, nested,
 ):
-    from xcore import Context
+    from xcore.api.context import Context
     from XBotv2.application.boot import boot_application
 
     marker = tmp_path / "failed-plugin-disposed"
@@ -373,7 +373,7 @@ plugin = DemoPlugin()
 class TestPluginTreeMounting:
     async def test_mounts_entries_and_skips_disabled(self, tmp_path):
         _write_plugin(tmp_path, "alpha", """
-from XBotv2.core import Tool
+from XBotv2.core.api.tools import Tool
 
 class AlphaPlugin:
     name = "alpha"
@@ -398,11 +398,11 @@ class BetaPlugin:
             {"id": "beta", "name": "beta", "disabled": True},
         ]))
         assert tuple(handles) == ("alpha",)
-        assert "alpha_tool" in ctx.tools.registered_names()
+        assert "alpha_tool" in ctx.require(TOOLS).registered_names()
 
     async def test_context_destroy_cleans_registrations(self, tmp_path):
         _write_plugin(tmp_path, "gamma", """
-from XBotv2.core import Tool
+from XBotv2.core.api.tools import Tool
 
 class GammaPlugin:
     name = "gamma"
@@ -416,7 +416,7 @@ plugin = GammaPlugin()
         await start_plugin_tree(ctx, PluginTree.parse([
             {"id": "gamma", "name": "gamma"},
         ]))
-        tools = ctx.tools
+        tools = ctx.require(TOOLS)
         assert "gamma_tool" in tools.registered_names()
         await ctx.destroy()
         assert "gamma_tool" not in tools.registered_names()
@@ -511,7 +511,7 @@ class TestOrderIndependence:
 
         from XBotv2.application import tree as application_tree
         from XBotv2.application.app import start_application
-        from XBotv2.core.paths import RuntimePaths
+        from XBotv2.core.api.paths import RuntimePaths
         from XBotv2.llm.mock import MockLLM
         from XBotv2.loader import PluginTree
 

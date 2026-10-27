@@ -2,35 +2,23 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.state import LOOP_STATE, LoopState
 import asyncio
 from collections.abc import Mapping, Sequence
-
 from pydantic import JsonValue
 from xcore.api.context import Context
 from xcore.state import StateService
-
-from XBotv2.agentloop import Events, LoopState
-from XBotv2.agentloop.events import ModelResponseObserved
+from XBotv2.agentloop.api.events import Events, ModelResponseObserved
 from XBotv2.application import (
     APPLICATION_INITIALIZED,
     RUNTIME_EVENT,
     ApplicationInitialized,
     RuntimeEvent,
 )
-from XBotv2.core.domain import (
-    RequestObservation,
-    TokenCounters,
-    UsageDelta,
-    UsageSnapshot,
-)
-from XBotv2.core.messages import AssistantMessage, ConversationMessage
-from XBotv2.core.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.usage.api.service import (
-    USAGE_COUNTERS_KEY,
-    USAGE_STATE_NAMESPACE,
-    USAGE,
-)
-
+from XBotv2.core.api.domain import RequestObservation, TokenCounters, UsageDelta, UsageSnapshot
+from XBotv2.core.api.messages import AssistantMessage, ConversationMessage
+from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
+from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE, USAGE
 from XBotv2.usage.api.events import UsageUpdated
 
 
@@ -150,7 +138,7 @@ class UsageHandlers:
 
 
 class UsageComponent:
-    inject = ["state", "loop_state", "runtime_log"]
+    inject = ["state", LOOP_STATE, "runtime_log"]
     name = "xbot.usage"
 
     def apply(
@@ -161,7 +149,7 @@ class UsageComponent:
             ctx,
             ctx.runtime_log,
         )
-        handlers = UsageHandlers(service, ctx.loop_state)
+        handlers = UsageHandlers(service, ctx.require(LOOP_STATE))
         ctx.set(USAGE, service)
         ctx.on(Events.MODEL_RESPONSE_OBSERVED, handlers.record)
         ctx.on(APPLICATION_INITIALIZED, handlers.initialize, prepend=True)

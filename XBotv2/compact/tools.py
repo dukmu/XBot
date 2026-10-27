@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from typing import Protocol
-
-from XBotv2.core import Tool, ToolOutcome, succeeded_text
+from XBotv2.core.api.tools import Tool, ToolOutcome, succeeded_text
 
 
 class _CompactToolOwner(Protocol):

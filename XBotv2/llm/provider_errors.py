@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-
 import httpx
 from anthropic import (
     APIError as AnthropicAPIError,
@@ -24,8 +23,7 @@ from openai import (
     RateLimitError as OpenAIRateLimitError,
 )
 from pydantic import JsonValue, TypeAdapter, ValidationError
-
-from XBotv2.core.domain import ProviderError, ProviderErrorCategory
+from XBotv2.core.api.domain import ProviderError, ProviderErrorCategory
 
 _JSON_OBJECT = TypeAdapter(dict[str, JsonValue])
 _CONNECTION_ERRORS = (

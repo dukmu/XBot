@@ -111,7 +111,7 @@ provider ownership.
 
 ## Session, thread, and loop identities
 
-- `SessionRuntimeState` carries current runtime identity/facts in loop events;
+- `ThreadExecution` in `agentloop.api.state` describes runtime identity/facts;
   client-facing summaries are separate projections.
 - `Session` is the session-level runtime object that owns variables, paths,
   commands, and the `LoopState` view.
@@ -120,7 +120,7 @@ provider ownership.
   state namespace.
 - `ThreadPersistence` groups the canonical history, inbox, metadata, artifact,
   lifecycle, and StateService ports for one thread.
-- `LoopState` is live Agent state. `ConversationHistory` is its canonical
+- `LoopState` is the public state protocol. The loop implementation owns its canonical
   message surface; the append-only trace and plugin state are separate stores.
 
 The normal lifecycle events are `session/start` or `session/resume`, repeated
@@ -131,7 +131,7 @@ rules, read [session-trace.md](session-trace.md).
 
 ## Event ownership and dispatch
 
-The current loop event names are the constants in `XBotv2.agentloop.Events`.
+The current loop event names are the constants in `XBotv2.agentloop.api.events.Events`.
 Payloads are producer-owned typed objects, not an `EventContext` with a bag of
 optional fields. Subscribe with `ctx.on`; observer callbacks receive their
 declared payload and return no replacement. Only names listed in

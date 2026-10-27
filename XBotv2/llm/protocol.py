@@ -4,8 +4,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 from pydantic import Field
-
-from XBotv2.core.operations import EmptyRequest, dispatch_operation
+from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
 from XBotv2.llm.contracts import (
     LlmSelectionError,
     LIST_PROVIDERS,
@@ -18,7 +17,7 @@ from XBotv2.llm.contracts import (
 from XBotv2.protocol.http_util import HttpServerError
 from XBotv2.protocol import WireModel
 from XBotv2.session.contracts import SessionsPort
-from XBotv2.agentloop import EventPort
+from xcore.api.events import EventDispatch
 
 
 class ProviderSelectionRequest(WireModel):
@@ -48,7 +47,7 @@ class EffortSelectionResponse(WireModel):
     available: list[str] = Field(default_factory=list)
 
 
-def build_router(*, events: EventPort, sessions: SessionsPort) -> APIRouter:
+def build_router(*, events: EventDispatch, sessions: SessionsPort) -> APIRouter:
     router = APIRouter()
 
     @router.get("/providers", operation_id="list_providers")

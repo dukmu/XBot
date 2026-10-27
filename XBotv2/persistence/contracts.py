@@ -4,19 +4,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from typing import Protocol
-
 from pydantic import JsonValue
-
-from XBotv2.agentloop.contracts import InboxItem, InboxSink
-from XBotv2.core.history import (
-    HistoryPage,
-    HistorySink,
-    TrajectoryRead,
-)
-from XBotv2.core.domain import Cursor
-from XBotv2.core.messages import ConversationMessage
-from XBotv2.core.paths import SessionPaths
-from XBotv2.core.metadata import ThreadMetadata
+from XBotv2.agentloop.api.contracts import InboxItem, InboxSink
+from XBotv2.core.api.history import HistoryPage, HistorySink, TrajectoryRead
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.messages import ConversationMessage
+from XBotv2.core.api.paths import SessionPaths
+from XBotv2.core.api.metadata import ThreadMetadata
 
 
 class HistoryPort(HistorySink, Protocol):
@@ -61,9 +55,6 @@ class MetadataPort(Protocol):
     def load(self) -> ThreadMetadata | None: ...
 
     def save(self, metadata: ThreadMetadata) -> None: ...
-
-
-
 
 
 class InboxPersistencePort(InboxSink, Protocol):

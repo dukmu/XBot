@@ -1,17 +1,17 @@
 """Interaction options become owned values before leaving the tool boundary."""
 
-import pytest
+from XBotv2.agentloop.impl.tool_runtime import invoke_tool_function
 
-from XBotv2.core.tools import ToolCall, ToolCancelled, ToolDenied, ToolSucceeded
-from XBotv2.agentloop import Events
-from XBotv2.agentloop.events import ReplaceToolCall
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_runtime import execute_tools
+
+import pytest
+from XBotv2.core.api.tools import ToolCall, ToolCancelled, ToolDenied, ToolSucceeded, Tool
+from XBotv2.agentloop.api.events import Events, ReplaceToolCall
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_runtime import execute_tools
 from XBotv2.interactions import Answered, InteractionNotPending, UserInputOption
 from XBotv2.interactions.models import UserInputRequest
 from XBotv2.interactions.interactions import InteractionWaiter
 from XBotv2.interactions.tools import ask_user_for_input, build_ask_user_tool
-from XBotv2.core.tools import Tool
 
 
 class _InteractionRecorder:
@@ -39,7 +39,7 @@ async def test_ask_user_validates_raw_tool_options_into_owned_values() -> None:
     interactions = _InteractionRecorder()
     tool = build_ask_user_tool(interactions)  # type: ignore[arg-type]
 
-    result = await tool.ainvoke(
+    result = await invoke_tool_function(tool,
         {
             "question": "Continue?",
             "options": [
@@ -62,7 +62,7 @@ async def test_ask_user_rejects_malformed_options_at_plugin_boundary() -> None:
     tool = build_ask_user_tool(_InteractionRecorder())  # type: ignore[arg-type]
 
     with pytest.raises(ValueError):
-        await tool.ainvoke(
+        await invoke_tool_function(tool,
             {
                 "question": "Continue?",
                 "options": [{"label": "yes"}, {"label": "no"}],

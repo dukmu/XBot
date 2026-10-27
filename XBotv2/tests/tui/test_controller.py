@@ -126,7 +126,7 @@ def test_dispatching_does_not_render(backend: ScriptedBackend) -> None:
 async def test_thinking_activity_requires_running_turn_before_output(
     backend: ScriptedBackend,
 ) -> None:
-    from XBotv2.agentloop.outputs import AssistantTextDelta
+    from XBotv2.agentloop.api.outputs import AssistantTextDelta
 
     control, view = controller(backend)
     control.dispatch(ConnectionChanged(Connection.CONNECTED))
@@ -143,11 +143,11 @@ async def test_thinking_activity_requires_running_turn_before_output(
 async def test_thinking_activity_yields_to_active_tool_then_returns_after_result(
     backend: ScriptedBackend,
 ) -> None:
-    from XBotv2.agentloop.outputs import (
+    from XBotv2.agentloop.api.outputs import (
         StartedToolCall,
         ToolCallsStarted as LoopToolCallsStarted,
     )
-    from XBotv2.core.tools import ToolCall
+    from XBotv2.core.api.tools import ToolCall
     from XBotv2.session.records import ToolRecord
     from XBotv2.tui.events import ToolCallsStarted, ToolRecordReceived
 
@@ -443,7 +443,7 @@ async def test_a_stopped_controller_does_not_render_again(backend: ScriptedBacke
 
 
 def _turn(turn: int):
-    from XBotv2.agentloop.outputs import LoopTurnStarted
+    from XBotv2.agentloop.api.outputs import LoopTurnStarted
 
     return LoopTurnStarted(turn=turn)
 

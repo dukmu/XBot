@@ -9,25 +9,26 @@ listed as public are not plugin contracts.
 
 | Need | Public package | Examples |
 |---|---|---|
-| Tools, outcomes, messages, artifact/path values | `XBotv2.core` | `Tool`, `ToolCall`, `ToolOutcome`, `ToolOutput`, `ConversationMessage`, `ArtifactRef`, `RuntimeVariables` |
-| Loop event names and tool/inbox contracts | `XBotv2.agentloop` | `Events`, `SHORT_CIRCUIT_EVENTS`, `ToolSelection`, `InboxItem`, `LoopState` |
+| Tools, outcomes, messages, artifact/path values | `XBotv2.core.api.tools`, `.messages`, `.artifacts`, `.paths`, `.variables` | `Tool`, `ToolCall`, `ToolOutcome`, `ToolOutput`, `ConversationMessage`, `ArtifactRef`, `RuntimeVariables` |
+| Loop event names and tool/inbox contracts | `XBotv2.agentloop.api.events`, `.contracts`, `.state` | `Events`, `SHORT_CIRCUIT_EVENTS`, `ToolSelection`, `InboxItem`, `LoopState` |
 | Human slash commands | `XBotv2.commands` | `Command`, `CommandResult`, `CommandDescription`, `split_command_args` |
-| Sessions and threads | `XBotv2.session` | `SessionRuntimeState`, `SessionSummary`, `ThreadSummary`, session operations |
+| Sessions and threads | `XBotv2.session` | `SessionKey`, `SessionSummary`, `ThreadSummary`, session operations |
 | Provider catalog and model binding | `XBotv2.llm` | `ModelPort`, `LlmConfig`, `ProviderCatalog`, selection operations |
-| Provider-neutral model request | `XBotv2.core.provider` (used by `XBotv2.llm.ModelPort`) | `ModelRequest`, `ProviderMessage`, `ToolSchema` |
-| Model stream values | `XBotv2.core` | `TextDelta`, `ReasoningDelta`, `ToolCallDelta`, `ModelCompleted`, `ModelFailed`, `ModelCancelled` |
-| Usage | `XBotv2.core` / `XBotv2.usage` | `UsageSnapshot`, `UsageDelta`, `RequestObservation`, `UsagePort`, `UsageUpdated` |
+| Provider-neutral model request | `XBotv2.core.api.provider` (used by `XBotv2.llm.ModelPort`) | `ModelRequest`, `ProviderMessage`, `ToolSchema` |
+| Model stream values | `XBotv2.core.api.stream` | `TextDelta`, `ReasoningDelta`, `ToolCallDelta`, `ModelCompleted`, `ModelFailed`, `ModelCancelled` |
+| Usage | `XBotv2.core.api.domain` / `XBotv2.usage.api.service`, `.events` | `UsageSnapshot`, `UsageDelta`, `RequestObservation`, `UsagePort`, `UsageUpdated` |
 | Permission policy and approval | `XBotv2.permissions` | `PermissionsPort`, `ApprovalPort`, `PermissionRequest`, `PermissionResponseRequest` |
 | User input | `XBotv2.interactions` | `InteractionsPort`, `UserInputRequest`, `UserInputOption`, `UserInputResponseRequest` |
 | Application lifecycle | `XBotv2.application` | `APPLICATION_INITIALIZED`, `ApplicationInitialized`, `RuntimeEvent` |
 
-Protocol DTOs and routes remain in their semantic owner's `protocol.py`; a
+Public wire values live in their semantic owner's `api/protocol.py`; routes
+live in `impl/protocol.py` for migrated owners. A
 transport model should not be moved into `core` for convenient imports.
 
 ## Tool contract
 
 ```python
-from XBotv2.core import Tool, ToolCall, ToolOutcome, succeeded_text
+from XBotv2.core.api.tools import Tool, ToolCall, ToolOutcome, succeeded_text
 
 async def lookup(place: str) -> ToolOutcome:
     """Look up a place."""
@@ -96,7 +97,7 @@ chunks and provider-specific retries/errors inside the adapter.
 
 ## Event and operation boundaries
 
-Use `Events` from `XBotv2.agentloop` with typed payloads declared by the event
+Use `Events` from `XBotv2.agentloop.api.events` with typed payloads declared by the event
 owner. `ctx.on` subscribes to an event; only names in
 `SHORT_CIRCUIT_EVENTS` use serial dispatch and accept their stage's declared
 result. Do not return ad-hoc dictionaries from observer handlers or model all

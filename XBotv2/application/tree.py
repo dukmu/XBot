@@ -4,10 +4,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from pydantic import JsonValue
-
 from XBotv2.loader import PluginOverlay, PluginTree
 from XBotv2.loader.resolve import DEFAULT_TREE, resolve_agent_tree
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 
 def load_agent_tree(
     *,

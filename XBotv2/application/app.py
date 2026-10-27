@@ -13,13 +13,10 @@ import shutil
 from errno import EEXIST, ENOENT, ENOTEMPTY
 from pathlib import Path
 from pydantic import JsonValue
-
-from xcore import Context, ServiceNotFoundError
-
+from xcore.api.context import Context
+from xcore import ServiceNotFoundError
 from XBotv2.application.boot import boot_application
-from XBotv2.core.filesystem.session_lock import (
-    acquire_session,
-)
+from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.application.host import mounted_application
 from XBotv2.application.contracts import (
     AgentApplicationPort,
@@ -30,11 +27,9 @@ from XBotv2.application.contracts import (
 from XBotv2.config.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
 from XBotv2.agents import AgentCreateOptions, AgentDefinition
-from XBotv2.session.contracts import AgentApplicationOptions
-from XBotv2.session.contracts import SessionsPort
-from XBotv2.session.contracts import new_session_id
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.providers import BaseProvider
+from XBotv2.session.contracts import AgentApplicationOptions, SessionsPort, new_session_id
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.providers import Provider
 from XBotv2.permissions import PermissionsPort
 from XBotv2.persistence.store import ThreadMetadataStore
 
@@ -50,7 +45,7 @@ async def start_application(
     workspace_root: Path | str | None = None,
     no_plugins: bool = False,
     plugin_dirs: list[Path | str] | None = None,
-    llm_override: BaseProvider | None = None,
+    llm_override: Provider | None = None,
     selected_agent: str | None = None,
     agent_definition: AgentDefinition | None = None,
     parent_permission_system: PermissionsPort | None = None,
@@ -190,7 +185,7 @@ async def start_application(
 async def create_agent_application(
     options: AgentApplicationOptions,
     *,
-    model_override: BaseProvider | None = None,
+    model_override: Provider | None = None,
 ) -> AgentApplicationPort:
     """Typed factory exported to composition roots, not session internals."""
     extra_plugins = (

@@ -17,10 +17,8 @@ Invariants under test:
 from __future__ import annotations
 
 import itertools
-
 import pytest
-
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,
@@ -37,7 +35,7 @@ from XBotv2.compact.protocol import (
     CompactionMetrics,
     CompactionStarted,
 )
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     CompletedStop,
     Cursor,
@@ -55,9 +53,9 @@ from XBotv2.core.domain import (
     TurnRequest,
     UsageSnapshot,
 )
-from XBotv2.core.messages import CompactionSummaryMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import (
+from XBotv2.core.api.messages import CompactionSummaryMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import (
     ToolCall,
     ToolCallRef,
     ToolDenied,
@@ -67,8 +65,8 @@ from XBotv2.core.tools import (
     ToolSucceeded,
     ToolTiming,
 )
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.timing import SessionStats
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.timing import SessionStats
 from XBotv2.interactions.models import (
     Answered,
     ClientNotice as ClientNoticeModel,
@@ -78,12 +76,7 @@ from XBotv2.interactions.models import (
 )
 from XBotv2.jobs.contracts import JobView
 from XBotv2.goal.api.events import GoalChanged
-from XBotv2.goal.api.models import (
-    ActiveGoal,
-    CompleteGoal,
-    GoalSnapshot,
-    GoalStats,
-)
+from XBotv2.goal.api.models import ActiveGoal, CompleteGoal, GoalSnapshot, GoalStats
 from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
 from XBotv2.permissions.protocol import PermissionResponseRecorded
 from XBotv2.session.contracts import HistoryMutation, PendingInputData, ThreadSummary
@@ -1028,7 +1021,7 @@ def test_submitted_input_appears_immediately_as_pending() -> None:
 
 
 def test_consumed_input_retires_only_unconfirmed_matching_echo() -> None:
-    from XBotv2.core.domain import SessionScope
+    from XBotv2.core.api.domain import SessionScope
     from XBotv2.protocol import server_event
     from XBotv2.tui.protocol import FrameTranslator
 

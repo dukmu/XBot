@@ -8,12 +8,11 @@ objects as ``execute_tools`` parameters.
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS
 from typing import Any
-
 import xcore
-
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_service import ToolsService
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_service import ToolsService
 from XBotv2.permissions import Denied
 from XBotv2.permissions.contracts import Approval, PermissionRequest
 
@@ -48,12 +47,12 @@ def make_tool_ctx(
     existing context (e.g. one carrying event listeners).
     """
     ctx = base or xcore.Context()
-    tools_service = ctx.get("tools", strict=False)
+    tools_service = ctx.get(TOOLS, strict=False)
     if tools_service is None:
         # The harness composes and owns this context, so registrations made
         # outside a plugin apply are caller-owned here.
         tools_service = ToolsService(registry, events=ctx, ownership="caller")
-        ctx.set("tools", tools_service)
+        ctx.provide(TOOLS, tools_service)
     if permissions is not None:
         from XBotv2.permissions.guard import PermissionGuard
 
@@ -77,127 +76,3 @@ def make_tool_ctx(
     if interactions is not None:
         ctx.set("interactions", interactions)
     return ctx
-
-
-def make_engine(
-    *,
-    llm,
-    tool_registry,
-    plugin_ctx,
-    state_store,
-    sandbox_policy=None,
-    permission_system=None,
-    config=None,
-    context_builder=None,
-):
-    """Build the current Engine from the pre-refactor test composition.
-
-    The concrete loop driver now receives only provider-neutral core ports:
-    a model client, a tool service, an event port, loop state, and settings.
-    This helper maps the old test inputs (LLM, registry, hook context, store,
-    policy objects, runtime config) onto those ports the way application
-    composition does.
-    """
-    from XBotv2.agentloop.engine import Engine
-    from XBotv2.config.contracts import RuntimeConfig
-    from XBotv2.agentloop import LoopSettings, LoopState
-    from XBotv2.core.history import ConversationHistory
-    from XBotv2.session import SessionInfo
-    from XBotv2.permissions.system import PermissionSystem
-    from XBotv2.sandbox.policy import SandboxPolicy
-
-    if sandbox_policy is None:
-        sandbox_policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(state_store.workspace_root),
-        )
-    if permission_system is None:
-        permission_system = PermissionSystem(default_decision="allow")
-    events = make_tool_ctx(
-        tool_registry,
-        sandbox=sandbox_policy,
-        permissions=permission_system,
-        base=plugin_ctx,
-    )
-    runtime_config = config or RuntimeConfig()
-    # Bind the engine to the context's conversation state, creating it (and
-    # registering it) only when nothing has provided one yet — the same
-    # composition the session plugin performs in application boot.
-    state = events.get("loop_state", strict=False)
-    if state is None:
-        state = LoopState(
-            events,
-            session=SessionInfo(
-                session_id=state_store.session_id,
-                thread_id=state_store.thread_id,
-                workspace_root=str(state_store.workspace_root),
-                provider="default",
-            ),
-        )
-    state.set_history(ConversationHistory(
-        sink=state_store.history,
-        messages=state_store.history.load_surface(),
-    ))
-    settings = LoopSettings(
-        provider="default",
-        model="mock",
-        context_window=runtime_config.max_context_tokens,
-        max_output_tokens=runtime_config.max_output_tokens or 0,
-        agent_name=runtime_config.agent_name,
-        agent_role=runtime_config.agent_role,
-        developer_instructions=runtime_config.instructions,
-        agent_instructions=runtime_config.agent_instructions,
-        memory=runtime_config.memory,
-        workspace=str(state_store.workspace_root),
-    )
-    from XBotv2.context_builder import (
-        BUILD_CONTEXT,
-        CONTEXT_COMPONENTS_BUILT,
-        ContextBuildRequest,
-        ContextComponentsBuilt,
-    )
-    from XBotv2.context_builder.builder import ContextBuilder
-
-    builder = ContextBuilder()
-
-    async def _build_context(event: ContextBuildRequest) -> None:
-        components = builder.build_components(
-            messages=event.messages,
-            agent_name=event.agent_name,
-            agent_role=event.agent_role,
-            user_name=event.user_name,
-            user_id=event.user_id,
-            developer_instructions=event.developer_instructions,
-            instructions=event.instructions,
-            memory=event.memory,
-            sandbox_summary=event.sandbox_summary,
-            runtime_paths=event.runtime_paths,
-            system_notice=event.system_notice,
-            turn_count=event.turn_count,
-            active_subagents=event.active_subagents,
-        )
-        component_event = ContextComponentsBuilt(
-            components=components,
-            session=event.session,
-        )
-        await events.emit(
-            CONTEXT_COMPONENTS_BUILT,
-            component_event,
-        )
-        event.context_messages = builder.messages_from_components(
-            component_event.components
-        )
-
-    events.on(BUILD_CONTEXT, _build_context)
-    from XBotv2.agentloop import AgentInbox, EphemeralInboxSink
-
-    return Engine(
-        model_client=llm,
-        tools=events.tools,
-        events=events,
-        state=state,
-        settings=settings,
-        # Direct engine construction is explicit about its inbox; no
-        # silent transient fallback.
-        inbox=AgentInbox(events=events, sink=EphemeralInboxSink()),
-    )

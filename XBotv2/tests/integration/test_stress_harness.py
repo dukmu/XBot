@@ -4,16 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-
 import httpx
 import pytest
-
-from XBotv2.core.domain import (
-    GenerationSettings, ModelRoute, ResolvedModelSelection, StandardGenerationMode,
+from XBotv2.core.api.domain import (
+    GenerationSettings,
+    ModelRoute,
+    ResolvedModelSelection,
+    StandardGenerationMode,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ModelRequest, ProviderUser
-from XBotv2.core.stream import ModelCompleted, ModelFailed, ReasoningDelta
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ModelRequest, ProviderUser
+from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ReasoningDelta
 from XBotv2.llm.openai import OpenAICompatibleProvider
 from scripts.stress.config import parse_args
 from scripts.stress.provider import NetworkMockLLM

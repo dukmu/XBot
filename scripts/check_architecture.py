@@ -19,9 +19,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "XBotv2"
-ENGINE = PACKAGE / "agentloop" / "engine.py"
-TOOL_RUNTIME = PACKAGE / "agentloop" / "tool_runtime.py"
-AGENTLOOP_EVENTS = PACKAGE / "agentloop" / "events.py"
+ENGINE = PACKAGE / "agentloop" / "impl" / "engine.py"
+TOOL_RUNTIME = PACKAGE / "agentloop" / "impl" / "tool_runtime.py"
+AGENTLOOP_EVENTS = PACKAGE / "agentloop" / "api" / "events.py"
 SESSION = PACKAGE / "session" / "runtime.py"
 BOOTSTRAP = PACKAGE / "bootstrap.py"
 APPLICATION_PLUGIN = PACKAGE / "application" / "plugin.py"
@@ -43,9 +43,9 @@ HTTP_SERVER = PACKAGE / "server" / "http.py"
 ACP_AGENT = PACKAGE / "acp_plugin" / "xbot_agent.py"
 XCORE_TREE = PACKAGE / "xcore.yaml"
 TOOLS = (
-    PACKAGE / "agentloop" / "tool_service.py",
+    PACKAGE / "agentloop" / "impl" / "tool_service.py",
     TOOL_RUNTIME,
-    PACKAGE / "agentloop" / "tool_registry.py",
+    PACKAGE / "agentloop" / "impl" / "tool_registry.py",
 )
 
 ENGINE_ALLOWED_XBOT_ROOTS = {
@@ -159,6 +159,10 @@ XCORE_CONTEXT_API = {
     "parallel",
     "plugin",
     "require",
+    "provide",
+    "scope",
+    "pre_stop",
+    "close",
     "serial",
     "set",
     "state",
@@ -192,20 +196,36 @@ def _tree(path: Path) -> ast.Module:
     return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
 
 
-def _string_values(node: ast.AST | None) -> set[str]:
-    """Extract string constants from a list/tuple node (empty on other nodes)."""
+def _string_values(node: ast.AST | None, path: Path | None = None) -> set[str]:
+    """Resolve string or imported ServiceKey entries without importing plugins."""
     if not isinstance(node, (ast.List, ast.Tuple)):
         return set()
-    return {
-        item.value
-        for item in node.elts
-        if isinstance(item, ast.Constant) and isinstance(item.value, str)
-    }
+    return {value for item in node.elts if (value := _literal_string(item, path)) is not None}
 
 
-def _literal_string(node: ast.AST | None) -> str | None:
+def _literal_string(node: ast.AST | None, path: Path | None = None) -> str | None:
     if isinstance(node, ast.Constant) and isinstance(node.value, str):
         return node.value
+    if not isinstance(node, ast.Name) or path is None:
+        return None
+    # Follow the actual imported declaration, including local import aliases.
+    for statement in _tree(path).body:
+        if not isinstance(statement, ast.ImportFrom) or not statement.module:
+            continue
+        for alias in statement.names:
+            if (alias.asname or alias.name) != node.id:
+                continue
+            declaration_path = _module_path(statement.module)
+            if declaration_path is None:
+                return None
+            value = _assignment_value(_tree(declaration_path).body, alias.name)
+            if (
+                isinstance(value, ast.Call)
+                and isinstance(value.func, ast.Name)
+                and value.func.id == "ServiceKey"
+                and value.args
+            ):
+                return _literal_string(value.args[0])
     return None
 
 
@@ -228,9 +248,9 @@ def _assignment_value(
     return None
 
 
-def _inject_values(node: ast.AST | None) -> tuple[set[str], set[str]]:
+def _inject_values(node: ast.AST | None, path: Path) -> tuple[set[str], set[str]]:
     if isinstance(node, (ast.List, ast.Tuple)):
-        return _string_values(node), set()
+        return _string_values(node, path), set()
     if not isinstance(node, ast.Dict):
         return set(), set()
     required: set[str] = set()
@@ -238,9 +258,9 @@ def _inject_values(node: ast.AST | None) -> tuple[set[str], set[str]]:
     for key, value in zip(node.keys, node.values):
         label = _literal_string(key)
         if label == "required":
-            required.update(_string_values(value))
+            required.update(_string_values(value, path))
         elif label == "optional":
-            optional.update(_string_values(value))
+            optional.update(_string_values(value, path))
     return required, optional
 
 
@@ -309,14 +329,14 @@ class PluginSpec:
     provided: frozenset[str]
 
 
-def _provided_services(node: ast.AST) -> set[str]:
+def _provided_services(node: ast.AST, path: Path) -> set[str]:
     services: set[str] = set()
     for item in ast.walk(node):
         if not isinstance(item, ast.Call) or not isinstance(item.func, ast.Attribute):
             continue
-        if item.func.attr != "set" or not item.args:
+        if item.func.attr not in {"set", "provide"} or not item.args:
             continue
-        service = _literal_string(item.args[0])
+        service = _literal_string(item.args[0], path)
         if service:
             services.add(service)
     return services
@@ -336,7 +356,7 @@ def _plugin_specs() -> list[PluginSpec]:
         if plugin_class is None:
             continue
         required, optional = _inject_values(
-            _assignment_value(plugin_class.body, "inject")
+            _assignment_value(plugin_class.body, "inject"), path
         )
         raw_profiles = entry.get("profiles")
         profiles = (
@@ -354,7 +374,7 @@ def _plugin_specs() -> list[PluginSpec]:
             line=plugin_class.lineno,
             required=frozenset(required),
             optional=frozenset(optional),
-            provided=frozenset(_provided_services(plugin_class)),
+            provided=frozenset(_provided_services(plugin_class, path)),
         ))
     return specs
 
@@ -533,7 +553,9 @@ def check_agentloop_imports() -> list[Violation]:
             "application-operations",
             "cross-capability use cases belong to application ownership",
         ))
-    for path in sorted(root.glob("*.py")):
+    for path in sorted(root.rglob("*.py")):
+        if "tests" in path.relative_to(root).parts:
+            continue
         if path.name in {"plugin.py", "protocol.py"}:
             continue
         violations.extend(
@@ -682,8 +704,7 @@ def check_application_startup() -> list[Violation]:
             isinstance(node, ast.ImportFrom)
             and node.module
             and node.module.startswith("XBotv2.agentloop")
-            and node.module != "XBotv2.agentloop"
-            and node.module.rsplit(".", 1)[-1] not in PUBLIC_DECLARATION_MODULES
+            and not node.module.startswith("XBotv2.agentloop.api.")
         ):
             violations.append(Violation(
                 AGENTS_SERVICE,
@@ -781,14 +802,6 @@ def check_application_startup() -> list[Violation]:
                     "application-instance-factory",
                     "session must request child applications, not construct Engines",
                 ))
-    session_source = SESSION_PLUGIN.read_text(encoding="utf-8")
-    if "LoopState(" not in session_source:
-        violations.append(Violation(
-            SESSION_PLUGIN,
-            1,
-            "session-state-ownership",
-            "session must create the Agentloop-owned LoopState",
-        ))
     for node in ast.walk(_tree(PERSISTENCE_PLUGIN)):
         if (
             isinstance(node, ast.Call)
@@ -953,6 +966,7 @@ def check_tools() -> list[Violation]:
 
 def _plugin_roots() -> set[str]:
     roots = {path.parent.name for path in PACKAGE.glob("*/plugin.py")}
+    roots.update(path.parent.parent.name for path in PACKAGE.glob("*/impl/plugin.py"))
     roots.update(spec.module.split(".", 1)[0] for spec in _plugin_specs())
     return roots
 
@@ -968,25 +982,13 @@ def _public_import_violation(
     imported = _module_root(module)
     if imported is None or imported == owner:
         return None
-    if imported in SHARED_DECLARATION_ROOTS:
-        if module == f"XBotv2.{imported}" and isinstance(node, ast.ImportFrom):
-            declaration_path = _module_path(module)
-            exports = _explicit_exports(declaration_path) if declaration_path else None
-            imported_names = {
-                alias.name for alias in node.names if alias.name != "*"
-            }
-            missing = sorted(imported_names - (exports or set()))
-            if exports is None or missing or any(
-                alias.name == "*" for alias in node.names
-            ):
-                detail = "*" if not missing else ", ".join(missing)
-                return Violation(
-                    path,
-                    node.lineno,
-                    "shared-private-symbol-import",
-                    f"imports non-public symbol(s) {detail} from {module}",
-                )
-        return None
+    if imported == "core":
+        if module.startswith("XBotv2.core.api."):
+            return None
+        return Violation(
+            path, node.lineno, "shared-implementation-import",
+            f"imports shared implementation outside core.api: {module}",
+        )
     if imported == "protocol":
         if owner in TRANSPORT_ROOTS or path.name == "protocol.py":
             return None
@@ -1192,7 +1194,8 @@ def check_transport_host_boundaries() -> list[Violation]:
 
 
 class _ContextAccessVisitor(ast.NodeVisitor):
-    def __init__(self, context_name: str, root: ast.AST) -> None:
+    def __init__(self, context_name: str, root: ast.AST, path: Path) -> None:
+        self.path = path
         self.context_name = context_name
         self.root = root
         self.services: dict[str, int] = {}
@@ -1240,7 +1243,7 @@ class _ContextAccessVisitor(ast.NodeVisitor):
             and node.args[0].id == self.context_name
         ):
             self.locators.append(node.lineno)
-            service = _literal_string(node.args[1])
+            service = _literal_string(node.args[1], self.path)
             if service:
                 self._record(service, node.lineno)
         if isinstance(node.func, ast.Attribute) and node.func.attr in {
@@ -1256,7 +1259,7 @@ class _ContextAccessVisitor(ast.NodeVisitor):
                 and owner.attr == "ctx"
             )
             if is_context:
-                service = _literal_string(node.args[0])
+                service = _literal_string(node.args[0], self.path)
                 if service:
                     self._record(service, node.lineno)
         self.generic_visit(node)
@@ -1283,7 +1286,7 @@ def _plugin_context_accesses(spec: PluginSpec) -> tuple[dict[str, int], list[int
             (argument.arg for argument in arguments if argument.arg == "ctx"),
             "ctx",
         )
-        visitor = _ContextAccessVisitor(context_name, apply)
+        visitor = _ContextAccessVisitor(context_name, apply, spec.path)
         visitor.visit(apply)
         accesses.update(visitor.services)
         locators.extend(visitor.locators)

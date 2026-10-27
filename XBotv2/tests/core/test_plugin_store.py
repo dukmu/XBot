@@ -8,12 +8,11 @@ the real StateService implementation.
 
 import asyncio
 from pathlib import Path
-
 import pytest
-
 from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.paths import RuntimePaths
-from xcore import Context, StateService
+from XBotv2.core.api.paths import RuntimePaths
+from xcore.api.context import Context
+from xcore import StateService
 
 
 def _state_file(tmp_path) -> Path:

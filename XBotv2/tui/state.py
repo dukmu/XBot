@@ -25,17 +25,9 @@ import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
-
-from XBotv2.compact.protocol import (
-    CompactionCompleted,
-    CompactionFailed,
-    CompactionStarted,
-)
-from XBotv2.agentloop.outputs import (
-    AssistantReasoningDelta,
-    TurnCancelled as CancelledOutcome,
-)
-from XBotv2.core.domain import (
+from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
+from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, TurnCancelled as CancelledOutcome
+from XBotv2.core.api.domain import (
     Cursor,
     ReasoningGenerationMode,
     ResolvedRuntimeSelection,
@@ -55,13 +47,8 @@ from XBotv2.session.records import (
     RuntimeNoticeRecord,
     ToolRecord,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.tools import (
-    ToolCancelled,
-    ToolDenied,
-    ToolFailed,
-    ToolSucceeded,
-)
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
 from XBotv2.session.protocol import OpenSessionResponse
 from XBotv2.tui.events import (
     AssistantCompleted,
@@ -226,7 +213,6 @@ class SessionState:
     # most recently loaded, and therefore the one released first.
     loaded_pages: list[HeldPage] = field(default_factory=list)
     _local_counter: int = 0
-
 
 
     @property

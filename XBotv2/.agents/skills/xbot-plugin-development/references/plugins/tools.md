@@ -9,7 +9,7 @@ service.
 ## Define a Tool
 
 ```python
-from XBotv2.core import Tool, ToolCall, ToolOutcome, succeeded_text
+from XBotv2.core.api.tools import Tool, ToolCall, ToolOutcome, succeeded_text
 
 async def lookup(city: str, *, tool_call: ToolCall) -> ToolOutcome:
     """Look up a city."""

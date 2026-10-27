@@ -11,7 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PACKAGE = ROOT / "XBotv2"
 ALLOWED_DECLARATIONS = {"contracts", "events", "protocol"}
-SHARED_ROOTS = {"core", "protocol"}
+SHARED_ROOTS = {"protocol"}
 
 
 @dataclass(frozen=True)
@@ -118,8 +118,8 @@ def declaration_import_violations(package: Path) -> list[DeclarationViolation]:
     """Reject public declarations that depend on same-package implementations."""
     violations: list[DeclarationViolation] = []
     prefix = f"XBotv2.{package.name}."
-    for leaf in sorted(ALLOWED_DECLARATIONS):
-        path = package / f"{leaf}.py"
+    paths = sorted((package / "api").glob("*.py")) if (package / "api").is_dir() else [package / f"{leaf}.py" for leaf in sorted(ALLOWED_DECLARATIONS)]
+    for path in paths:
         if not path.is_file():
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
@@ -129,7 +129,7 @@ def declaration_import_violations(package: Path) -> list[DeclarationViolation]:
             if not node.module.startswith(prefix):
                 continue
             target_leaf = node.module.rsplit(".", 1)[-1]
-            if target_leaf in ALLOWED_DECLARATIONS:
+            if node.module.startswith(prefix + "api.") or (not (package / "api").is_dir() and target_leaf in ALLOWED_DECLARATIONS):
                 continue
             violations.append(DeclarationViolation(
                 source=str(path.relative_to(ROOT)),
@@ -144,6 +144,8 @@ def classify(owner: str, module: str) -> str:
     if imported is None or imported == owner:
         return "local/non-plugin"
     leaf = module.rsplit(".", 1)[-1]
+    if imported == "core":
+        return "allowed shared contract" if module.startswith("XBotv2.core.api.") else "IMPLEMENTATION DEPENDENCY"
     if imported in SHARED_ROOTS:
         return "allowed shared contract"
     if owner == "acp_plugin" and module == "XBotv2.application.acp":
@@ -180,12 +182,19 @@ def imports_for(package: Path, owner: str) -> list[ImportRecord]:
     ]
 
 
-def _protocol_methods(node: ast.ClassDef) -> set[str]:
-    return {
+def _protocol_methods(
+    node: ast.ClassDef, declarations: dict[str, ast.ClassDef] | None = None,
+) -> set[str]:
+    methods = {
         item.name
         for item in node.body
         if isinstance(item, (ast.FunctionDef, ast.AsyncFunctionDef))
     }
+    remaining = {name: declaration for name, declaration in (declarations or {}).items() if name != node.name}
+    for base in node.bases:
+        if isinstance(base, ast.Name) and base.id in remaining:
+            methods.update(_protocol_methods(remaining[base.id], remaining))
+    return methods
 
 
 def protocol_records(package: Path, owner: str) -> list[ProtocolRecord]:
@@ -203,7 +212,7 @@ def protocol_records(package: Path, owner: str) -> list[ProtocolRecord]:
         for node in tree.body:
             if not isinstance(node, ast.ClassDef):
                 continue
-            methods = _protocol_methods(node)
+            methods = _protocol_methods(node, {item.name: item for item in tree.body if isinstance(item, ast.ClassDef)})
             bases = {
                 base.id
                 for base in node.bases
@@ -239,7 +248,11 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--format", choices=("markdown", "tsv"), default="markdown")
     args = parser.parse_args()
-    packages = sorted({path.parent for path in PACKAGE.glob("*/plugin.py")} | {path.parent.parent for path in PACKAGE.glob("*/impl/plugin.py")})
+    packages = sorted(
+        {path.parent for path in PACKAGE.glob("*/plugin.py")}
+        | {path.parent.parent for path in PACKAGE.glob("*/impl/plugin.py")}
+        | {path.parent for path in PACKAGE.glob("*/api") if path.is_dir()}
+    )
     violations = 0
     if args.format == "markdown":
         print("# Plugin Contract AST Audit")

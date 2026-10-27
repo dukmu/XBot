@@ -63,7 +63,7 @@ class TestSchema:
 
     def test_tool_has_request_sandbox_access_name(self):
         tool, _approval, _apply = _make_tool(approval_response=Allowed(scope="once"))
-        from XBotv2.core.tools import Tool
+        from XBotv2.core.api.tools import Tool
         assert isinstance(tool.as_tool(), Tool)
         assert tool.as_tool().name == "request_sandbox_access"
 

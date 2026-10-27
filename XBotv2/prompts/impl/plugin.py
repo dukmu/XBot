@@ -5,11 +5,15 @@ Wraps context-builder registration behind fiber-scoped ownership cleanup.
 
 from __future__ import annotations
 
+from XBotv2.context_builder.api.contracts import (
+    CONTEXT_BUILDER,
+    PromptComponent,
+    PromptComponentRegistry,
+)
 from functools import partial
 from pydantic import JsonValue
-from xcore import Context, bound_effect, current_plugin_name
-
-from XBotv2.context_builder.contracts import PromptComponent, PromptComponentRegistry
+from xcore.api.context import Context
+from xcore import bound_effect, current_plugin_name
 from XBotv2.prompts.api.service import PROMPTS, PromptsPort
 
 
@@ -41,7 +45,7 @@ class PromptsService(PromptsPort):
 
 
 class PromptsComponent:
-    inject = ['context_builder']
+    inject = [CONTEXT_BUILDER]
     """Register the prompt-component registry as ``ctx.prompts``."""
 
     name = "xbot.prompts"
@@ -49,7 +53,7 @@ class PromptsComponent:
     def apply(
         self, ctx: Context, config: dict[str, JsonValue] | None = None
     ) -> None:
-        ctx.set(PROMPTS, PromptsService(ctx.context_builder))
+        ctx.set(PROMPTS, PromptsService(ctx.require(CONTEXT_BUILDER)))
 
 
 plugin = PromptsComponent()

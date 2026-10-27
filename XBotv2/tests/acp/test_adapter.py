@@ -5,7 +5,6 @@ import pytest
 import socket
 from types import SimpleNamespace
 from typing import Any
-
 import yaml
 from acp import PROTOCOL_VERSION, connect_to_agent, run_agent, text_block
 from acp.schema import (
@@ -18,7 +17,6 @@ from acp.schema import (
     McpServerStdio,
     RequestPermissionResponse,
 )
-
 from XBotv2.acp_plugin.xbot_agent import XBotACPAgent
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session.contracts import (
@@ -28,8 +26,8 @@ from XBotv2.session.contracts import (
     conversation_replay,
 )
 from XBotv2.application.acp import start_acp_application
-from XBotv2.core.artifacts import ArtifactRef
-from XBotv2.core.domain import (
+from XBotv2.core.api.artifacts import ArtifactRef
+from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     CompletedStop,
     GenerationSettings,
@@ -52,17 +50,17 @@ from XBotv2.core.domain import (
     UsageDelta,
     UsageSnapshot,
 )
-from XBotv2.core.history import HistoryPage
-from XBotv2.core.messages import (
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.messages import (
     AssistantMessage,
     HumanInputMessage,
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.metadata import ThreadMetadata
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.core.tools import (
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import (
     ContinueTurn,
     ToolCall,
     ToolCallRef,
@@ -72,7 +70,7 @@ from XBotv2.core.tools import (
     ToolTiming,
     text_output,
 )
-from XBotv2.agentloop.outputs import (
+from XBotv2.agentloop.api.outputs import (
     AssistantCompleted,
     AssistantTextDelta,
     LoopTurnEnded,
@@ -86,16 +84,8 @@ from XBotv2.agentloop.outputs import (
 )
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobUpdatedEvent
-from XBotv2.interactions.models import (
-    Answered,
-    UserInputOption,
-    UserInputRequest,
-)
-from XBotv2.permissions.contracts import (
-    Allowed,
-    PermissionRequest,
-    ToolPermission,
-)
+from XBotv2.interactions.models import Answered, UserInputOption, UserInputRequest
+from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
 from XBotv2.llm.mock import MockLLM
 from XBotv2.session import SessionSummary, ThreadSummary
 

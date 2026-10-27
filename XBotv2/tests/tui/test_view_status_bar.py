@@ -9,8 +9,7 @@ from __future__ import annotations
 
 import pytest
 from rich.cells import cell_len
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     GenerationSettings,
     ModelRoute,
     ProviderMeasured,
@@ -32,10 +31,7 @@ from XBotv2.tui.status import (
     StatusFacts,
     derive,
 )
-from XBotv2.tui.view.status_bar import (
-    StatusLine,
-    render_status_line,
-)
+from XBotv2.tui.view.status_bar import StatusLine, render_status_line
 
 
 def line(**overrides) -> StatusLine:

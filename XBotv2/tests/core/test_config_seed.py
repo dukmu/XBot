@@ -1,7 +1,6 @@
 from pathlib import Path
-
 from XBotv2.config.seed import ensure_initial_config
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader.contracts import PluginOverlay
 
 

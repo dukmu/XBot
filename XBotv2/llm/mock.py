@@ -5,10 +5,8 @@ from __future__ import annotations
 import asyncio
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator
-
 from pydantic import JsonValue
-
-from XBotv2.core.domain import (
+from XBotv2.core.api.domain import (
     CompletedStop,
     MeasurementUnavailable,
     ProviderError,
@@ -16,11 +14,18 @@ from XBotv2.core.domain import (
     TokenCounters,
     UsageDelta,
 )
-from XBotv2.core.parts import ReasoningPart, TextPart
-from XBotv2.core.provider import ModelRequest
-from XBotv2.core.providers import BaseProvider, InputModality
-from XBotv2.core.stream import ModelCompleted, ModelResponse, ModelStreamEvent, ReasoningDelta, TextDelta
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.parts import ReasoningPart, TextPart
+from XBotv2.core.api.provider import ModelRequest
+from XBotv2.llm.impl.base import BaseProvider
+from XBotv2.core.api.providers import InputModality
+from XBotv2.core.api.stream import (
+    ModelCompleted,
+    ModelResponse,
+    ModelStreamEvent,
+    ReasoningDelta,
+    TextDelta,
+)
+from XBotv2.core.api.tools import ToolCall
 
 
 @dataclass

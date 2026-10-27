@@ -502,7 +502,7 @@ possible:
 ```python
 import xcore
 
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 
 paths = RuntimePaths.from_data_dir(tmp_path / "data")
 ctx = xcore.Context(data_dir=paths.data_dir)

@@ -11,14 +11,12 @@ rather than machine noise.
 from __future__ import annotations
 
 import time
-
 import pytest
-
-from XBotv2.core.domain import MessageId
-from XBotv2.core.history import HistoryCursorInvalid
-from XBotv2.core.messages import HumanInputMessage
-from XBotv2.core.parts import TextPart
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.domain import MessageId
+from XBotv2.core.api.history import HistoryCursorInvalid
+from XBotv2.core.api.messages import HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.persistence.store import ThreadPersistence
 
 RECORDS = 5_000

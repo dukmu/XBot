@@ -3,10 +3,8 @@
 from __future__ import annotations
 
 from typing import Literal, Protocol
-
 from pydantic import BaseModel, ConfigDict, Field, JsonValue
-
-from XBotv2.core.tools import ToolCall
+from XBotv2.core.api.tools import ToolCall
 
 
 PermissionDecision = Literal["allow", "deny", "ask"]

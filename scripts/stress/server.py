@@ -6,15 +6,13 @@ import tempfile
 from contextlib import AsyncExitStack
 from pathlib import Path
 from typing import Any
-from xcore import Context
-
+from xcore.api.context import Context
 import httpx
 import yaml
 from XBotv2.application.server import start_server_application
 from XBotv2.client import XBotClient
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader import PluginOverlay
-
 from .provider import LoopbackServer, NetworkMockLLM
 
 

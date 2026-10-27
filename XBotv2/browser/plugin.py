@@ -2,26 +2,21 @@
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS
 from dataclasses import replace
-
 from typing import Literal
 from pydantic import JsonValue
-
-from XBotv2.core import (
-    ArtifactStorePort,
-    Tool,
-    ToolOutcome,
-)
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.tools import Tool, ToolOutcome
 from XBotv2.sandbox.contracts import SandboxPort
-from xcore import Context
-
+from xcore.api.context import Context
 from .browser import BrowserSession
 from .contracts import BrowserConfig
 from .network import WebAccess, network_disabled
 
 
 class BrowserPlugin:
-    inject = ['tools', 'session', 'sandbox', 'artifacts']
+    inject = [TOOLS, 'session', 'sandbox', 'artifacts']
     name = "browser"
     Config = BrowserConfig
 
@@ -50,7 +45,7 @@ class BrowserPlugin:
             self.browser_close,
         ):
             # Owners declare the model-facing category (web access).
-            ctx.tools.register(replace(Tool.from_function(function), kind="fetch"))
+            ctx.require(TOOLS).register(replace(Tool.from_function(function), kind="fetch"))
 
     async def web_search(
         self,

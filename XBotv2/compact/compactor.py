@@ -1,16 +1,15 @@
 """Pure compaction proposal construction and auxiliary model call."""
 
 from __future__ import annotations
-
+from XBotv2.context_builder.api.contracts import ContextCompiler
 import asyncio
 import logging
 from collections.abc import Awaitable, Callable, Sequence
 from uuid import uuid4
-
-from XBotv2.core import estimate_messages_tokens, estimate_model_request_tokens
-from XBotv2.core.artifacts import ArtifactStorePort
-from XBotv2.core.messages import ConversationMessage
-from XBotv2.core.domain import (
+from XBotv2.core.api.tokens import estimate_messages_tokens, estimate_model_request_tokens
+from XBotv2.core.api.artifacts import ArtifactStorePort
+from XBotv2.core.api.messages import ConversationMessage
+from XBotv2.core.api.domain import (
     AuxiliaryRequest,
     RequestObservation,
     ResolvedModelSelection,
@@ -20,21 +19,17 @@ from XBotv2.core.domain import (
     TransactionRef,
     TransactionStarted,
     UsageDelta,
+    HistoryRevision,
+    MessageId,
 )
-from XBotv2.core.parts import TextPart
-from XBotv2.core.provider import ModelRequest
-from XBotv2.core.tools import ToolCall
-from XBotv2.core.timing import conversation_stats
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ModelRequest
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.core.api.timing import conversation_stats
 from XBotv2.llm.contracts import ModelPort
-from XBotv2.session.contracts import SessionRuntimeState
-
-from XBotv2.compact.history import (
-    compact_prefix_end,
-    history_chars,
-    tool_pairing_boundaries,
-)
+from XBotv2.agentloop.api.state import ThreadExecution
+from XBotv2.compact.history import compact_prefix_end, history_chars, tool_pairing_boundaries
 from XBotv2.compact.contracts import CompactionPlan, CompactionSelection
-from XBotv2.core.domain import HistoryRevision, MessageId
 from XBotv2.compact.protocol import (
     CompactionFailed,
     CompactionMetrics,
@@ -42,11 +37,7 @@ from XBotv2.compact.protocol import (
     CompactionStarted,
     is_automatic_compaction,
 )
-from XBotv2.compact.summary import (
-    compacted_message,
-    normalize_summary,
-    summary_request,
-)
+from XBotv2.compact.summary import compacted_message, normalize_summary, summary_request
 from XBotv2.llm import invoke_llm
 
 logger = logging.getLogger("xbotv2.compact")
@@ -62,6 +53,8 @@ def _summary_input(
     stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
     artifacts: ArtifactStorePort | None = None,
+    *,
+    compiler: ContextCompiler,
 ) -> list:
     prefix = list(messages[:split])
     if stable_prefix:
@@ -71,6 +64,7 @@ def _summary_input(
         summary_max_chars,
         stable_prefix=stable_prefix,
         artifacts=artifacts,
+        compiler=compiler,
     )
 
 
@@ -78,6 +72,7 @@ def _fit_summary_prefix(
     messages: list[ConversationMessage],
     split: int,
     *,
+    compiler: ContextCompiler,
     stable_prefix: Sequence[ConversationMessage],
     summary_max_chars: int,
     max_context_tokens: int | None,
@@ -98,7 +93,7 @@ def _fit_summary_prefix(
     # selected message.  Fold it once and remember the largest safe cut that
     # fits; repeatedly estimating every candidate made large histories O(n²).
     base = estimate_messages_tokens(
-        _summary_input(messages, 0, stable_prefix, summary_max_chars, artifacts),
+        _summary_input(messages, 0, stable_prefix, summary_max_chars, artifacts, compiler=compiler),
     )
     boundaries = tool_pairing_boundaries(messages)
     estimate = base
@@ -120,11 +115,12 @@ def _fit_summary_prefix(
 
 async def build_compaction_plan(
     *,
+    compiler: ContextCompiler,
     model: ModelPort,
     selection: ResolvedModelSelection,
     record_usage: UsageRecorder,
     publish_runtime_event: RuntimePublisher,
-    session: SessionRuntimeState,
+    session: ThreadExecution,
     messages: list[ConversationMessage],
     history_revision: HistoryRevision,
     source_ids: tuple[MessageId, ...],
@@ -163,6 +159,7 @@ async def build_compaction_plan(
                 else selection.generation.max_output_tokens
             ),
             artifacts=artifacts,
+            compiler=compiler,
         )
     except RuntimeError:
         if reason == "manual":
@@ -218,7 +215,7 @@ async def build_compaction_plan(
 
     try:
         request_messages = tuple(
-            _summary_input(messages, split, stable_prefix, summary_max_chars, artifacts)
+            _summary_input(messages, split, stable_prefix, summary_max_chars, artifacts, compiler=compiler)
         )
         auxiliary_selection = selection
         model_request = ModelRequest(

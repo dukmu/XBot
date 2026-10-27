@@ -2,31 +2,22 @@
 
 import asyncio
 import json
-
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
 from types import SimpleNamespace
-
 import pytest
-
 from XBotv2.browser.browser import BrowserSession
 from XBotv2.browser.contracts import BrowserSessionPolicy, NetworkPolicy
 from XBotv2.browser.network import BrowserProxy, WebAccess, validate_url
-from XBotv2.core.artifacts import ArtifactKind
-from XBotv2.core.tools import (
-    ToolDenied,
-    ToolFailed,
-    ToolOutcome,
-    ToolSucceeded,
-    succeeded_text,
-)
-from XBotv2.agentloop import HumanInput, InboxItem
-from XBotv2.core.domain import InboxTarget
-from XBotv2.agentloop.outputs import AssistantCompleted, LoopError, ToolCompleted
+from XBotv2.core.api.artifacts import ArtifactKind
+from XBotv2.core.api.tools import ToolDenied, ToolFailed, ToolOutcome, ToolSucceeded, succeeded_text
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolCompleted
 from XBotv2.application.app import start_application
-from XBotv2.core.messages import ToolMessage
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.core.api.messages import ToolMessage
+from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.llm.mock import MockLLM
 from XBotv2.permissions import Allowed, Denied, PermissionRequest
 

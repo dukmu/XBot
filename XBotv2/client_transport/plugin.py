@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 from pydantic import BaseModel, ConfigDict
-from xcore import Context
-
+from xcore.api.context import Context
 from XBotv2.client import XBotClient
 
 

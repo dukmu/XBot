@@ -8,11 +8,9 @@ construction continue to use :mod:`XBotv2.core.messages`.
 from __future__ import annotations
 
 from typing import Literal, TypeAlias
-
 from pydantic import BaseModel, ConfigDict, RootModel
-
-from XBotv2.core.artifacts import ArtifactRef, ImageRef
-from XBotv2.core.messages import (
+from XBotv2.core.api.artifacts import ArtifactRef, ImageRef
+from XBotv2.core.api.messages import (
     AssistantMessage,
     CompactionSummaryMessage,
     ConversationMessage,
@@ -20,9 +18,9 @@ from XBotv2.core.messages import (
     RuntimeNoticeMessage,
     ToolMessage,
 )
-from XBotv2.core.domain import ModelStop, ModelTiming, ToolTiming
-from XBotv2.core.parts import ImagePart, ReasoningPart, TextPart
-from XBotv2.core.tools import ToolCall, ToolCallRef, ToolOutcome
+from XBotv2.core.api.domain import ModelStop, ModelTiming, ToolTiming
+from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
+from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutcome
 
 
 class HumanInputRecord(BaseModel):

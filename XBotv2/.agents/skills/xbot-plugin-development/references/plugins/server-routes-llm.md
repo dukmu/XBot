@@ -13,7 +13,7 @@ Registered via `contribute_router()` as `xbot.llm.http`.
 ## Routes (`build_router`)
 
 ```python
-def build_router(*, events: EventPort, sessions: SessionsPort) -> APIRouter:
+def build_router(*, events: EventDispatch, sessions: SessionsPort) -> APIRouter:
 ```
 
 ### `GET /providers` → `ProviderCatalog`
