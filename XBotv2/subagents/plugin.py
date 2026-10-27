@@ -1,6 +1,7 @@
 """Register subagent tools and prompt contributions."""
 
 from __future__ import annotations
+from XBotv2.agents.api.contracts import AGENT_CATALOG
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from xcore.api.context import Context
@@ -14,7 +15,7 @@ class SubagentsRuntimeComponent:
     inject = [
         "session",
         "sessions",
-        "agent_catalog",
+        AGENT_CATALOG,
         "session_launch",
         "no_plugins",
         "jobs",
@@ -32,10 +33,10 @@ class SubagentsRuntimeComponent:
         # static prompt component registered from an out-of-apply listener.
         ctx.on(
             CONTEXT_COMPONENTS_BUILT,
-            SubagentCatalogPrompt(ctx.agent_catalog).contribute,
+            SubagentCatalogPrompt(ctx.require(AGENT_CATALOG)).contribute,
         )
         launcher = SubagentLauncher(
-            catalog=ctx.agent_catalog,
+            catalog=ctx.require(AGENT_CATALOG),
             session=ctx.session,
             sessions=ctx.sessions,
             provider_name=ctx.session_launch.provider_name,

@@ -109,7 +109,7 @@ def test_timeout_config_requires_positive_finite_values(config):
 
 
 async def test_sandbox_backend_has_no_implicit_deadline(tmp_path, monkeypatch):
-    from XBotv2.sandbox.bwrap import BubblewrapBackend
+    from XBotv2.sandbox.impl.bwrap import BubblewrapBackend
 
     command = [sys.executable, "-c", "import time; time.sleep(0.1); print('ok')"]
     monkeypatch.setattr(BubblewrapBackend, "process_args", lambda *args: command)
@@ -118,8 +118,8 @@ async def test_sandbox_backend_has_no_implicit_deadline(tmp_path, monkeypatch):
 
 async def test_shell_deadline_cancels_sandbox_process_group(tmp_path, monkeypatch):
     from XBotv2.coretools.shell import run_shell_command, ShellTimeoutError
-    from XBotv2.sandbox.bwrap import BubblewrapBackend
-    from XBotv2.sandbox.policy import SandboxPolicy
+    from XBotv2.sandbox.impl.bwrap import BubblewrapBackend
+    from XBotv2.sandbox.impl.policy import SandboxPolicy
 
     command = [sys.executable, "-c", f"import time; from pathlib import Path; time.sleep(0.4); Path({str(tmp_path / 'late')!r}).touch()"]
     monkeypatch.setattr(BubblewrapBackend, "process_args", lambda *args: command)
@@ -134,7 +134,7 @@ async def test_shell_deadline_cancels_sandbox_process_group(tmp_path, monkeypatc
 async def test_plugin_configuration_controls_dispatch_deadline(tmp_path, monkeypatch, tool_timeouts, expected):
     from XBotv2.application.app import start_application
     from XBotv2.coretools import filesystem
-    from XBotv2.llm.mock import MockLLM
+    from XBotv2.llm.impl.mock import MockLLM
 
     cancelled = asyncio.Event()
 

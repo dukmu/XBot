@@ -2,7 +2,7 @@
 
 import pytest
 
-from XBotv2.agents import AgentDefinition
+from XBotv2.agents.api.contracts import AgentDefinition
 from XBotv2.session import ThreadSummary
 from XBotv2.subagents.contracts import SubagentAgentError
 from XBotv2.subagents.service import AgentJobSpec, SubagentLauncher

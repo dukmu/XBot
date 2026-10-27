@@ -8,7 +8,7 @@ import uuid
 from contextlib import aclosing, asynccontextmanager, nullcontext
 from dataclasses import dataclass, field
 from typing import AsyncIterator
-from XBotv2.agents import AGENT_CONFIGURED, AgentConfigured
+from XBotv2.agents.api.events import AGENT_CONFIGURED, AgentConfigured
 from XBotv2.agentloop.api.contracts import (
     AgentLoopDriverPort,
     Claimed,
@@ -29,7 +29,7 @@ from XBotv2.core.api.metadata import THREAD_METADATA_CHANGED, ThreadMetadataChan
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.interactions import InteractionRequest, InteractionResolution
+from XBotv2.interactions.api.contracts import InteractionRequest, InteractionResolution
 from XBotv2.session.contracts import (
     HISTORY_CHANGED,
     HistoryChanged,

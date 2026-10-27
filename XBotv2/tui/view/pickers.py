@@ -14,8 +14,8 @@ terminal, and keeping it here is what stops each command growing its own copy of
 from __future__ import annotations
 
 from typing import Sequence
-from XBotv2.llm.contracts import ProviderCatalog
-from XBotv2.agents.protocol import AgentListResponse
+from XBotv2.llm.api.contracts import ProviderCatalog
+from XBotv2.agents.api.protocol import AgentListResponse
 from XBotv2.core.api.domain import ModelRoute
 from XBotv2.session.contracts import SessionSummary, ThreadSummary
 from XBotv2.tui.view.selection import Option

@@ -1,6 +1,8 @@
 """MCP plugin lifecycle and Tool registration."""
 
 from __future__ import annotations
+from XBotv2.interactions.api.contracts import INTERACTIONS
+from XBotv2.llm.api.contracts import MODEL
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from XBotv2.agentloop.api.state import LOOP_STATE
@@ -95,7 +97,7 @@ class MCPCompletionHandler:
 
 
 class MCPPlugin:
-    inject = [TOOLS, "model", "interactions", "session", "usage", LOOP_STATE]
+    inject = [TOOLS, MODEL, INTERACTIONS, "session", "usage", LOOP_STATE]
     name = MCP_PLUGIN_ID
     Config = MCPConfig
 
@@ -109,8 +111,8 @@ class MCPPlugin:
     def apply(self, ctx: Context, config: MCPConfig) -> None:
         self._owner = ctx
         self._tools = ctx.require(TOOLS)
-        self._model = ctx.model
-        self._interactions = ctx.interactions
+        self._model = ctx.require(MODEL)
+        self._interactions = ctx.require(INTERACTIONS)
         self._session = ctx.session
         self._usage = ctx.usage
         self._loop_state = ctx.require(LOOP_STATE)

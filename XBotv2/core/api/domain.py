@@ -22,6 +22,14 @@ HistoryRevision = NewType("HistoryRevision", str)
 Cursor = NewType("Cursor", str)
 
 
+class UserContext(BaseModel):
+    user_id: str = "default-user"
+    user_name: str = "User"
+    platform: str = "terminal"
+    session_type: str = "interactive"
+    model_config = ConfigDict(extra="forbid")
+
+
 class InboxTarget(str, Enum):
     NEXT_TURN = "next-turn"
     NEXT_STEP = "next-step"

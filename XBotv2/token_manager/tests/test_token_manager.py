@@ -28,7 +28,7 @@ from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ModelRequest, ProviderUser, ToolSchema
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tokens import estimate_model_request_tokens
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.token_manager.impl.plugin import TokenManagerPlugin
 
 

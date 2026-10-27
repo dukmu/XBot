@@ -5,6 +5,7 @@ output storage. Domain adapters (subagents and shell) implement ``JobRunner``.
 """
 
 from __future__ import annotations
+from XBotv2.commands.api.contracts import COMMANDS
 
 import json
 from xcore.api.context import Context
@@ -45,7 +46,7 @@ async def mount_http(ctx: Context) -> None:
 
 class JobsRuntimeComponent:
     inject = {
-        "required": ["commands", "engine"],
+        "required": [COMMANDS, "engine"],
     }
     """Register the job registry as ``ctx.jobs``."""
 
@@ -64,7 +65,7 @@ class JobsRuntimeComponent:
         )
         ctx.set("jobs", registry)
         for command in build_jobs_commands(registry):
-            ctx.commands.register(command)
+            ctx.require(COMMANDS).register(command)
         handlers = JobHandlers(registry, ctx.engine, ctx)
         ctx.on(JOB_UPDATED, handlers.publish_update)
         ctx.on(JOB_COMPLETED, handlers.publish_completion)

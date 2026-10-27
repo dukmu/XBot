@@ -25,7 +25,7 @@ import time
 from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
-from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
 from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, TurnCancelled as CancelledOutcome
 from XBotv2.core.api.domain import (
     Cursor,
@@ -33,11 +33,11 @@ from XBotv2.core.api.domain import (
     ResolvedRuntimeSelection,
     UsageSnapshot,
 )
-from XBotv2.interactions.models import UserInputRecorded, UserInputRequest
+from XBotv2.interactions.api.models import UserInputRecorded, UserInputRequest
 from XBotv2.goal.api.models import NoGoal
 from XBotv2.jobs.contracts import JobView
-from XBotv2.permissions.contracts import NamedPermission, PermissionRequest, ToolPermission
-from XBotv2.permissions.protocol import PermissionResponseRecorded
+from XBotv2.permissions.api.models import NamedPermission, PermissionRequest, ToolPermission
+from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.records import (
     AssistantRecord,

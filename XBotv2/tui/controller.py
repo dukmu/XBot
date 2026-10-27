@@ -17,8 +17,8 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Literal, Protocol, S
 
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobListResponse
-from XBotv2.interactions.models import UserInputRequest
-from XBotv2.permissions.contracts import PermissionRequest
+from XBotv2.interactions.api.models import UserInputRequest
+from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.session.contracts import PendingInputData
 from XBotv2.session.contracts import ImageInput
 from XBotv2.tui.events import (
@@ -42,12 +42,8 @@ from XBotv2.tui.view.composer import ComposerModel
 from XBotv2.tui.view.status_bar import StatusLine, status_line_for
 
 if TYPE_CHECKING:
-    from XBotv2.config import (
-        PatchPluginConfig,
-        PluginConfigCatalog,
-        PluginConfigScope,
-        SessionPolicyResponse,
-    )
+    from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+    from XBotv2.config.api.protocol import SessionPolicyResponse
 
 
 class ViewPort(Protocol):

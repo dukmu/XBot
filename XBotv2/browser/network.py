@@ -12,7 +12,7 @@ from typing import Literal
 from urllib.parse import urljoin, urlsplit, urlunsplit
 import httpx
 from XBotv2.core.api.tools import ToolFailed, ToolOutcome, failed_text, succeeded_text
-from XBotv2.sandbox.contracts import SandboxPort
+from XBotv2.sandbox.api.models import SandboxPort
 from XBotv2.browser.contracts import NetworkPolicy
 
 

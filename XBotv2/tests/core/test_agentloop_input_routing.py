@@ -25,8 +25,8 @@ from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.filesystem.session_lock import acquire_session
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ProviderUser
-from XBotv2.permissions import PermissionPolicy, PermissionRule
-from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.persistence.plugin import thread_persistence_factory
 from XBotv2.session.manager import SessionManager
 
@@ -664,7 +664,7 @@ from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 
 async def main():
     app = await start_application(
@@ -791,7 +791,7 @@ from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
 from XBotv2.application.app import start_application
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session.records import project_message
 
 class BlockAfterCaption(MockLLM):
@@ -927,8 +927,8 @@ from XBotv2.application.app import start_application
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import Tool
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions import PermissionPolicy, PermissionRule
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 
 async def main():
     async def irreversible() -> str:

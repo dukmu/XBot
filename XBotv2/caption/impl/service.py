@@ -18,8 +18,8 @@ from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ProviderSyst
 from XBotv2.core.api.metadata import Metadata
 from XBotv2.core.api.domain import AuxiliaryRequest, RequestObservation
 from XBotv2.core.api.tokens import estimate_request_tokens
-from XBotv2.llm import invoke_llm
-from XBotv2.llm.contracts import ModelPort
+from XBotv2.llm.api.invoke import invoke_llm
+from XBotv2.llm.api.contracts import ModelPort
 from XBotv2.usage.api.service import UsagePort
 
 logger = logging.getLogger("xbotv2.caption")

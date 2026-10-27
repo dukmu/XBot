@@ -1,6 +1,8 @@
 """SkillsPlugin — discovers SKILL.md files, registers skill tool, injects context."""
 
 from __future__ import annotations
+from XBotv2.commands.api.contracts import COMMANDS
+from XBotv2.sandbox.api.models import SANDBOX
 
 from XBotv2.agentloop.api.contracts import TOOLS, ToolsPort, ToolRegistration, HumanInput
 from pathlib import Path
@@ -19,7 +21,7 @@ from XBotv2.agentloop.api.events import (
     ReplaceRequest,
     TurnEnded,
 )
-from XBotv2.commands import Command
+from XBotv2.commands.api.contracts import Command
 from .permission_scope import SkillPermissionScope
 from .registry import Skill, SkillRegistry
 from .skill_tool import load_skill
@@ -47,7 +49,7 @@ class SkillToolHandler:
 
 
 class SkillsPlugin:
-    inject = [TOOLS, "commands", "variables", "sandbox", "runtime_paths"]
+    inject = [TOOLS, COMMANDS, "variables", SANDBOX, "runtime_paths"]
     name = "skills"
 
     def __init__(self) -> None:
@@ -66,9 +68,9 @@ class SkillsPlugin:
         del config
         self._owner = ctx
         self._tools: ToolsPort = ctx.require(TOOLS)
-        self._commands = ctx.commands
+        self._commands = ctx.require(COMMANDS)
         self._variables: RuntimeVariables = ctx.variables
-        self._sandbox = ctx.sandbox
+        self._sandbox = ctx.require(SANDBOX)
         self._runtime_paths: RuntimePaths = ctx.runtime_paths
         ctx.dispose(self._cleanup_runtime)
         ctx.on(APPLICATION_INITIALIZED, self._on_session_init)

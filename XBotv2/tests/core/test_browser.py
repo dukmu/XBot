@@ -18,8 +18,8 @@ from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, ToolComp
 from XBotv2.application.app import start_application
 from XBotv2.core.api.messages import ToolMessage
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions import Allowed, Denied, PermissionRequest
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.permissions.api.models import Allowed, Denied, PermissionRequest
 
 
 @pytest.fixture

@@ -6,8 +6,8 @@ from xcore.api.context import Context
 from xcore import InactiveEffectError
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_service import ToolsService
-from XBotv2.commands import Command
-from XBotv2.commands.plugin import CommandsService
+from XBotv2.commands.api.contracts import Command
+from XBotv2.commands.impl.plugin import CommandsService
 from XBotv2.core.api.tools import Tool, ToolCall, ToolSucceeded
 
 

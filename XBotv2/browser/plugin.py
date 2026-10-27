@@ -1,6 +1,7 @@
 """Browser plugin: live search, page retrieval, and isolated browser control."""
 
 from __future__ import annotations
+from XBotv2.sandbox.api.models import SANDBOX
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from dataclasses import replace
@@ -8,7 +9,7 @@ from typing import Literal
 from pydantic import JsonValue
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.tools import Tool, ToolOutcome
-from XBotv2.sandbox.contracts import SandboxPort
+from XBotv2.sandbox.api.models import SandboxPort
 from xcore.api.context import Context
 from .browser import BrowserSession
 from .contracts import BrowserConfig
@@ -16,7 +17,7 @@ from .network import WebAccess, network_disabled
 
 
 class BrowserPlugin:
-    inject = [TOOLS, 'session', 'sandbox', 'artifacts']
+    inject = [TOOLS, 'session', SANDBOX, 'artifacts']
     name = "browser"
     Config = BrowserConfig
 
@@ -31,7 +32,7 @@ class BrowserPlugin:
         self._config = config
         ctx.dispose(self._dispose)
         self._artifacts = ctx.artifacts
-        self._sandbox = ctx.sandbox
+        self._sandbox = ctx.require(SANDBOX)
         for function in (
             self.web_search,
             self.web_fetch,

@@ -54,23 +54,17 @@ from XBotv2.main import __version__
 from XBotv2.agentloop.api.outputs import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.events import ACPEventMapper, replay_history
 from XBotv2.session import SessionEventFrame, conversation_replay
-from XBotv2.agents import LIST_AGENTS, SELECT_AGENT, SelectAgent
-from XBotv2.commands import EXECUTE_COMMAND, LIST_COMMANDS, CommandCatalog, ExecuteCommand
+from XBotv2.agents.api.contracts import LIST_AGENTS, SELECT_AGENT, SelectAgent
+from XBotv2.commands.api.contracts import EXECUTE_COMMAND, LIST_COMMANDS, CommandCatalog, ExecuteCommand
 from pydantic import JsonValue
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.api.domain import TokenCounters, TurnScope
-from XBotv2.interactions.contracts import InteractionRequest, InteractionResolution
-from XBotv2.interactions.models import Answered, InputCancelled, InputTimedOut, UserInputRequest
-from XBotv2.permissions.contracts import (
-    Allowed,
-    Denied,
-    NamedPermission,
-    PermissionRequest,
-    ToolPermission,
-)
+from XBotv2.interactions.api.contracts import InteractionRequest, InteractionResolution
+from XBotv2.interactions.api.models import Answered, InputCancelled, InputTimedOut, UserInputRequest
+from XBotv2.permissions.api.models import Allowed, Denied, NamedPermission, PermissionRequest, ToolPermission
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG, RuntimeLog
-from XBotv2.llm import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
+from XBotv2.llm.api.contracts import LIST_PROVIDERS, SELECT_PROVIDER, SelectProvider
 from XBotv2.mcp_plugin import MCP_PLUGIN_ID
 from XBotv2.session.contracts import (
     ImageInput,

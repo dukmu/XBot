@@ -28,16 +28,16 @@ from XBotv2.core.api.timing import SessionStats
 from XBotv2.core.api.tools import ToolCall
 from XBotv2.core.api.domain import Cursor, EventScope, InboxTarget, UsageSnapshot
 from XBotv2.session.records import ConversationRecord, project_message
-from XBotv2.interactions.contracts import InteractionReceipt
-from XBotv2.interactions.models import UserInputRequest
-from XBotv2.permissions.contracts import PermissionRequest
+from XBotv2.interactions.api.contracts import InteractionReceipt
+from XBotv2.interactions.api.models import UserInputRequest
+from XBotv2.permissions.api.models import PermissionRequest
 
 if TYPE_CHECKING:
     from XBotv2.agentloop.api.contracts import InboxItem
-    from XBotv2.agents import AgentDefinition
+    from XBotv2.agents.api.contracts import AgentDefinition
     from XBotv2.application import AgentApplicationPort
     from XBotv2.core.api.providers import Provider
-    from XBotv2.permissions import PermissionsPort
+    from XBotv2.permissions.api.models import PermissionsPort
 
 
 SessionMode = Literal["new", "resume"]

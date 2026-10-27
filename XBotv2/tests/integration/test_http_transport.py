@@ -52,9 +52,9 @@ from XBotv2.core.api.tools import (
 from XBotv2.client import XBotClient, XBotClientError
 from XBotv2.coretools.shell import ShellJobSpec, ShellRunner, start_shell
 from httpx import ASGITransport
-from XBotv2.llm.mock import MockLLM
-from XBotv2.llm.openai import OpenAICompatibleProvider
-from XBotv2.interactions.models import Answered
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.llm.impl.openai import OpenAICompatibleProvider
+from XBotv2.interactions.api.models import Answered
 from XBotv2.application import RUNTIME_EVENT, RuntimeEvent
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
@@ -80,8 +80,8 @@ from XBotv2.session.events import (
 )
 from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord, project_message
 from XBotv2.core.api.messages import AssistantMessage, HumanInputMessage
-from XBotv2.permissions import PermissionPolicy, PermissionRule
-from XBotv2.interactions import ClientNotice
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
+from XBotv2.interactions.api.models import ClientNotice
 from XBotv2.session.runtime import TurnEventRouter
 from XBotv2.session.event_stream import SessionEventStream
 from XBotv2.usage.api.events import UsageUpdated
@@ -2691,23 +2691,12 @@ async def test_live_interaction_is_pending_before_event_is_published(
     request_id: str,
     expected_value: str,
 ) -> None:
-    from XBotv2.interactions.router import ClientEventRouter
-    from XBotv2.interactions.contracts import InteractionRegistration
-    from XBotv2.interactions.interactions import InteractionWaiter
-    from XBotv2.interactions.models import (
-        Answered,
-        InputCancelled,
-        InputTimedOut,
-        UserInputRecorded,
-        UserInputRequest,
-    )
-    from XBotv2.permissions.contracts import (
-        Allowed,
-        Denied,
-        NamedPermission,
-        PermissionRequest,
-    )
-    from XBotv2.permissions.protocol import PermissionResponseRecorded
+    from XBotv2.interactions.impl.router import ClientEventRouter
+    from XBotv2.interactions.api.contracts import InteractionRegistration
+    from XBotv2.interactions.impl.interactions import InteractionWaiter
+    from XBotv2.interactions.api.models import Answered, InputCancelled, InputTimedOut, UserInputRecorded, UserInputRequest
+    from XBotv2.permissions.api.models import Allowed, Denied, NamedPermission, PermissionRequest
+    from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 
     permission_waiter = InteractionWaiter(
         timed_out=lambda reason: Denied(reason=reason),
@@ -2790,8 +2779,8 @@ async def test_live_interaction_is_pending_before_event_is_published(
 @pytest.mark.asyncio
 async def test_request_permission_tool_emits_request_id() -> None:
     """Permission requests carry a typed interaction ID through approval."""
-    from XBotv2.permissions.tools import request_tool_permission
-    from XBotv2.permissions import Allowed
+    from XBotv2.permissions.impl.tools import request_tool_permission
+    from XBotv2.permissions.api.models import Allowed
 
     captured: dict[str, Any] = {}
 
@@ -2820,7 +2809,7 @@ async def test_request_permission_tool_emits_request_id() -> None:
 
 @pytest.mark.asyncio
 async def test_http_permission_response_rejects_always_scope() -> None:
-    from XBotv2.permissions import PermissionResponseRequest
+    from XBotv2.permissions.api.protocol import PermissionResponseRequest
 
     with pytest.raises(ValidationError, match="scope"):
         PermissionResponseRequest(
@@ -2858,7 +2847,7 @@ async def test_http_policy_patch_reset_rebuilds_live_policy(
 
     sandbox_status = await client.get("/sessions/policy-reset/policy")
     assert sandbox_status.status_code == 200
-    from XBotv2.sandbox.contracts import SandboxConfig
+    from XBotv2.sandbox.api.models import SandboxConfig
     assert sandbox_status.json()["sandbox"] == SandboxConfig().model_dump()
     assert (
         sandbox_status.json()["effective_sandbox"]["enabled"]

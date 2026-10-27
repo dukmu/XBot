@@ -15,7 +15,7 @@ from XBotv2.core.api.domain import (
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ModelRequest, ProviderUser
 from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ReasoningDelta
-from XBotv2.llm.openai import OpenAICompatibleProvider
+from XBotv2.llm.impl.openai import OpenAICompatibleProvider
 from scripts.stress.config import parse_args
 from scripts.stress.provider import NetworkMockLLM
 from scripts.stress.scenarios import _submit_and_collect, run_stream_failure

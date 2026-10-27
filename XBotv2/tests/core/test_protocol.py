@@ -5,7 +5,7 @@ import yaml
 import pytest
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.domain import SessionScope
-from XBotv2.llm.contracts import LlmConfig, ModelConfig, ProviderConfig
+from XBotv2.llm.api.contracts import LlmConfig, ModelConfig, ProviderConfig
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
 from XBotv2.session.contracts import HistoryMutation, SessionEventFrame
@@ -35,7 +35,7 @@ class TestProviderConfig:
 
     @staticmethod
     def _create(config: ProviderConfig):
-        from XBotv2.llm.plugin import build_llm_service
+        from XBotv2.llm.impl.plugin import build_llm_service
 
         return build_llm_service().create(config, config.resolve())
 
@@ -64,7 +64,7 @@ class TestProviderConfig:
             ],
         )
         llm = self._create(config)
-        from XBotv2.llm.openai import OpenAICompatibleProvider
+        from XBotv2.llm.impl.openai import OpenAICompatibleProvider
 
         assert isinstance(llm, OpenAICompatibleProvider)
 
@@ -84,7 +84,7 @@ class TestProviderConfig:
             ],
         )
         llm = self._create(config)
-        from XBotv2.llm.anthropic import AnthropicProvider
+        from XBotv2.llm.impl.anthropic import AnthropicProvider
 
         assert isinstance(llm, AnthropicProvider)
 
@@ -103,7 +103,7 @@ class TestProviderConfig:
 
     def test_create_llm_from_mock_provider_config(self):
         """Provider config can select deterministic MockLLM."""
-        from XBotv2.llm.mock import MockLLM
+        from XBotv2.llm.impl.mock import MockLLM
 
         config = ProviderConfig(
             protocol="mock",
@@ -145,7 +145,7 @@ class TestProviderConfigLoader:
 
     def test_selects_named_provider_section(self, tmp_path, monkeypatch):
         """parse_provider_config validates one catalog provider entry."""
-        from XBotv2.llm.config import parse_provider_config
+        from XBotv2.llm.impl.config import parse_provider_config
 
         monkeypatch.setenv("TEST_API_KEY", "sk-test-123")
 
@@ -177,7 +177,7 @@ class TestProviderConfigLoader:
         assert openai.api_key == "sk-openai-xxx"
 
     def test_preserves_reasoning_configuration(self):
-        from XBotv2.llm.config import parse_provider_config
+        from XBotv2.llm.impl.config import parse_provider_config
 
         config = parse_provider_config({
             "protocol": "anthropic",
@@ -224,7 +224,7 @@ class TestProviderConfigLoader:
 
     def test_llm_service_lists_configured_providers(self):
         """LlmService keeps the validated catalog and exposes its names."""
-        from XBotv2.llm.service import LlmService
+        from XBotv2.llm.impl.service import LlmService
 
         service = LlmService(LlmConfig(
             default_provider="default",
@@ -247,7 +247,7 @@ class TestProviderConfigLoader:
         assert service.provider_config("default").resolve().model == "test"
 
     def test_llm_service_owns_the_validated_configuration(self):
-        from XBotv2.llm.service import LlmService
+        from XBotv2.llm.impl.service import LlmService
 
         config = LlmConfig(
             default_provider="primary",
@@ -267,7 +267,7 @@ class TestProviderConfigLoader:
         assert service.provider_config("primary") is config.providers["primary"]
 
     def test_llm_service_returns_the_already_expanded_provider_entry(self):
-        from XBotv2.llm.service import LlmService
+        from XBotv2.llm.impl.service import LlmService
 
         config = LlmConfig(
             default_provider="custom",
@@ -285,7 +285,7 @@ class TestProviderConfigLoader:
         assert service.provider_config("custom").api_key is None
 
     def test_unknown_provider_is_rejected(self):
-        from XBotv2.llm.service import LlmService
+        from XBotv2.llm.impl.service import LlmService
 
         service = LlmService(LlmConfig(
             default_provider="default",
@@ -306,7 +306,7 @@ class TestProviderConfigLoader:
 
     def test_missing_env_var_is_rejected(self, tmp_path, monkeypatch):
         """An unset $${env:NAME} fails closed at the config-load boundary."""
-        from XBotv2.config.loader import load_plugin_tree
+        from XBotv2.config.impl.loader import load_plugin_tree
         from XBotv2.core.api.paths import RuntimePaths
 
         (tmp_path / "config").mkdir(parents=True, exist_ok=True)

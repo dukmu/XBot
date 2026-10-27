@@ -5,13 +5,7 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from XBotv2.commands import (
-    Command,
-    CommandDescription,
-    CommandResult,
-    CommandsPort,
-    describe_command,
-)
+from XBotv2.commands.api.contracts import Command, CommandDescription, CommandResult, CommandsPort, describe_command
 
 
 @dataclass(frozen=True, slots=True)

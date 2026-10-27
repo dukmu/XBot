@@ -267,7 +267,7 @@ Agent definitions belong to the independent catalog plugins, not to
 `subagents`. Register through the agent catalog:
 
 ```python
-from XBotv2.agents import AgentCatalogPort, AgentDefinition
+from XBotv2.agents.api.contracts import AgentCatalogPort, AgentDefinition
 
 
 class RegisterReviewAgent:

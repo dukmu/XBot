@@ -12,8 +12,8 @@ import uuid
 from dataclasses import dataclass
 from XBotv2.agentloop.api.contracts import InboxItem, RuntimeInput
 from XBotv2.agentloop.api.outputs import AssistantCompleted, LoopError, LoopTurnEnded, TurnCancelled
-from XBotv2.agents import AgentDefinition
-from XBotv2.agents.contracts import AgentCatalogPort
+from XBotv2.agents.api.contracts import AgentDefinition
+from XBotv2.agents.api.contracts import AgentCatalogPort
 from XBotv2.context_builder.api.contracts import BuiltContext, InlinePromptComponent
 from XBotv2.core.api.tools import ToolOutcome, failed_text, succeeded_text
 from XBotv2.core.api.domain import InboxTarget

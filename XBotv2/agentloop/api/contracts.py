@@ -20,8 +20,8 @@ if TYPE_CHECKING:
     from XBotv2.agentloop.api.outputs import LoopEvent
     from xcore.api.events import EventDispatch
 
-    from XBotv2.llm.contracts import ModelPort
-    from XBotv2.config.contracts import UserContext
+    from XBotv2.llm.api.contracts import ModelPort
+    from XBotv2.core.api.domain import UserContext
 
 DEFAULT_MAX_ITERATIONS = 200
 

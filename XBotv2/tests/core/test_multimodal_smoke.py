@@ -4,8 +4,8 @@ import pytest
 from XBotv2.core.api.artifacts import ImageRef
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ProviderTool, ProviderUser, ResolvedImagePart
-from XBotv2.llm.anthropic import anthropic_request_messages
-from XBotv2.llm.openai import openai_messages
+from XBotv2.llm.impl.anthropic import anthropic_request_messages
+from XBotv2.llm.impl.openai import openai_messages
 
 
 def _image(path: str) -> ResolvedImagePart:

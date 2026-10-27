@@ -8,6 +8,7 @@ or implement Agent policy.
 """
 
 from __future__ import annotations
+from XBotv2.agents.api.contracts import AGENT_RUNTIME
 
 import shutil
 from errno import EEXIST, ENOENT, ENOTEMPTY
@@ -24,13 +25,13 @@ from XBotv2.application.contracts import (
     ParentPermissions,
     SessionLaunch,
 )
-from XBotv2.config.seed import ensure_initial_config
+from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.application.tree import load_agent_tree
-from XBotv2.agents import AgentCreateOptions, AgentDefinition
+from XBotv2.agents.api.contracts import AgentCreateOptions, AgentDefinition
 from XBotv2.session.contracts import AgentApplicationOptions, SessionsPort, new_session_id
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.providers import Provider
-from XBotv2.permissions import PermissionsPort
+from XBotv2.permissions.api.models import PermissionsPort
 from XBotv2.persistence.store import ThreadMetadataStore
 
 _IDENTIFIER_RE = __import__("re").compile(r"^[A-Za-z0-9._-]+$")
@@ -138,7 +139,7 @@ async def start_application(
             tree=tree,
             plugin_dirs=plugin_dirs,
         )
-        await plugin_ctx.require("agent_runtime").announce_initialized()
+        await plugin_ctx.require(AGENT_RUNTIME).announce_initialized()
 
         # Startup owns the claim through rollback; only a fully initialized
         # context takes ownership. boot_application may already destroy a

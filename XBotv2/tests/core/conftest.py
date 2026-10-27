@@ -3,11 +3,11 @@
 import pytest
 import xcore
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.permissions import PermissionPolicy
-from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.permissions.impl.system import PermissionSystem
+from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.sandbox.impl.policy import SandboxPolicy
 from XBotv2.context_builder.impl.builder import ContextBuilder
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.persistence.store import ThreadPersistence
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.filesystem.artifacts import ArtifactStore

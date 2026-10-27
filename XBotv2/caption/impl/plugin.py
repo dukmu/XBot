@@ -1,6 +1,7 @@
 """Session captioning plugin registration."""
 
 from __future__ import annotations
+from XBotv2.llm.api.contracts import MODEL
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from XBotv2.agentloop.api.state import LOOP_STATE
@@ -12,7 +13,7 @@ from XBotv2.caption.impl.tools import build_caption_tool
 
 
 class CaptionPlugin:
-    inject = [TOOLS, "model", LOOP_STATE, "session", "session_launch", "usage"]
+    inject = [TOOLS, MODEL, LOOP_STATE, "session", "session_launch", "usage"]
     name = "caption"
     Config = CaptionConfig
 
@@ -20,7 +21,7 @@ class CaptionPlugin:
         is_subagent = ctx.session_launch.is_subagent
         service = CaptionService(
             events=ctx,
-            model=ctx.model,
+            model=ctx.require(MODEL),
             state=ctx.require(LOOP_STATE).metadata,
             usage=ctx.usage,
             session_id=ctx.session.session_id,

@@ -14,12 +14,8 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable
-from XBotv2.commands import (
-    CommandDescription,
-    CommandExecution,
-    CommandListResponse,
-    CommandResponse,
-)
+from XBotv2.commands.api.contracts import CommandDescription, CommandExecution
+from XBotv2.commands.api.protocol import CommandListResponse, CommandResponse
 from XBotv2.core.api.domain import (
     AgentExecutionLimits,
     GenerationSettings,
@@ -37,7 +33,7 @@ from XBotv2.core.api.domain import (
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.core.api.tools import ToolCallRef, ToolSucceeded, text_output
-from XBotv2.interactions.protocol import InteractionResponse
+from XBotv2.interactions.api.protocol import InteractionResponse
 from XBotv2.protocol import ServerEvent, server_event
 from XBotv2.session.contracts import OpenedThread, SessionKey, ThreadSummary
 from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord
@@ -55,7 +51,7 @@ PNG_BYTES = base64.b64decode(
 
 def local_command_port(app):
     """Use the production command registration path for direct app tests."""
-    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.commands.impl.plugin import CommandsService
     from XBotv2.tui.commands import register_client_commands
 
     commands = CommandsService(ownership="caller")
@@ -67,7 +63,7 @@ def tui_app(backend, **kwargs):
     """Construct a directly driven app with the normal local command registry."""
     from XBotv2.tui.app import TuiApp
 
-    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.commands.impl.plugin import CommandsService
     from XBotv2.tui.commands import register_client_commands
 
     commands = CommandsService(ownership="caller")
@@ -193,7 +189,7 @@ def execution(**overrides: Any) -> CommandExecution:
 
 
 def model(name: str = "m1", **overrides: Any) -> Any:
-    from XBotv2.llm.contracts import ModelDescription
+    from XBotv2.llm.api.contracts import ModelDescription
 
     base: dict[str, Any] = {
         "model": name,
@@ -205,7 +201,7 @@ def model(name: str = "m1", **overrides: Any) -> Any:
 
 def catalog(**overrides: Any) -> Any:
     """A provider catalogue: one provider with two models, one the default."""
-    from XBotv2.llm.contracts import ProviderCatalog, ProviderDescription
+    from XBotv2.llm.api.contracts import ProviderCatalog, ProviderDescription
 
     base: dict[str, Any] = {
         "default": "p1",
@@ -228,8 +224,8 @@ def catalog(**overrides: Any) -> Any:
 
 
 def agent_list(**overrides: Any) -> Any:
-    from XBotv2.agents.protocol import AgentInfo, AgentListResponse
-    from XBotv2.agents.contracts import AgentModelPolicy, AgentToolPolicy
+    from XBotv2.agents.api.protocol import AgentInfo, AgentListResponse
+    from XBotv2.agents.api.contracts import AgentModelPolicy, AgentToolPolicy
     from XBotv2.core.api.domain import AgentExecutionLimits
 
     def info(name: str, description: str) -> AgentInfo:
@@ -253,7 +249,7 @@ def agent_list(**overrides: Any) -> Any:
 
 
 def selection_response(**overrides: Any) -> Any:
-    from XBotv2.agents.protocol import AgentSelectionResponse
+    from XBotv2.agents.api.protocol import AgentSelectionResponse
 
     base: dict[str, Any] = {"session_id": SESSION, "thread_id": THREAD, "agent": "default"}
     return AgentSelectionResponse(**{**base, **overrides})
@@ -398,7 +394,7 @@ class ScriptedBackend:
             raise self.policy_error
         if self.policy is not None:
             return self.policy
-        from XBotv2.config.protocol import SessionPolicyResponse
+        from XBotv2.config.api.protocol import SessionPolicyResponse
 
         return SessionPolicyResponse(session_id=session_id)
 
@@ -411,7 +407,7 @@ class ScriptedBackend:
             raise self.plugin_config_error
         if self.plugin_config is not None:
             return self.plugin_config
-        from XBotv2.config.contracts import PluginConfigCatalog
+        from XBotv2.config.api.contracts import PluginConfigCatalog
 
         return PluginConfigCatalog(
             scope=scope, workspace_root="/workspace", revision="empty"

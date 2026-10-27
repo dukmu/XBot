@@ -64,7 +64,7 @@ from xcore import ServiceNotFoundError
 from XBotv2.application.app import start_application, create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session.contracts import AgentApplicationOptions
 from XBotv2.agentloop.api.contracts import InboxItem, HumanInput
 from XBotv2.core.api.domain import InboxTarget
@@ -295,7 +295,7 @@ async def test_runtime_state_is_shared_restorable_and_thread_local(tmp_path):
 
 @pytest.mark.asyncio
 async def test_interaction_routing_belongs_to_the_plugin_lifecycle(tmp_path):
-    from XBotv2.interactions.models import Answered
+    from XBotv2.interactions.api.models import Answered
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     parent = await start_application(
@@ -1547,7 +1547,7 @@ plugin = ConfiguredPlugin()
     ):
         from XBotv2.core.api.provider import ProviderTool
         from XBotv2.core.api.stream import ModelCompleted
-        from XBotv2.permissions import PermissionPolicy, PermissionRule
+        from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 
         (temp_workspace / ".agents").mkdir()
         (temp_workspace / ".agents" / "reviewer.md").write_text(
@@ -1952,7 +1952,7 @@ plugin = ConfiguredPlugin()
     async def test_goal_provider_error_disarms_without_retrying_forever(
         self, temp_data_dir, temp_workspace
     ):
-        from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
+        from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand
         from XBotv2.core.api.domain import ProviderError
         from XBotv2.core.api.stream import ModelFailed
         from XBotv2.goal.api.models import ActiveGoal

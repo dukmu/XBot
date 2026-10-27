@@ -14,7 +14,7 @@ from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 
-from XBotv2.config.contracts import PatchPluginConfig
+from XBotv2.config.api.contracts import PatchPluginConfig
 from XBotv2.tui.view.plugin_config import (
     SchemaField,
     SupportedSchema,
@@ -25,9 +25,10 @@ from XBotv2.tui.view.plugin_config import (
 from XBotv2.tui.view.selection import Option as Choice
 
 if TYPE_CHECKING:
-    from XBotv2.config import PluginConfigCatalog, PluginConfigScope, SessionPolicyResponse
-    from XBotv2.permissions.contracts import PermissionRule
-    from XBotv2.sandbox.contracts import SandboxConfig
+    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigScope
+    from XBotv2.config.api.protocol import SessionPolicyResponse
+    from XBotv2.permissions.api.models import PermissionRule
+    from XBotv2.sandbox.api.models import SandboxConfig
 
 SettingName = Literal["provider", "model", "effort", "agent", "thinking", "details"]
 

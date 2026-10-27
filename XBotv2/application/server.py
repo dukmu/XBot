@@ -6,7 +6,7 @@ from xcore.api.context import Context
 from XBotv2.application.boot import boot_application
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.tree import load_server_tree
-from XBotv2.config.seed import ensure_initial_config
+from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.loader import PluginOverlay
 from XBotv2.core.api.paths import RuntimePaths
 

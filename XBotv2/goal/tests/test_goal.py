@@ -17,7 +17,7 @@ from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.goal.api.models import ActiveGoal, GoalState
 from XBotv2.goal.impl.plugin import GoalService
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 
 
 class FakeEngine:

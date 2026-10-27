@@ -6,21 +6,21 @@ are local UI affordances. They are not Agent Tools and must not be routed throug
 a synthetic `ToolCall`.
 
 - **Import/profile:** `commands`, Agent profile.
-- **Source:** `XBotv2/commands/plugin.py`,
-  `XBotv2/commands/contracts.py`, `XBotv2/commands/protocol.py`.
+- **Source:** `XBotv2/commands/impl/plugin.py`,
+  `XBotv2/commands/api/contracts.py`, `XBotv2/commands/api/protocol.py`.
 - **Injects/provides:** (no required services) → `commands`
   (`CommandsService`).
 - **Operations:** `commands/list` (`LIST_COMMANDS`,
   `EmptyRequest → CommandCatalog`), `commands/execute`
   (`EXECUTE_COMMAND`, `ExecuteCommand → CommandExecution`).
 - **Server routes:** `build_commands_router` in
-  `XBotv2/commands/protocol.py` exposes GET/POST under
+  `XBotv2/commands/impl/protocol.py` exposes GET/POST under
   `/sessions/{session_id}/threads/{thread_id}/commands`. There is no
   `XBotv2/server/routes/` package — the router is declared in the owning plugin
   package and mounted with `contribute_router(ctx, owner="xbot.commands.http",
   ...)`.
 
-## Public data models (`commands/contracts.py`)
+## Public data models (`commands/api/contracts.py`)
 
 ### `Command` — registration
 
@@ -120,7 +120,7 @@ class CommandCatalog:
     commands: tuple[CommandDescription, ...]
 ```
 
-## Server / client interface models (`commands/protocol.py`)
+## Server / client interface models (`commands/api/protocol.py`)
 
 ### HTTP routes (built by `build_commands_router`)
 
@@ -166,7 +166,7 @@ class CommandResponse(WireModel):
     data: CommandExecution
 ```
 
-## `CommandsService` (`commands/plugin.py`)
+## `CommandsService` (`commands/impl/plugin.py`)
 
 ```python
 class CommandsService:
@@ -188,7 +188,7 @@ Names must be stable and unique; duplicate registrations raise.
 ## Typical extension: register one command
 
 ```python
-from XBotv2.commands import (
+from XBotv2.commands.api.contracts import (
     Command, CommandResult, command_usage, split_command_args,
 )
 
@@ -236,7 +236,7 @@ the client submits the expanded prompt through the message boundary. The
 - Pairs with: `interactions` (asynchronous input requests), `permissions`
   (approval flow), and this plugin's own `protocol.py` for HTTP exposure.
 - There is no `XBotv2/server/routes/` package. Command HTTP exposure lives in
-  `XBotv2/commands/protocol.py` as `build_commands_router`.
+  `XBotv2/commands/impl/protocol.py` as `build_commands_router`.
 
 ## Common pitfalls
 

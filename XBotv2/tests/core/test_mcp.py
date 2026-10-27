@@ -12,10 +12,10 @@ from XBotv2.agentloop.api.outputs import ToolCompleted
 from XBotv2.application.app import start_application
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolFailed, ToolSucceeded
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.mcp_plugin.callbacks import _form_content, _sampling_text
 from XBotv2.mcp_plugin.tool import MCPTool
-from XBotv2.permissions import PermissionPolicy, PermissionRule
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 from mcp import types
 
 

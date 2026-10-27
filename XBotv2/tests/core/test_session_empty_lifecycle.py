@@ -4,7 +4,7 @@ import pytest
 from XBotv2.application.server import start_server_application
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session.contracts import SessionNotFound
 
 

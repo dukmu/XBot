@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from typing import Sequence
-from XBotv2.config.contracts import UserContext
+from XBotv2.core.api.domain import UserContext
 from XBotv2.context_builder.api.contracts import (
     BuiltContext,
     ContextComponent,

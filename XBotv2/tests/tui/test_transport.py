@@ -19,7 +19,7 @@ from XBotv2.core.api.domain import TokenCounters, UsageSnapshot
 from XBotv2.usage.api.events import UsageUpdated as UsageUpdatedPayload
 from XBotv2.protocol import ErrorResponse
 from XBotv2.core.api.tools import ToolCall
-from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
+from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,

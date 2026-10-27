@@ -37,8 +37,9 @@ from XBotv2.persistence import ThreadPersistenceFactory, ThreadPersistencePort
 from XBotv2.usage.api.service import USAGE_COUNTERS_KEY, USAGE_STATE_NAMESPACE
 from XBotv2.core.api.domain import Cursor, ReasoningGenerationMode, TokenCounters, UsageSnapshot
 from XBotv2.core.api.providers import Provider
-from XBotv2.permissions import Allowed, Denied, PermissionsPort
-from XBotv2.interactions import Answered, InteractionNotPending, InteractionResolution
+from XBotv2.permissions.api.models import Allowed, Denied, PermissionsPort
+from XBotv2.interactions.api.models import Answered
+from XBotv2.interactions.api.contracts import InteractionNotPending, InteractionResolution
 from XBotv2.core.api.timing import conversation_stats
 from XBotv2.session.runtime import SessionRuntime, require_idle, start_regenerate_turn
 from XBotv2.session.contracts import (

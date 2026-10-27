@@ -4,13 +4,7 @@ from __future__ import annotations
 
 from XBotv2.jobs.contracts import JobsCommandPort
 
-from XBotv2.commands import (
-    Command,
-    CommandResult,
-    command_usage,
-    guard_command,
-    split_command_args,
-)
+from XBotv2.commands.api.contracts import Command, CommandResult, command_usage, guard_command, split_command_args
 
 
 def build_jobs_commands(jobs: JobsCommandPort) -> tuple[Command, ...]:

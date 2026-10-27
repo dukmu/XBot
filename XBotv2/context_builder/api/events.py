@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from xcore.api.events import EventKey
 from XBotv2.context_builder.api.contracts import BuiltContext
 from typing import TYPE_CHECKING
-from XBotv2.config.contracts import UserContext
+from XBotv2.core.api.domain import UserContext
 from XBotv2.core.api.domain import ResolvedRuntimeSelection
 from XBotv2.core.api.variables import RuntimeVariables
 

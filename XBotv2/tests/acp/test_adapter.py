@@ -28,6 +28,7 @@ from XBotv2.session.contracts import (
 from XBotv2.application.acp import start_acp_application
 from XBotv2.core.api.artifacts import ArtifactRef
 from XBotv2.core.api.domain import (
+    ToolTiming,
     AgentExecutionLimits,
     CompletedStop,
     GenerationSettings,
@@ -67,7 +68,6 @@ from XBotv2.core.api.tools import (
     ToolExecution,
     ToolOutput,
     ToolSucceeded,
-    ToolTiming,
     text_output,
 )
 from XBotv2.agentloop.api.outputs import (
@@ -84,9 +84,9 @@ from XBotv2.agentloop.api.outputs import (
 )
 from XBotv2.jobs.contracts import JobView
 from XBotv2.jobs.protocol import JobUpdatedEvent
-from XBotv2.interactions.models import Answered, UserInputOption, UserInputRequest
-from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
-from XBotv2.llm.mock import MockLLM
+from XBotv2.interactions.api.models import Answered, UserInputOption, UserInputRequest
+from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session import SessionSummary, ThreadSummary
 
 

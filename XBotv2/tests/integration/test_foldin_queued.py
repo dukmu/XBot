@@ -23,8 +23,8 @@ import httpx
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.agentloop.api.contracts import AllTools
 from XBotv2.core.api.tools import Tool, ToolSucceeded
-from XBotv2.permissions import PermissionPolicy, PermissionRule
-from XBotv2.llm.mock import MockLLM
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
 from XBotv2.agentloop.api.outputs import (

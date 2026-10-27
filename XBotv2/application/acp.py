@@ -7,7 +7,7 @@ from XBotv2.acp_plugin import ACPLaunch
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.boot import boot_application
 from XBotv2.application.tree import load_acp_tree
-from XBotv2.config.seed import ensure_initial_config
+from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.providers import Provider
 from XBotv2.loader import PluginOverlay

@@ -39,9 +39,9 @@ from XBotv2.core.api.history import SurfaceReplaced
 from XBotv2.core.api.messages import CompactionSummaryMessage
 from XBotv2.core.api.stream import ModelCompleted, ModelFailed, ReasoningDelta, TextDelta
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.interactions.models import UserInputRequest
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions.contracts import PermissionRequest
+from XBotv2.interactions.api.models import UserInputRequest
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.permissions.api.models import PermissionRequest
 from XBotv2.application.app import create_agent_application
 from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
@@ -1361,8 +1361,8 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
                 and (
                     not same_frame
                     or (
-                        "shell(command:" in screen
-                        and 'command:' in screen
+                        "⎿ Done" in screen
+                        and "command:" in screen
                         and "Unicode complete" in screen
                     )
                 )
@@ -1373,6 +1373,21 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
         (captures / "unicode-tool-expanded-80x24.txt").write_text(
             expanded, encoding="utf-8"
         )
+        if same_frame:
+            # The expanded payload is taller than the transcript viewport. The
+            # tool header is visible again after the reader folds the payload.
+            _tmux("send-keys", "-t", session_name, "C-o")
+            folded = await _wait_for_tmux_screen(
+                session_name,
+                lambda screen: "shell(command:" in screen
+                and "ctrl+o expands" in screen
+                and "Unicode complete" in screen,
+                description="the Unicode tool disclosure to fold again",
+            )
+            assert all(cell_len(line) <= 80 for line in folded.splitlines())
+            (captures / "unicode-tool-folded-80x24.txt").write_text(
+                folded, encoding="utf-8"
+            )
 
         sessions = await real_client.list_sessions()
         session_id = sessions.sessions[0].session_id

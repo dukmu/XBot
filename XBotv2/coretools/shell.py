@@ -42,7 +42,7 @@ from XBotv2.core.api.tools import (
     ToolOutput,
     ToolSucceeded,
 )
-from XBotv2.sandbox.contracts import SandboxPort
+from XBotv2.sandbox.api.models import SandboxPort
 
 #: Lazily-resolved approval-layer capability. The shell tool discharges
 #: escalation only while an approval layer is active; resolving at call time

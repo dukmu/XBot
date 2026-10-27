@@ -56,7 +56,7 @@ metadata, not an alternate executor or permission bypass.
 ## Human command contract
 
 ```python
-from XBotv2.commands import Command, CommandResult, command_usage
+from XBotv2.commands.api.contracts import Command, CommandResult, command_usage
 
 async def greet(raw_args: str) -> CommandResult:
     if not raw_args.strip():

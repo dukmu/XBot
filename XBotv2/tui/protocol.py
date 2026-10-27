@@ -35,16 +35,16 @@ from XBotv2.agentloop.api.outputs import (
     ToolCallsStarted as LoopToolCallsStarted,
     TurnCancelled as CancelledOutcome,
 )
-from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
 from XBotv2.usage.api.events import UsageUpdated
-from XBotv2.interactions.models import ClientNotice, UserInputRequest, UserInputRecorded
+from XBotv2.interactions.api.models import ClientNotice, UserInputRequest, UserInputRecorded
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
-from XBotv2.permissions.contracts import PermissionRequest
-from XBotv2.permissions.protocol import PermissionResponseRecorded
+from XBotv2.permissions.api.models import PermissionRequest
+from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.protocol import ServerEvent
-from XBotv2.interactions.contracts import InteractionRequest
+from XBotv2.interactions.api.contracts import InteractionRequest
 from XBotv2.session.events import (
     AgentConfiguredEvent,
     HistoryUpdatedEvent,

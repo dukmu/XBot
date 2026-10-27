@@ -8,10 +8,11 @@ from XBotv2.core.api.tools import ToolCall, ToolCancelled, ToolDenied, ToolSucce
 from XBotv2.agentloop.api.events import Events, ReplaceToolCall
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_runtime import execute_tools
-from XBotv2.interactions import Answered, InteractionNotPending, UserInputOption
-from XBotv2.interactions.models import UserInputRequest
-from XBotv2.interactions.interactions import InteractionWaiter
-from XBotv2.interactions.tools import ask_user_for_input, build_ask_user_tool
+from XBotv2.interactions.api.models import Answered, UserInputOption
+from XBotv2.interactions.api.contracts import InteractionNotPending
+from XBotv2.interactions.api.models import UserInputRequest
+from XBotv2.interactions.impl.interactions import InteractionWaiter
+from XBotv2.interactions.impl.tools import ask_user_for_input, build_ask_user_tool
 
 
 class _InteractionRecorder:

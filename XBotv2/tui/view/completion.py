@@ -14,7 +14,7 @@ from typing import Sequence
 from textual.containers import Vertical
 from textual.widgets import Static
 
-from XBotv2.commands import CommandDescription
+from XBotv2.commands.api.contracts import CommandDescription
 from XBotv2.tui.commands import CommandRegistry
 
 _MAX_ROWS = 8

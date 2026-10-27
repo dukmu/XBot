@@ -22,7 +22,7 @@ from XBotv2.agentloop.api.outputs import (
 )
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
-from XBotv2.interactions import ClientNotice
+from XBotv2.interactions.api.models import ClientNotice
 
 __version__ = "0.2.0"
 

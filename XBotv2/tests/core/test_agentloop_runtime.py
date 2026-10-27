@@ -27,9 +27,9 @@ from XBotv2.core.api.parts import ReasoningPart, TextPart
 from XBotv2.core.api.provider import ProviderAssistant, ProviderTool, ProviderUser
 from XBotv2.core.api.stream import ModelCompleted, TextDelta
 from XBotv2.core.api.tools import Tool, ToolCall, ToolFailed, ToolSucceeded
-from XBotv2.llm.mock import MockLLM
-from XBotv2.llm.provider_errors import normalize_sdk_provider_error
-from XBotv2.permissions import PermissionPolicy, PermissionRule
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.llm.impl.provider_errors import normalize_sdk_provider_error
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 from XBotv2.session.records import AssistantRecord, HumanInputRecord, ToolRecord, project_message
 from XBotv2.session.contracts import conversation_replay
 
@@ -329,7 +329,7 @@ from XBotv2.agentloop.api.outputs import LoopTurnEnded
 from XBotv2.application.app import start_application
 from XBotv2.core.api.domain import InboxTarget
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 from XBotv2.session.records import project_message
 
 async def main():

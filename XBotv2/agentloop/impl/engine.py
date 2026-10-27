@@ -91,7 +91,7 @@ from XBotv2.core.api.parts import ImagePart, ReasoningPart, TextPart
 from XBotv2.core.api.provider import ModelRequest, ProviderMessage, ProviderSystem, ToolSchema
 from XBotv2.core.api.providers import ProviderFailure
 from XBotv2.core.api.stream import ModelCancelled, ModelCompleted, ModelFailed, ModelResponse, ToolCallDelta, ReasoningDelta, TextDelta
-from XBotv2.config.contracts import UserContext
+from XBotv2.core.api.domain import UserContext
 from XBotv2.core.api.runtime_logging import (
     DEFAULT_RUNTIME_LOG,
     RuntimeLog,
@@ -104,7 +104,7 @@ from XBotv2.context_builder.api.events import (
     ContextBuildRequest,
 )
 from XBotv2.core.api.tokens import estimate_request_tokens
-from XBotv2.llm import ModelPort
+from XBotv2.llm.api.contracts import ModelPort
 from XBotv2.core.api.tools import (
     Tool,
     ToolCall,

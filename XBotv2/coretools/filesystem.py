@@ -31,7 +31,7 @@ from XBotv2.core.api.artifacts import ArtifactKind, ArtifactStorePort, ImageRef
 from XBotv2.core.api.parts import ImagePart, TextPart
 from XBotv2.core.api.tools import Tool, ToolError, ToolFailed, ToolOutput, ToolSucceeded
 from XBotv2.core.filesystem.operations import PATH_ACCESS, execute
-from XBotv2.sandbox.contracts import SandboxPort
+from XBotv2.sandbox.api.models import SandboxPort
 
 _FILE_VERSIONS: WeakKeyDictionary[SandboxPort, dict[str, str]] = WeakKeyDictionary()
 

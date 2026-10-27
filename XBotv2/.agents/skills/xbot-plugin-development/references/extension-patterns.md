@@ -66,7 +66,7 @@ A slash command receives the raw text after the command name. Parse it at the
 command boundary and return `CommandResult`; do not manufacture a ToolCall.
 
 ```python
-from XBotv2.commands import (
+from XBotv2.commands.api.contracts import (
     Command,
     CommandResult,
     command_usage,

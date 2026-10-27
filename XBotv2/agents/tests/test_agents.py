@@ -1,0 +1,128 @@
+"""Agent definition and registry contract tests."""
+
+import pytest
+from XBotv2.agents.impl.builtins import BUILTIN_AGENT_DEFINITIONS
+from XBotv2.agents.api.contracts import AgentDefinition
+from XBotv2.agentloop.api.contracts import AllTools
+from XBotv2.core.api.variables import RuntimeVariables
+from XBotv2.agents.impl.catalog import AgentCatalog
+from XBotv2.permissions.impl.system import PermissionSystem
+from XBotv2.agents.impl.loader import load_definition
+
+
+def test_agent_definition_requires_stable_name_and_description():
+    with pytest.raises(ValueError, match="description"):
+        AgentDefinition(name="reviewer", description="")
+    with pytest.raises(ValueError, match="name"):
+        AgentDefinition(name="bad/name", description="Review code")
+
+
+def test_catalog_enforces_name_ownership():
+    catalog = AgentCatalog(ownership="caller")
+    definition = AgentDefinition(name="reviewer", description="Review code")
+
+    assert catalog.register(definition) == "reviewer"
+    with pytest.raises(ValueError, match="already registered"):
+        catalog.register(definition)
+    assert catalog.get("reviewer") is definition
+    assert catalog.unregister_owned("other") == []
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
+
+
+def test_catalog_workspace_overlay_replaces_and_restores_base():
+    catalog = AgentCatalog(ownership="caller")
+    base = AgentDefinition(name="reviewer", description="Base reviewer")
+    overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
+
+    catalog.register(base)
+    catalog.register(overlay, overlay=True)
+
+    assert catalog.get("reviewer") is overlay
+    assert catalog.definitions() == (overlay,)
+    # Unloading the overlay reveals the untouched base definition.
+    assert catalog.unregister_owned("unknown") == ["reviewer"]
+    assert catalog.get("reviewer") is base
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
+    assert catalog.get("reviewer") is None
+
+
+def test_catalog_base_unload_keeps_workspace_overlay():
+    catalog = AgentCatalog(ownership="caller")
+    base = AgentDefinition(name="reviewer", description="Base reviewer")
+    overlay = AgentDefinition(name="reviewer", description="Workspace reviewer")
+
+    catalog.register(base)
+    catalog.register(overlay, overlay=True)
+
+    # Removing the base owner leaves the independent workspace overlay.
+    assert catalog.unregister_owned("unknown", overlay=False) == ["reviewer"]
+    assert catalog.get("reviewer") is overlay
+    assert catalog.unregister_owned("unknown") == ["reviewer"]
+    assert catalog.get("reviewer") is None
+
+
+def test_catalog_layer_rejects_duplicate_names():
+    catalog = AgentCatalog(ownership="caller")
+    catalog.register(AgentDefinition(name="worker", description="Worker"))
+    with pytest.raises(ValueError, match="already registered"):
+        catalog.register(AgentDefinition(name="worker", description="Other"))
+
+
+def test_builtin_agents_cover_default_and_explorer():
+    by_name = {definition.name: definition for definition in BUILTIN_AGENT_DEFINITIONS}
+    assert set(by_name) == {"default", "Explorer"}
+    assert by_name["default"].mode == "all"
+    assert by_name["Explorer"].mode == "all"
+
+
+def test_builtin_explorer_definition_is_read_only():
+    definition = next(
+        item for item in BUILTIN_AGENT_DEFINITIONS if item.name == "Explorer"
+    )
+
+    assert definition.mode == "all"
+    assert definition.tool_policy.enabled == ("read", "search", "ask_user")
+    permissions = PermissionSystem(definition.permission_policy)
+    assert permissions.check("edit") == "deny"
+    assert permissions.check("path") == "deny"
+    assert permissions.check("shell") == "deny"
+    assert permissions.check("spawn_subagent") == "deny"
+    assert permissions.check("wait_subagent") == "deny"
+    assert permissions.check("read") == "allow"
+
+
+def test_builtin_default_definition_is_primary_capable():
+    definition = next(
+        item for item in BUILTIN_AGENT_DEFINITIONS if item.name == "default"
+    )
+
+    assert definition.name == "default"
+    assert definition.mode == "all"
+    assert isinstance(definition.tool_policy.enabled, AllTools)
+
+
+def test_agent_frontmatter_expands_permission_config_before_typed_loading(tmp_path):
+    path = tmp_path / "reviewer.md"
+    path.write_text(
+        "---\n"
+        "description: Reviewer\n"
+        "permission_policy:\n"
+        "  rules:\n"
+        "    - tool_pattern: filesystem_read\n"
+        "      path_scope: '$${workspace}/.*\\.md'\n"
+        "      decision: allow\n"
+        "---\n"
+        "```var\n"
+        "${tool_results}\n"
+        "```\n",
+        encoding="utf-8",
+    )
+    variables = RuntimeVariables({
+        "workspace": tmp_path / "workspace",
+        "tool_results": tmp_path / "state" / "artifacts" / "tool_results",
+    })
+
+    definition = load_definition(path, variables)
+
+    assert definition.prompt == str(tmp_path / "state/artifacts/tool_results")
+    assert definition.permission_policy.rules[0].path_scope == f"{tmp_path}/workspace/.*\\.md"

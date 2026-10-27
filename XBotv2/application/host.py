@@ -1,6 +1,7 @@
 """Narrow handle for one mounted Agent application."""
 
 from __future__ import annotations
+from XBotv2.permissions.api.models import PERMISSIONS
 
 from XBotv2.agentloop.api.state import LOOP_STATE, LoopState
 from XBotv2.usage.api.service import USAGE
@@ -15,7 +16,7 @@ from XBotv2.application.contracts import (
     StatusSlots,
     UsageSnapshotPort,
 )
-from XBotv2.permissions import PermissionsPort
+from XBotv2.permissions.api.models import PermissionsPort
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.history import HistoryReader
 
@@ -70,7 +71,7 @@ async def mounted_application(context: Context) -> MountedAgentApplication:
             ),
             usage=context.require(USAGE),
             loop_state=context.require(LOOP_STATE),
-            parent_permissions=context.require("permissions"),
+            parent_permissions=context.require(PERMISSIONS),
             persistence_available=context.has("thread_persistence"),
         )
     except BaseException as error:

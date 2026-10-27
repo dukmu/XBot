@@ -9,16 +9,11 @@ from XBotv2.agentloop.api.outputs import LoopError, ToolCompleted
 from XBotv2.agentloop.api.events import Events, ModelRequestReady
 from XBotv2.application.app import start_application
 from XBotv2.application import RUNTIME_EVENT
-from XBotv2.commands.contracts import EXECUTE_COMMAND, ExecuteCommand
-from XBotv2.compact.history import compact_prefix_end, history_chars
-from XBotv2.compact.events import PRE_COMPACT
-from XBotv2.compact.protocol import CompactionCompleted, CompactionFailed
-from XBotv2.compact.summary import (
-    compacted_message,
-    normalize_summary,
-    strip_summary_heading,
-    summary_request,
-)
+from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand
+from XBotv2.compact.impl.history import compact_prefix_end, history_chars
+from XBotv2.compact.api.events import PRE_COMPACT
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed
+from XBotv2.compact.impl.summary import compacted_message, normalize_summary, strip_summary_heading, summary_request
 from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
 from XBotv2.core.api.domain import (
     InboxTarget,
@@ -48,7 +43,7 @@ from XBotv2.core.api.provider import ProviderSystem, ProviderTool, ProviderUser
 from XBotv2.core.api.stream import ModelFailed
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutput, ToolSucceeded
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 
 
 def _human(index: int, text: str) -> HumanInputMessage:
@@ -802,7 +797,7 @@ async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
     gate.mkdir()
     listener_marker = tmp_path / "compact-listener-called"
     (gate / "__init__.py").write_text(
-        "from XBotv2.compact.events import PRE_COMPACT\n"
+        "from XBotv2.compact.api.events import PRE_COMPACT\n"
         "from pathlib import Path\n"
         "\n"
         "class CompactGate:\n"

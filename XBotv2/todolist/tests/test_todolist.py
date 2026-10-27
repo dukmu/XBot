@@ -125,8 +125,8 @@ async def _start(
 ):
     from XBotv2.application.app import start_application
     from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.llm.mock import MockLLM
-    from XBotv2.permissions.contracts import PermissionPolicy
+    from XBotv2.llm.impl.mock import MockLLM
+    from XBotv2.permissions.api.models import PermissionPolicy
 
     llm = MockLLM(responses=responses)
     application = await start_application(
@@ -553,8 +553,8 @@ async def test_compaction_restates_unfinished_tasks_once(
     history mutation, plugin event, engine input, and durable history paths.
     """
     from XBotv2.agentloop.api.events import Events, InputAccepted
-    from XBotv2.commands import EXECUTE_COMMAND, ExecuteCommand
-    from XBotv2.compact.protocol import CompactionCompleted
+    from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand
+    from XBotv2.compact.api.protocol import CompactionCompleted
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.core.api.messages import RuntimeNoticeMessage
     from XBotv2.application import RUNTIME_EVENT

@@ -34,8 +34,8 @@ from XBotv2.protocol.models import ErrorResponse
 from XBotv2.session.records import AssistantRecord
 from textual.screen import Screen
 
-from XBotv2.interactions.models import Answered, UserInputRecorded, UserInputRequest
-from XBotv2.permissions.contracts import NamedPermission, PermissionRequest
+from XBotv2.interactions.api.models import Answered, UserInputRecorded, UserInputRequest
+from XBotv2.permissions.api.models import NamedPermission, PermissionRequest
 from XBotv2.tui.app import TuiApp
 from XBotv2.tui.view.interaction import InteractionInputScreen
 from XBotv2.tui.view.selection import SelectionScreen
@@ -722,7 +722,7 @@ async def test_the_popup_hides_once_arguments_are_typed() -> None:
 
 
 async def test_the_app_adopts_the_server_command_catalogue() -> None:
-    from XBotv2.commands import CommandDescription
+    from XBotv2.commands.api.contracts import CommandDescription
 
     backend = ScriptedBackend()
     app = app_for(backend)
@@ -2088,9 +2088,9 @@ async def test_settings_reads_policy_through_the_public_backend() -> None:
 
 
 async def test_settings_projects_authoritative_permission_and_sandbox_policy() -> None:
-    from XBotv2.config.protocol import SessionPolicyResponse
-    from XBotv2.permissions.contracts import PermissionPolicy, PermissionRule
-    from XBotv2.sandbox.contracts import SandboxConfig
+    from XBotv2.config.api.protocol import SessionPolicyResponse
+    from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
+    from XBotv2.sandbox.api.models import SandboxConfig
 
     backend = ScriptedBackend()
     backend.policy = SessionPolicyResponse(
@@ -2156,7 +2156,7 @@ async def test_settings_plugin_page_projects_an_empty_public_catalog() -> None:
 
 
 async def test_settings_loads_and_projects_the_public_plugin_config_catalog() -> None:
-    from XBotv2.config.contracts import PluginConfigCatalog, PluginConfigDescriptor
+    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
 
     backend = ScriptedBackend(
         plugin_config=PluginConfigCatalog(
@@ -2204,7 +2204,7 @@ async def test_settings_loads_and_projects_the_public_plugin_config_catalog() ->
 
 
 async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revision() -> None:
-    from XBotv2.config.contracts import PluginConfigCatalog, PluginConfigDescriptor
+    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
 
     backend = ScriptedBackend(
         plugin_config=PluginConfigCatalog(
@@ -2266,7 +2266,7 @@ async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revisio
 
 
 async def test_plugin_revision_conflict_reloads_and_retries_the_preserved_draft() -> None:
-    from XBotv2.config.contracts import PluginConfigCatalog, PluginConfigDescriptor
+    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
 
     def catalog(revision: str) -> PluginConfigCatalog:
         return PluginConfigCatalog(

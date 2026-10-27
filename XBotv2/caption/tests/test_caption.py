@@ -33,8 +33,8 @@ from XBotv2.core.api.messages import HumanInputMessage, RuntimeNoticeMessage
 from XBotv2.core.api.parts import TextPart
 from XBotv2.core.api.provider import ProviderSystem, ProviderUser
 from XBotv2.core.api.stream import ModelFailed
-from XBotv2.llm import ModelPort
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.api.contracts import ModelPort
+from XBotv2.llm.impl.mock import MockLLM
 
 
 def _human(text: str, index: int = 1) -> HumanInputMessage:
@@ -123,7 +123,7 @@ async def test_caption_agent_tool_uses_typed_results_in_the_standard_agent_loop(
     from XBotv2.application.app import start_application
     from XBotv2.core.api.messages import ToolMessage
     from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.permissions.contracts import PermissionPolicy
+    from XBotv2.permissions.api.models import PermissionPolicy
 
     llm = MockLLM(responses=[
         automatic_response,
@@ -187,7 +187,7 @@ async def test_caption_auto_and_tool_access_are_independent_application_options(
     from XBotv2.core.api.domain import InboxTarget
     from XBotv2.application.app import start_application
     from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.permissions.contracts import PermissionPolicy
+    from XBotv2.permissions.api.models import PermissionPolicy
 
     responses = []
     if auto:
@@ -289,7 +289,7 @@ async def test_caption_tool_rejects_titles_that_normalize_to_empty(
     from XBotv2.core.api.messages import ToolMessage
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.core.api.tools import ToolFailed
-    from XBotv2.permissions.contracts import PermissionPolicy
+    from XBotv2.permissions.api.models import PermissionPolicy
 
     llm = MockLLM(responses=[
         {"content": "Automatic title"},

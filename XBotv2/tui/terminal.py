@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 
-from XBotv2.commands import CommandsPort
+from XBotv2.commands.api.contracts import CommandsPort
 from XBotv2.tui.app import TuiApp
 from XBotv2.tui.config import TextualTuiConfig
 from XBotv2.tui.transport import (

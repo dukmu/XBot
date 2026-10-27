@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from typing import Sequence
 
-from XBotv2.commands import CommandDescription
+from XBotv2.commands.api.contracts import CommandDescription
 from XBotv2.tui.commands import CommandRegistry
 from XBotv2.tui.view.selection import Option, SelectionScreen
 

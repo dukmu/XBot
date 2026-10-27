@@ -1,6 +1,7 @@
 """Explicit same-session goals driven by the working Agent."""
 
 from __future__ import annotations
+from XBotv2.commands.api.contracts import COMMANDS
 
 from XBotv2.agentloop.api.contracts import TOOLS, AgentLoopDriverPort, InboxItem, RuntimeInput
 import asyncio
@@ -23,7 +24,7 @@ from XBotv2.agentloop.api.events import (
     TurnEnded,
 )
 from XBotv2.application import COLLECT_STATUS_SLOTS, RUNTIME_EVENT, RuntimeEvent, StatusSlots
-from XBotv2.commands import Command, CommandEffect, CommandResult
+from XBotv2.commands.api.contracts import Command, CommandEffect, CommandResult
 from XBotv2.core.api.tools import (
     Tool,
     ToolFailed,
@@ -583,7 +584,7 @@ def _tool_outcome_text(result: ToolOutcome) -> str:
 
 class GoalPlugin:
     inject = {
-        "required": ["commands", "engine", "state", TOOLS, "usage"],
+        "required": [COMMANDS, "engine", "state", TOOLS, "usage"],
         "optional": ["jobs"],
     }
     name = "goal"
@@ -608,7 +609,7 @@ class GoalPlugin:
         ctx.on(COLLECT_STATUS_SLOTS, service.contribute_status)
         for function in (service.create_goal, service.get_goal, service.update_goal):
             ctx.require(TOOLS).register(replace(Tool.from_function(function), kind="think"))
-        ctx.commands.register(Command(
+        ctx.require(COMMANDS).register(Command(
             name="goal",
             description="Manage an explicit same-session goal.",
             handler=service.command,

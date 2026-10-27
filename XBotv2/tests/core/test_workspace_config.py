@@ -3,7 +3,7 @@
 import pytest
 import yaml
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.config.loader import load_plugin_tree
+from XBotv2.config.impl.loader import load_plugin_tree
 
 
 def _write_yaml(path, value):
@@ -52,8 +52,8 @@ def test_session_config_rejects_aggregate_document(temp_data_dir, temp_workspace
 def test_config_edit_rejects_invalid_plugin_policy_without_writing(
     temp_data_dir, temp_workspace, plugin_id, config, error,
 ):
-    from XBotv2.config.contracts import PatchPluginConfig
-    from XBotv2.config.plugin_catalog import plugin_config_catalog, update_plugin_config
+    from XBotv2.config.api.contracts import PatchPluginConfig
+    from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config
 
     paths = RuntimePaths.from_data_dir(temp_data_dir)
     catalog = plugin_config_catalog(paths, temp_workspace, "global")

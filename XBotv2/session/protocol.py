@@ -18,8 +18,8 @@ from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse, Response, StreamingResponse
 from pydantic import BaseModel, Field, JsonValue, model_validator
 from XBotv2.protocol.http_util import _SSE_RESPONSE, error_payload, _sse_response, HttpServerError
-from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
-from XBotv2.permissions import PermissionResponseRequest
+from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
+from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol import ResourceResponse, ServerEvent, WireModel
 from XBotv2.protocol.sse import encode_server_event
 from XBotv2.core.api.errors import OperationError

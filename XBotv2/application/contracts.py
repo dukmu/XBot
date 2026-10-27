@@ -11,19 +11,13 @@ from XBotv2.agentloop.api.contracts import AgentLoopDriverPort
 from XBotv2.core.api.artifacts import ArtifactStorePort
 from XBotv2.core.api.messages import ConversationMessage, HumanInputMessage
 from XBotv2.core.api.domain import UsageSnapshot
-from XBotv2.interactions.contracts import (
-    InteractionRegistration,
-    InteractionRequest,
-    InteractionReceipt,
-    InteractionResolution,
-    InteractionWaiterPort,
-)
+from XBotv2.interactions.api.contracts import InteractionRegistration, InteractionRequest, InteractionReceipt, InteractionResolution, InteractionWaiterPort
 from XBotv2.core.api.history import History, HistoryReader
 from XBotv2.core.api.metadata import ThreadMetadata, Metadata
 from XBotv2.core.api.paths import SessionPaths
 from xcore.api.events import EventQuery
 from pydantic import BaseModel, JsonValue
-from XBotv2.permissions import PermissionsPort
+from XBotv2.permissions.api.models import PermissionsPort
 
 
 COLLECT_STATUS_SLOTS = "application/status-slots/collect"

@@ -7,7 +7,7 @@ import asyncio
 import pytest
 
 import XBotv2.tui.terminal as terminal_module
-from XBotv2.commands.plugin import CommandsService
+from XBotv2.commands.impl.plugin import CommandsService
 from XBotv2.tui.config import TextualTuiConfig
 from XBotv2.tui.transport import DEFAULT_HISTORY_RETENTION, DEFAULT_HISTORY_WINDOW
 

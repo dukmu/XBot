@@ -7,6 +7,8 @@ to the content_cache plugin.
 """
 
 from __future__ import annotations
+from XBotv2.permissions.api.models import PERMISSIONS
+from XBotv2.sandbox.api.models import SANDBOX
 
 from XBotv2.agentloop.api.contracts import TOOLS
 from dataclasses import dataclass
@@ -19,10 +21,10 @@ from XBotv2.coretools.contracts import CoreToolsConfig, HookConfig, WorkspaceToo
 
 class CoreToolsComponent:
     inject = {
-        "required": [TOOLS, "session", "artifacts", "sandbox", "jobs", "workspace_root"],
+        "required": [TOOLS, "session", "artifacts", SANDBOX, "jobs", "workspace_root"],
         # The approval layer is optional: without it, escalating shell calls
         # fail closed at call time instead of running unsandboxed.
-        "optional": ["permissions"],
+        "optional": [PERMISSIONS],
     }
     """Register base tools and core event listeners (mounted after tools)."""
 
@@ -54,15 +56,15 @@ class CoreToolsComponent:
         # ``read(mode=media)`` is the single model-facing content tool; it
         # covers path, URL, and base64 media input (images today).
         tools = (
-            *filesystem_tools(ctx.sandbox, artifacts),
+            *filesystem_tools(ctx.require(SANDBOX), artifacts),
             *shell_tools(
-                ctx.sandbox,
+                ctx.require(SANDBOX),
                 ctx.jobs,
                 str(ctx.workspace_root),
                 artifacts,
                 # Resolved lazily per call: order-independent whether or not
                 # the permissions plugin mounts.
-                approval_layer=lambda: ctx.get("permissions", strict=False),
+                approval_layer=lambda: ctx.get(PERMISSIONS, strict=False),
                 max_timeout_seconds=config.shell_max_timeout_seconds,
             ),
         )

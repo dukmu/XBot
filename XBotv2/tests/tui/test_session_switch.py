@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 import pytest
 from XBotv2.core.api.tools import ToolCall
-from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
+from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
 from XBotv2.tests.tui.factories import (
     SESSION,
     THREAD,

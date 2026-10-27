@@ -32,10 +32,10 @@ PERSISTENCE_PLUGIN = PACKAGE / "persistence" / "plugin.py"
 USAGE_PLUGIN = PACKAGE / "usage" / "impl" / "plugin.py"
 APPLICATION_APP = PACKAGE / "application" / "app.py"
 APPLICATION_BOOT = PACKAGE / "application" / "boot.py"
-AGENT_OPERATIONS = PACKAGE / "agents" / "plugin.py"
+AGENT_OPERATIONS = PACKAGE / "agents" / "impl" / "plugin.py"
 APPLICATION_AGENTS = PACKAGE / "application" / "agents.py"
 APPLICATION_MODEL = PACKAGE / "application" / "model.py"
-AGENTS_SERVICE = PACKAGE / "agents" / "service.py"
+AGENTS_SERVICE = PACKAGE / "agents" / "impl" / "service.py"
 APPLICATION_CONFIG_SEED = PACKAGE / "application" / "config_seed.py"
 APPLICATION_TREE = PACKAGE / "application" / "tree.py"
 SERVER_APP = PACKAGE / "application" / "server.py"
@@ -171,7 +171,7 @@ XCORE_CONTEXT_API = {
 }
 ACP_FORBIDDEN_MODULES = {
     "XBotv2.application.app",
-    "XBotv2.config.loader",
+    "XBotv2.config.impl.loader",
     "XBotv2.persistence.store",
     "XBotv2.session.manager",
     "XBotv2.session.runtime",
@@ -219,10 +219,13 @@ def _literal_string(node: ast.AST | None, path: Path | None = None) -> str | Non
             if declaration_path is None:
                 return None
             value = _assignment_value(_tree(declaration_path).body, alias.name)
+            constructor = value.func if isinstance(value, ast.Call) else None
+            if isinstance(constructor, ast.Subscript):
+                constructor = constructor.value
             if (
                 isinstance(value, ast.Call)
-                and isinstance(value.func, ast.Name)
-                and value.func.id == "ServiceKey"
+                and isinstance(constructor, ast.Name)
+                and constructor.id == "ServiceKey"
                 and value.args
             ):
                 return _literal_string(value.args[0])
@@ -636,8 +639,8 @@ def check_application_startup() -> list[Violation]:
             and node.module
             and (
                 node.module.startswith("XBotv2.agentloop")
-                or node.module == "XBotv2.agents.service"
-                or node.module == "XBotv2.llm.service"
+                or node.module == "XBotv2.agents.impl.service"
+                or node.module == "XBotv2.llm.impl.service"
             )
         ):
             violations.append(Violation(
@@ -990,7 +993,8 @@ def _public_import_violation(
             f"imports shared implementation outside core.api: {module}",
         )
     if imported == "protocol":
-        if owner in TRANSPORT_ROOTS or path.name == "protocol.py":
+        # Capability-owned route adapters consume transport envelopes here.
+        if owner in TRANSPORT_ROOTS or path.name in {"protocol.py", "router.py", "http.py"}:
             return None
         return Violation(
             path,

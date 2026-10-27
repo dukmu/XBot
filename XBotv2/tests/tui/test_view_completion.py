@@ -7,7 +7,7 @@ widget only renders what this returns.
 
 from __future__ import annotations
 
-from XBotv2.commands import CommandDescription
+from XBotv2.commands.api.contracts import CommandDescription
 from XBotv2.tests.tui.factories import tui_command_registry
 from XBotv2.tui.commands import CommandRegistry
 from XBotv2.tui.view.completion import (

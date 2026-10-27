@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Literal
 from pydantic import JsonValue
 
 if TYPE_CHECKING:
-    from XBotv2.config import PluginConfigDescriptor
+    from XBotv2.config.api.contracts import PluginConfigDescriptor
 
 FieldKind = Literal["boolean", "integer", "number", "string", "enum"]
 

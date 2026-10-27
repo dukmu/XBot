@@ -5,8 +5,8 @@ import pytest
 from XBotv2.application.app import start_application
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.core.api.tools import Tool, ToolCall, ToolDenied, ToolSucceeded
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions import PermissionPolicy, PermissionRule
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
 from XBotv2.skills.permission_scope import SkillPermissionScope, validate_tool_patterns
 from XBotv2.skills.registry import SkillRegistry
 from XBotv2.skills.skill_tool import load_skill

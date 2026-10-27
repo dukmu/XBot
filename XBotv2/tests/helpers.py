@@ -13,8 +13,8 @@ from typing import Any
 import xcore
 from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 from XBotv2.agentloop.impl.tool_service import ToolsService
-from XBotv2.permissions import Denied
-from XBotv2.permissions.contracts import Approval, PermissionRequest
+from XBotv2.permissions.api.models import Denied
+from XBotv2.permissions.api.models import Approval, PermissionRequest
 
 
 class _UnavailableApproval:
@@ -54,7 +54,7 @@ def make_tool_ctx(
         tools_service = ToolsService(registry, events=ctx, ownership="caller")
         ctx.provide(TOOLS, tools_service)
     if permissions is not None:
-        from XBotv2.permissions.guard import PermissionGuard
+        from XBotv2.permissions.impl.guard import PermissionGuard
 
         if ctx.get("permissions", strict=False) is None:
             ctx.set("permissions", permissions)

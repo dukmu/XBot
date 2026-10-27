@@ -7,28 +7,15 @@ from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 import httpx
 from pydantic import JsonValue, TypeAdapter
-from XBotv2.agents import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
+from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
 from XBotv2.agentloop.api.protocol import ToolListResponse
-from XBotv2.config import (
-    PermissionDecision,
-    PatchPluginConfig,
-    PluginConfigCatalog,
-    PluginConfigScope,
-    SandboxKey,
-    SandboxValue,
-    SessionPolicyPatch,
-    SessionPolicyResponse,
-)
-from XBotv2.interactions import InteractionResponse, UserInputResponseRequest
+from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
+from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
 from XBotv2.jobs import JobListResponse, JobStopResponse
-from XBotv2.llm import (
-    EffortSelectionRequest,
-    EffortSelectionResponse,
-    ProviderCatalog,
-    ProviderSelectionRequest,
-    ProviderSelectionResponse,
-)
-from XBotv2.permissions import PermissionResponseRequest
+from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
+from XBotv2.llm.api.contracts import ProviderCatalog
+from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol import (
     ErrorResponse,
     HealthResponse,
@@ -59,7 +46,7 @@ from XBotv2.session import (
     ThreadSummary,
     UndoRequest,
 )
-from XBotv2.commands import CommandListResponse, CommandRequest, CommandResponse
+from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
 from XBotv2.workspaces import WorkspaceSnapshot
 from XBotv2.protocol.sse import SseDecoder, decode_server_event
 from XBotv2.protocol.version import PROTOCOL_VERSION

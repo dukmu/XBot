@@ -31,7 +31,7 @@ from XBotv2.agentloop.api.outputs import (
 )
 from XBotv2.core.api.domain import TokenCounters
 from XBotv2.core.api.parts import ReasoningPart, TextPart
-from XBotv2.interactions import ClientNotice
+from XBotv2.interactions.api.models import ClientNotice
 from XBotv2.jobs.protocol import JobCompletedEvent, JobUpdatedEvent
 from XBotv2.session import (
     AssistantRecord,

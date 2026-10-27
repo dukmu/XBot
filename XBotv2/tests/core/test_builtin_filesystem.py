@@ -9,7 +9,7 @@ import json
 import pytest
 from XBotv2.coretools import filesystem as filesystem_module
 from XBotv2.coretools.filesystem import edit, path as manage_path, read, search
-from XBotv2.sandbox.policy import SandboxPolicy
+from XBotv2.sandbox.impl.policy import SandboxPolicy
 from XBotv2.core.filesystem.artifacts import ArtifactStore
 from XBotv2.core.filesystem import operations as filesystem_operations
 from XBotv2.core.api.paths import RuntimePaths

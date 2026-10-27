@@ -6,6 +6,7 @@ hydration; persistence supplies its durable stores.
 """
 
 from __future__ import annotations
+from XBotv2.commands.api.contracts import COMMANDS
 
 from XBotv2.agentloop.api.contracts import INBOX
 from XBotv2.agentloop.api.state import LOOP_STATE
@@ -38,7 +39,7 @@ _MANAGER_DEPENDENCIES = {
 
 class SessionRuntimeComponent:
     inject = {
-        "required": ["runtime_paths", "session_launch", "commands", "runtime_log"],
+        "required": ["runtime_paths", "session_launch", COMMANDS, "runtime_log"],
         "optional": ["thread_persistence"],
     }
     """Register the session entity and session-level runtime services."""
@@ -97,7 +98,7 @@ def mount_session(ctx: Context) -> None:
         session,
         pending_input_count=lambda: ctx.engine.pending_input_count,
     ):
-        ctx.commands.register(command)
+        ctx.require(COMMANDS).register(command)
 
 
 async def mount_runtime(ctx: Context) -> None:

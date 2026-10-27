@@ -22,10 +22,10 @@ from textual import on
 from textual.widgets import Collapsible, TextArea
 
 from XBotv2.jobs.contracts import JobView
-from XBotv2.interactions.models import UserInputRequest
-from XBotv2.permissions.contracts import PermissionRequest, ToolPermission
+from XBotv2.interactions.api.models import UserInputRequest
+from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
 from XBotv2.session.contracts import PendingInputData
-from XBotv2.commands import CommandDescription, CommandsPort, split_command_args
+from XBotv2.commands.api.contracts import CommandDescription, CommandsPort, split_command_args
 from XBotv2.tui.attachments import load_image
 from XBotv2.tui.commands import CommandRegistry, format_command_help
 from XBotv2.tui.controller import TuiController
@@ -67,7 +67,7 @@ from XBotv2.tui.view.status_bar import StatusBar, StatusLine, status_report
 from XBotv2.tui.view.transcript import TranscriptScroll, TranscriptView
 
 if TYPE_CHECKING:
-    from XBotv2.config import PluginConfigCatalog
+    from XBotv2.config.api.contracts import PluginConfigCatalog
 
 class TextualViewAdapter:
     """Renders the controller's models into the mounted widgets."""

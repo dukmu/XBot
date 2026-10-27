@@ -149,7 +149,7 @@ def test_process_exit_releases_its_session_lock(tmp_path):
 async def test_failed_child_start_keeps_parent_session_exclusive(tmp_path):
     from XBotv2.application.app import start_application
     from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.llm.mock import MockLLM
+    from XBotv2.llm.impl.mock import MockLLM
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
     parent = await start_application(
@@ -202,7 +202,7 @@ async def test_failed_optional_persistence_keeps_claim_until_runtime_closes(tmp_
     import XBotv2.application.app as application
     from XBotv2.core.api.paths import RuntimePaths
     from XBotv2.persistence.store import ThreadPersistence
-    from XBotv2.llm.mock import MockLLM
+    from XBotv2.llm.impl.mock import MockLLM
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
 
@@ -260,7 +260,7 @@ async def test_failed_start_rolls_back_only_its_own_new_thread(tmp_path, monkeyp
 async def test_failed_application_handle_creation_releases_the_runtime(tmp_path):
     from XBotv2.application.app import create_agent_application
     from XBotv2.core.api.paths import RuntimePaths
-    from XBotv2.llm.mock import MockLLM
+    from XBotv2.llm.impl.mock import MockLLM
     from XBotv2.session.contracts import AgentApplicationOptions
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")

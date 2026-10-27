@@ -29,13 +29,9 @@ from XBotv2.agentloop.api.outputs import (
     TurnCancelled as CancelledOutcome,
     TurnFinished as FinishedOutcome,
 )
-from XBotv2.compact.protocol import (
-    CompactionCompleted,
-    CompactionFailed,
-    CompactionMetrics,
-    CompactionStarted,
-)
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionMetrics, CompactionStarted
 from XBotv2.core.api.domain import (
+    ToolTiming,
     AgentExecutionLimits,
     CompletedStop,
     Cursor,
@@ -63,22 +59,15 @@ from XBotv2.core.api.tools import (
     ToolFailed,
     ToolOutput,
     ToolSucceeded,
-    ToolTiming,
 )
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.timing import SessionStats
-from XBotv2.interactions.models import (
-    Answered,
-    ClientNotice as ClientNoticeModel,
-    UserInputOption,
-    UserInputRecorded,
-    UserInputRequest,
-)
+from XBotv2.interactions.api.models import Answered, ClientNotice as ClientNoticeModel, UserInputOption, UserInputRecorded, UserInputRequest
 from XBotv2.jobs.contracts import JobView
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import ActiveGoal, CompleteGoal, GoalSnapshot, GoalStats
-from XBotv2.permissions.contracts import Allowed, PermissionRequest, ToolPermission
-from XBotv2.permissions.protocol import PermissionResponseRecorded
+from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
+from XBotv2.permissions.api.protocol import PermissionResponseRecorded
 from XBotv2.session.contracts import HistoryMutation, PendingInputData, ThreadSummary
 from XBotv2.session.records import (
     AssistantRecord,

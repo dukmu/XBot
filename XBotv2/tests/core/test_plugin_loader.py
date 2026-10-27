@@ -31,10 +31,10 @@ def make_plugin_ctx(tmp_path):
     from xcore.api.context import Context
     from XBotv2.jobs.registry import JobRegistry
     from XBotv2.core.api.variables import RuntimeVariables
-    from XBotv2.agents.catalog import AgentCatalog
+    from XBotv2.agents.impl.catalog import AgentCatalog
     from XBotv2.context_builder.impl.builder import ContextBuilder
     from XBotv2.agentloop.impl.tool_service import ToolsService
-    from XBotv2.commands.plugin import CommandsService
+    from XBotv2.commands.impl.plugin import CommandsService
     from XBotv2.prompts.impl.plugin import PromptsService
     from XBotv2.agentloop.impl.tool_registry import ToolRegistry
 
@@ -132,7 +132,7 @@ plugin = Plugin()
 
 
 def test_disabled_plugin_does_not_require_its_module_during_config_resolution(tmp_path):
-    from XBotv2.config.loader import load_plugin_tree
+    from XBotv2.config.impl.loader import load_plugin_tree
     from XBotv2.core.api.paths import RuntimePaths
 
     paths = RuntimePaths.from_data_dir(tmp_path / "data")
@@ -512,7 +512,7 @@ class TestOrderIndependence:
         from XBotv2.application import tree as application_tree
         from XBotv2.application.app import start_application
         from XBotv2.core.api.paths import RuntimePaths
-        from XBotv2.llm.mock import MockLLM
+        from XBotv2.llm.impl.mock import MockLLM
         from XBotv2.loader import PluginTree
 
         # Shuffle the bundled tree (config preserved) into a temp yaml.

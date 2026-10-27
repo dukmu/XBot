@@ -16,7 +16,7 @@ from XBotv2.application.server import start_server_application
 from XBotv2.loader import PluginOverlay
 from XBotv2.application.app import create_agent_application
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.llm.mock import MockLLM
+from XBotv2.llm.impl.mock import MockLLM
 
 DATA = Path(__file__).resolve().parents[3] / ".verify" / "data"
 WORKSPACE = Path(__file__).resolve().parents[3] / ".verify" / "workspace"

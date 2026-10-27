@@ -26,20 +26,17 @@ import uuid
 from dataclasses import dataclass
 from collections.abc import Awaitable
 from typing import TYPE_CHECKING, AsyncGenerator, Callable, Literal, Protocol, Sequence
-from XBotv2.agents import AgentListResponse, AgentSelectionResponse
+from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionResponse
 from XBotv2.agentloop.api.outputs import LoopError
-from XBotv2.commands import (
-    CommandDescription,
-    CommandExecution,
-    CommandListResponse,
-    CommandResponse,
-)
+from XBotv2.commands.api.contracts import CommandDescription, CommandExecution
+from XBotv2.commands.api.protocol import CommandListResponse, CommandResponse
 from XBotv2.client import XBotClientError
 from XBotv2.core.api.domain import Cursor
 from XBotv2.core.api.history import HistoryPage
-from XBotv2.interactions.protocol import InteractionResponse
+from XBotv2.interactions.api.protocol import InteractionResponse
 from XBotv2.jobs.protocol import JobListResponse
-from XBotv2.llm import EffortSelectionResponse, ProviderCatalog, ProviderSelectionResponse
+from XBotv2.llm.api.protocol import EffortSelectionResponse, ProviderSelectionResponse
+from XBotv2.llm.api.contracts import ProviderCatalog
 from XBotv2.protocol import ServerEvent
 from XBotv2.protocol.models import HelloResponse
 from XBotv2.session import (
@@ -74,12 +71,8 @@ from XBotv2.tui.status import Connection
 from XBotv2.tui.config import DEFAULT_HISTORY_WINDOW, DEFAULT_HISTORY_RETENTION
 
 if TYPE_CHECKING:
-    from XBotv2.config import (
-        PatchPluginConfig,
-        PluginConfigCatalog,
-        PluginConfigScope,
-        SessionPolicyResponse,
-    )
+    from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+    from XBotv2.config.api.protocol import SessionPolicyResponse
 
 CURSOR_EXPIRED = "session_event_cursor_expired"
 

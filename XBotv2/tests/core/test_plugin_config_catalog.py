@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import pytest
-from XBotv2.config.contracts import PatchPluginConfig
-from XBotv2.config.plugin_catalog import (
-    PluginConfigConflict,
-    plugin_config_catalog,
-    update_plugin_config,
-)
-from XBotv2.config.seed import ensure_initial_config
+from XBotv2.config.api.contracts import PatchPluginConfig
+from XBotv2.config.impl.plugin_catalog import PluginConfigConflict, plugin_config_catalog, update_plugin_config
+from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.compact.contracts import CompactConfig
+from XBotv2.compact.api.contracts import CompactConfig
 
 
 def test_catalog_exposes_declared_schema_without_plugin_specific_rules(tmp_path):
@@ -159,7 +155,7 @@ def test_user_context_follows_session_overlay_writes(tmp_path):
     """The settings service reads the user identity live: a session-scope
     overlay write is visible without rebuilding the service, matching the
     freshness policy() already had."""
-    from XBotv2.config.service import ConfigService
+    from XBotv2.config.impl.service import ConfigService
     from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
     from xcore.api.context import Context
 

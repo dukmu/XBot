@@ -6,9 +6,9 @@ trajectory records remain durable, while the current conversation surface is
 replaced.
 
 - **Import/profile:** `XBotv2.compact`, Agent profile.
-- **Source:** `compact/contracts.py`, `service.py`, `plugin.py`, `protocol.py`,
-  `tools.py`, and `commands.py`.
-- **Injects:** `tools`, `commands`, `model`, `loop_state`, `usage`, `artifacts`.
+- **Source:** `compact/api/contracts.py`, `compact/api/protocol.py`, and
+  `compact/impl/{service,plugin,tools,commands}.py`.
+- **Injects:** `tools`, `commands`, `model`, `loop_state`, `usage`, `artifacts`, `context_builder`.
 - **Events:** observes context-build, model-request-ready, model-request-error,
   model-response-observed, and turn-end stages; publishes typed compaction
   events through the application runtime-event path.
@@ -73,8 +73,7 @@ replay. See [session-trace.md](../session-trace.md).
 
 ## Plugin guidance
 
-- Use `CompactConfig`, `CompactionPlan`, and typed events from the package
-  exports; do not construct a parallel proposal dictionary.
+- Use `CompactConfig`, `CompactionPlan`, and typed events from `compact.api.contracts` and `compact.api.events`; do not construct a parallel proposal dictionary.
 - Keep history selection and commit on the persistence/history API so revision
   checking and transaction recovery remain intact.
 - Do not describe compaction as deleting transcript or trajectory history.

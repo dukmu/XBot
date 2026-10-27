@@ -1,10 +1,10 @@
 """The one expansion engine: two passes, one syntax, auto-expanded configs."""
 
 import pytest
-from XBotv2.config.loader import load_plugin_tree
+from XBotv2.config.impl.loader import load_plugin_tree
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.permissions.contracts import PermissionPolicy
-from XBotv2.permissions.system import PermissionSystem
+from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.permissions.impl.system import PermissionSystem
 from XBotv2.core.api.variables import RuntimeVariables, expand_env_refs
 
 
