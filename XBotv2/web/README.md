@@ -75,6 +75,8 @@ and closes with Escape. Tool details open when a tool is selected; changing
 sessions or threads clears the selection. Escape cancels queue editing or closes
 an open settings menu without interrupting the running turn. The appearance
 setting applies the same light, dark, or system preference across the workbench.
+Restoring an idle session reports Connected when its event stream opens; a new
+message is not required to establish the connection status.
 
 Message uploads use `media` entries with base64 data, MIME type and name;
 ordinary files use `attachments`. Media references in history retain artifact

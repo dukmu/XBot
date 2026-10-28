@@ -666,3 +666,33 @@
 - [x] 低优先级：Web 单个 `event` action 也仅被测试使用，生产派发 `events`，但预计仅减 2–3 生产行且测试迁移较大；Web `listMessages` 无仓库调用、约 10 行，但为导出类方法，删除应记录导出接口变化；SQL replace 尾部与 jobs 通知仅约 5–15 行去重机会，抽参可能反而增加阅读跳转，不优先。
 - [x] 暂不推荐：合并 Web 两套轮询（统计观测与终态恢复、频率/失败语义不同）、provider 目录 refcount 与实际 client lease（共享粒度和取消语义不同）、surface/transcript 的前置定位（顺序验证与 compaction lineage 不同）、独立 ArtifactStore 的本地锁（独立使用和发布回滚仍有真实调用）。不为删行引入统一策略框架。
 - [x] 待进一步审查而非可删除结论：`web/src/styles/global.css` 与 `dsh.css` 有样式覆盖，可能比上述零碎项更值得单独看，但存在 responsive/状态选择器和层叠顺序；当前没有 computed styles/实际画面证据，未承诺规模，也不将删除旧 CSS 当作无风险精简。
+
+## 14. 四项精简与 Web 产品体验（2026-10-28，完成）
+
+- [x] 从 `b3c95f43` 开始，落实用户明确授权的四个候选，并按真实画面推进 Web 产品体验。仅三名 Terra 具体实施，主代理审读、分组提交及生产浏览器验收。未新增前端框架或修改 Agent 执行循环；公开 Python 字段删改按本次授权直接收敛，不留兼容字段。
+
+### 四项精简
+
+- [x] 删除 `RuntimeConfig.memory`、`runtime_config(definition)` 的未用形参及调用点、构造 RuntimeConfig 时的重复 memory 读取；实际 Engine 的 `SETTINGS.memory()` 注入保留，配置设计文档更新。提交 `5bed2197`。
+- [x] 删除 TaskStorage.get/completed_page 中各一次无消费者的 counters SELECT；表存在、owner 和访问授权仍由原 DomainStore/事务边界承担，无补偿校验。提交 `5e3fd684`。
+- [x] 图片 path/URL/base64 私有读取函数只返回 payload/media_type，删除未消费 metadata 与 source 状态；来源、大小、网络和媒体检查保留。提交 `68b08ec9`。
+- [x] Web 删除仅测试派发的 history/history_prepend action/分支，原测试改走生产 trajectory 路径；保留 snapshot、history_updated、loading 和游标。提交 `d3c6bae8`。四项实际生产代码共净减 40 行，不把审计估算当成果。
+- [x] Python Agent 切换/真实 context memory/任务完成分页与 fork 三个定向节点 3 passed / exit0（`/tmp/xbot-product-clean-python-focused.log`、`.exit`）；图片读取 4 passed / actual0（`/tmp/xbot-product-clean-media-test.log`）；Web reducer 62 passed / actual0（`/tmp/xbot-product-clean-web-state-test.log`）。未重复旧全套或压力测试。
+
+### Web 产品改进
+
+- [x] 主代理先看真实服务截图 `/tmp/xbot-product-web-preview/`：790px 的侧栏与空详情挤窄正文，390px 的侧栏遮挡内容，原 overflow 数值检查未揭示问题。统一 frame 的 JS/CSS 断点到 820px，窄屏侧栏由单一 owner 管理覆盖/隐藏，默认不占空详情列，选工具才打开；切换 session/thread 清除选择。搜索接回现有样式，分页操作去掉多层视觉覆盖，移除已被无条件覆盖的旧 composer 样式。
+- [x] 队列编辑、Agent/effort 菜单和设置中的 Escape 只关闭当前操作，阻止冒泡误中断；侧栏 Escape 关闭并恢复菜单焦点。隐藏导航不再获取键盘焦点；目录加载/失败/Retry 有明确呈现，初次连接显示 Connecting。无会话时模型不再预选目录第一项，已有会话只显示实际 Agent/provider/model。回合行不再重复打印内部事件代码，原代码保留在 title。主要产品提交 `f0b9bb58`。
+- [x] 实际通过 Settings 切暗色发现白底浅字；原因是 vendored body 变量覆盖应用 :root 继承。应用 token 移到同一 body 作用域，现有主题偏好同步 vendor 暗色属性，vendored 文件未改；真实暗色背景 rgb(15,17,21)、正文 rgb(244,247,251)，不是只检查 data-theme。
+- [x] 相关组件分段定向验证通过：Sidebar/Queue 7、Sidebar/Frame 7、790px 新节点 1（同文件另 5 skipped）、Composer 8、Context 行 4、Settings 4、初始连接状态 1。日志为 `/tmp/xbot-product-web-{unit,layout-unit,tablet-unit,composer-final,context-test,status-theme,status-only}.log`，相应 actualexit/exit 均0；集合有交集，不累计为全套。Composer 初次测试因编辑脚本路径错误仍运行旧断言而 exit1，原 `...composer-test.log/.exit` 保留，之后仅复验受影响组件。
+- [x] 初次 mock 浏览器的两个队列节点失败，根因是旧 flat session fixture 不符当前 result.data 契约；无生产 fallback。只迁移本轮会话/trajectory/jobs/queue 所需 fixture，提交 `dcfe49f4`。最终 desktop/mobile queue 与 mobile sidebar 共 3 passed / 1 desktop skipped，exit0（`/tmp/xbot-product-web-fixtures-final.log`、`.exit`）；首轮失败 `...web-e2e.log` 及中间 `...fixtures-run1.log` 保留。其他旧 mock 场景未全部迁移，README 如实说明，不宣称整个 e2e 全绿。
+
+### 生产资源与真实浏览器验收
+
+- [x] 初次 `npm run build` exit0（`/tmp/xbot-product-web-build.log/.exit`）。生产入口 `.venv/bin/xbot web --server http://127.0.0.1:4097 --web-port 4178 --no-open --data-dir /tmp/xbot-product-web-final-client` 提供编译资源，API 用生产 loader 和一次性数据、受控 MockLLM；不是 Vite 页面或外部 provider 测试。
+- [x] 核心真实流程基于 `dcfe49f485a08f3c481944a5b58e32ecb0d53199` 完成，`/tmp/xbot-product-web-final-run3.log/.exit` actual0，结果/实际历史 JSON 和 PNG 在 `/tmp/xbot-product-web-final-run3/`：审批重载恢复、正在运行时队列取消/保存和设置 Escape（0 次 interrupt 请求）、已编辑用户轮持久化、图片、工具详情、切换清选及恢复、undo/clear 与服务端记录一致。初次驱动漏设请求 baseURL 在第一条消息前 exit1，错误续接空会话的尝试也 exit1；原 `...final-run.log/.exit`、`...final-run2.log/.exit` 保留，不当作产品通过证据。
+- [x] 主代理看最终截图后继续修实际遮挡：Latest activity 由固定 bottom/负 margin 改为顶部独立 sticky 操作行（`d0803a26`），统计行用当前主题实色背景防止正文透字（`03a1650a`）。Timeline 原滚动测试 8 passed / actual0（`/tmp/xbot-product-web-latest-layout.log/.actualexit`）；新 TS/布局完整构建 exit0（`...latest-build.log/.exit`），之后仅 CSS 资源构建 exit0（`...css-build.log/.exit`），未重复 tsc。
+- [x] 仅续验受影响布局：独立真实长会话的 desktop/790px/mobile/10行草稿均无按钮覆盖，可点回最新，actual0（`/tmp/xbot-product-web-scroll.log/.exit`、目录内 result.json/PNG）。同一会话再仅检查统计背景明暗均不透明、与主题一致，actual0（`/tmp/xbot-product-web-css-review.log/.exit`、目录内 JSON/PNG）。主代理实际看过最终明暗手机、多行草稿与桌面图片；没有重做已通过审批、队列或历史业务。
+- [x] 额外真实缺陷：空闲会话恢复 20 秒仍显示 Reconnecting（首次失败仅工具终态，无独立日志）。实际 `/tmp/xbot-product-web-idle-observation.json` 表明 session SSE 200、catalog 已连。另一 Terra 直连/代理首帧与空闲探针均 actual0（`...web-proxy-probe.log`、`...web-proxy-idle.log`），排除代理缓冲；原因是前端只有新业务事件才标连接。修复在成功且 body 可读的 HTTP 边界通知连接，保留 generation/abort、cursor gap 与原失败路径，无合成协议帧或额外轮询。提交 `be59b1fd`。
+- [x] 连接相关两文件 7 passed / exit0（`/tmp/xbot-product-web-reconnect-unit.log/.exit`），源码变化后的完整构建 exit0（`...reconnect-build.log/.exit`）。同一真实空闲会话恢复并刷新均 Connected，未发送新消息，actual0（`/tmp/xbot-product-web-idle-final.log/.exit`、`.json`）。主代理看过 `/tmp/xbot-product-web-css-review/desktop-connected-final.png`；最终源码评估点 `be59b1fdc8c3cee4a73f89f94d22f6b402bd45be`，分段证据按各自受影响提交记录，不冒充该提交的一次全业务全套。
+- [x] 生产 Web CLI 已正常退出（工具 actual0）；一次性 API fixture 在 SIGINT 后仍有后台线程，清退本轮自有进程后的工具终态为1，未称其正常退出。临时原始数据库随 fixture 清理，保留的是实际导出 JSON、截图和日志，没有重建历史数据库。用户未跟踪设计稿与 `.worktrees/` 保留；不提交 build/cache/本地证据、不推送、不合并 main。后续只改本日志/用户文档。
