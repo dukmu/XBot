@@ -214,15 +214,15 @@ async def _read_media(
         )
     try:
         if url is not None:
-            payload, media_type, _ = await _read_image_url(
+            payload, media_type = await _read_image_url(
                 url, media_type, sandbox
             )
         elif path:
-            payload, media_type, _ = await _read_image_path(
+            payload, media_type = await _read_image_path(
                 path, media_type, sandbox
             )
         else:
-            payload, media_type, _ = _decode_image_data(
+            payload, media_type = _decode_image_data(
                 str(data or ""), media_type
             )
         if len(payload) > MAX_CONTENT_BYTES:
@@ -254,7 +254,7 @@ async def _read_image_path(
     path: str,
     media_type: str | None,
     sandbox: SandboxPort | None,
-) -> tuple[bytes, str | None, dict[str, JsonValue]]:
+) -> tuple[bytes, str | None]:
     data = await _operation("read_bytes", {"path": path}, sandbox)
     if not data.get("ok"):
         error = data.get("error") or {}
@@ -277,7 +277,6 @@ async def _read_image_path(
     return (
         base64.b64decode(encoded),
         media_type or str(data.get("media_type") or ""),
-        {"path": path},
     )
 
 
@@ -285,7 +284,7 @@ async def _read_image_url(
     url: str,
     media_type: str | None,
     sandbox: SandboxPort | None,
-) -> tuple[bytes, str | None, dict[str, JsonValue]]:
+) -> tuple[bytes, str | None]:
     if sandbox is None:
         # Fail closed: with no policy to consult, URL media reads cannot be
         # assumed open.
@@ -342,13 +341,13 @@ async def _read_image_url(
             raise
         except Exception as exc:
             raise _ImageError("url_error", f"URL fetch failed: {exc}") from exc
-    return b"".join(chunks), media_type or content_type, {"url": url.strip()}
+    return b"".join(chunks), media_type or content_type
 
 
 def _decode_image_data(
     value: str,
     media_type: str | None,
-) -> tuple[bytes, str | None, dict[str, JsonValue]]:
+) -> tuple[bytes, str | None]:
     raw = value.strip()
     if raw.startswith("data:"):
         header, separator, encoded = raw.partition(",")
@@ -360,17 +359,15 @@ def _decode_image_data(
         header_media_type = header[5:-len(";base64")] or ""
         media_type = media_type or header_media_type
         encoded = "".join(encoded.split())
-        source = "data_url"
     else:
         encoded = "".join(raw.split())
-        source = "base64"
     try:
         payload = base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError) as exc:
         raise _ImageError("invalid_base64", "data is not valid base64") from exc
     if not payload:
         raise _ImageError("empty_content", "data contains no image bytes")
-    return payload, media_type, {"source": source}
+    return payload, media_type
 
 
 def _image_type(payload: bytes, media_type: str | None) -> str:
