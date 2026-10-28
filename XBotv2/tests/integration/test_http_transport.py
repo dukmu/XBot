@@ -250,6 +250,44 @@ async def test_message_cursor_rejects_invalid_positions(
 
 
 @pytest.mark.asyncio
+async def test_plugin_overlay_api_preserves_raw_content_and_rejects_invalid_writes(http_app) -> None:
+    async with XBotClient("http://test", transport=ASGITransport(app=http_app)) as sdk:
+        await sdk.open_session(session_id="overlay-document", thread_id="main")
+        original = await sdk.get_plugin_overlay("overlay-document", "main", scope="workspace")
+        raw = "plugins:\n  - id: terminal-client\n    disabled: true\n    optional: true\n    profiles: [client]\n"
+        saved = await sdk.save_plugin_overlay("overlay-document", "main", original.model_copy(update={"text": raw}))
+        assert saved.text == raw
+        with pytest.raises(XBotClientError) as conflict:
+            await sdk.save_plugin_overlay("overlay-document", "main", original)
+        assert conflict.value.status_code == 409
+        with pytest.raises(XBotClientError):
+            await sdk.save_plugin_overlay("overlay-document", "main", saved.model_copy(update={"text": "plugins: wrong"}))
+        assert (await sdk.get_plugin_overlay("overlay-document", "main", scope="workspace")).text == raw
+
+
+@pytest.mark.asyncio
+async def test_agent_document_api_saves_validates_and_refreshes_catalog(http_app) -> None:
+    async with XBotClient("http://test", transport=ASGITransport(app=http_app)) as sdk:
+        await sdk.open_session(session_id="agent-document", thread_id="main")
+        catalog = await sdk.list_agents("agent-document", "main")
+        name = catalog.active
+        document = await sdk.get_agent_document("agent-document", "main", name, scope="workspace")
+        metadata = dict(document.metadata)
+        metadata["description"] = "Edited Agent definition"
+        changed = document.model_copy(update={"metadata": metadata, "prompt": "Updated prompt."})
+        saved = await sdk.update_agent_document("agent-document", "main", changed)
+        assert saved.prompt == "Updated prompt."
+        assert next(agent for agent in (await sdk.list_agents("agent-document", "main")).agents if agent.name == name).description == "Edited Agent definition"
+        with pytest.raises(XBotClientError) as conflict:
+            await sdk.update_agent_document("agent-document", "main", changed)
+        assert conflict.value.status_code == 409
+        invalid = saved.model_copy(update={"metadata": {"mode": "invalid", "description": "Bad"}})
+        with pytest.raises(XBotClientError):
+            await sdk.update_agent_document("agent-document", "main", invalid)
+        assert (await sdk.get_agent_document("agent-document", "main", name, scope="workspace")) == saved
+
+
+@pytest.mark.asyncio
 async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app) -> None:
     async with XBotClient(
         "http://test",
@@ -316,6 +354,24 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
         assert [rule.tool_pattern for rule in cleared.permissions.rules] == ["read"]
         assert cleared.sandbox.network is True
         assert (await sdk.get_session_policy("sdk-policy")) == cleared
+
+        from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
+        from XBotv2.sandbox.api.models import SandboxConfig, SandboxResourceConfig
+        replaced = await sdk.update_session_policy(
+            "sdk-policy",
+            replace_permissions=PermissionPolicy(default_decision="deny", rules=(
+                PermissionRule(tool_pattern="shell", decision="allow", param_patterns={"command": "echo .*"}),
+            )),
+            replace_sandbox=SandboxConfig(network=False, resources=[
+                SandboxResourceConfig(path="/tmp/example", access="readonly"),
+            ]),
+        )
+        assert replaced.permissions.default_decision == "deny"
+        assert replaced.permissions.rules[0].param_patterns == {"command": "echo .*"}
+        assert replaced.sandbox.resources[0].path == "/tmp/example"
+        assert ctx.require(PERMISSIONS).check("other") == "deny"
+        assert ctx.require(SANDBOX).network is False
+        assert (await sdk.get_session_policy("sdk-policy")) == replaced
 
 
 @pytest.mark.asyncio

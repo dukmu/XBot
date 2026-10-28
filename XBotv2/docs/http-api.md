@@ -247,9 +247,14 @@ name or declaration alone.
 |---|---|---|---|
 | GET | `/sessions/{session_id}/threads/{thread_id}/agents` | `list_agents` | `AgentListResponse` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/agent` | `select_agent` | `AgentSelectionResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/agent-definitions` | `list_agent_definitions` | `AgentDefinitionNames` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/agent-definitions/{name}` | `get_agent_definition` | `AgentDocument` |
+| PUT | `/sessions/{session_id}/threads/{thread_id}/agent-definitions/{name}` | `save_agent_definition` | `AgentDocument` |
 | GET | `/providers` | `list_providers` | `ProviderCatalog` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/provider` | `select_provider` | `ProviderSelectionResponse` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/effort` | `select_effort` | `EffortSelectionResponse` |
+
+Agent source documents select global or workspace scope and include raw frontmatter, prompt text, and a revision. Saves validate the definition, reject stale revisions, and refresh the current session's Agent catalogs; an active Agent must be selected again to use the new definition. Other existing sessions retain their mounted catalogs.
 
 ## Policy, Todo, and jobs
 
@@ -262,10 +267,16 @@ name or declaration alone.
 | POST | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_jobs` | `JobStopResponse` |
 
+The policy PATCH accepts `replace_permissions` and `replace_sandbox` for complete validated session policy replacements. A replacement cannot be combined with a partial patch for the same policy. Successful changes are persisted and propagated to active session threads.
+
 ## Plugin configuration
+
+GET and PUT `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` read and replace the raw global, workspace, or session plugin overlay. The document carries a revision; stale writes are rejected. The server validates loader structure before an atomic write; plugin-specific configuration is validated when its plugin next mounts. Structural changes take effect when the relevant plugins next mount; restart the server or client as appropriate.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
+| GET | `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` | `get_plugin_overlay` | `PluginOverlayDocument` |
+| PUT | `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` | `save_plugin_overlay` | `PluginOverlayDocument` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/plugin-config?scope=global\|workspace\|session` | `list_plugin_config` | `PluginConfigCatalog` |
 | PATCH | `/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}?scope=global\|workspace\|session` | `update_plugin_config` | updated `PluginConfigCatalog` |
 

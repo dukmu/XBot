@@ -83,6 +83,8 @@ class PatchPluginConfig(StrictModel):
 
 @dataclass(frozen=True, slots=True)
 class PatchPolicy:
+    replace_permissions: dict[str, JsonValue] | None = None
+    replace_sandbox: dict[str, JsonValue] | None = None
     permissions: dict[str, str] | None = None
     remove_permissions: tuple[str, ...] = ()
     sandbox: dict[str, JsonValue] | None = None

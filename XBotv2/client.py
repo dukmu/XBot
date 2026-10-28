@@ -7,14 +7,16 @@ from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 import httpx
 from pydantic import JsonValue, TypeAdapter
-from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
+from XBotv2.agents.api.protocol import AgentDefinitionNames, AgentDocument, AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
 from XBotv2.agentloop.api.protocol import ToolListResponse
-from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
+from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, PluginOverlayDocument, SessionPolicyPatch, SessionPolicyResponse
 from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
 from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
 from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
 from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
 from XBotv2.llm.api.contracts import ProviderCatalog
+from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
 from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, MediaInput
@@ -193,6 +195,15 @@ class XBotClient:
             "GET", f"/sessions/{_segment(session_id)}", SessionSummary
         )
 
+    async def list_agent_definitions(self, session_id: str, thread_id: str) -> AgentDefinitionNames:
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/agent-definitions", AgentDefinitionNames)
+
+    async def get_agent_document(self, session_id: str, thread_id: str, name: str, *, scope: Literal["global", "workspace"]) -> AgentDocument:
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/agent-definitions/{_segment(name)}", AgentDocument, params={"scope": scope})
+
+    async def update_agent_document(self, session_id: str, thread_id: str, document: AgentDocument) -> AgentDocument:
+        return await self._request("PUT", f"{thread_path(session_id, thread_id)}/agent-definitions/{_segment(document.name)}", AgentDocument, document)
+
     async def get_session_policy(self, session_id: str) -> SessionPolicyResponse:
         return await self._request(
             "GET",
@@ -208,18 +219,28 @@ class XBotClient:
         remove_permissions: list[str] | None = None,
         sandbox: dict[SandboxKey, SandboxValue] | None = None,
         remove_sandbox: list[SandboxKey] | None = None,
+        replace_permissions: PermissionPolicy | None = None,
+        replace_sandbox: SandboxConfig | None = None,
     ) -> SessionPolicyResponse:
         return await self._request(
             "PATCH",
             f"/sessions/{_segment(session_id)}/policy",
             SessionPolicyResponse,
             SessionPolicyPatch(
+                replace_permissions=replace_permissions,
+                replace_sandbox=replace_sandbox,
                 permissions=permissions or {},
                 remove_permissions=remove_permissions or [],
                 sandbox=sandbox or {},
                 remove_sandbox=remove_sandbox or [],
             ),
         )
+
+    async def get_plugin_overlay(self, session_id: str, thread_id: str, *, scope: PluginConfigScope) -> PluginOverlayDocument:
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/plugin-overlay", PluginOverlayDocument, params={"scope": scope})
+
+    async def save_plugin_overlay(self, session_id: str, thread_id: str, document: PluginOverlayDocument) -> PluginOverlayDocument:
+        return await self._request("PUT", f"{thread_path(session_id, thread_id)}/plugin-overlay", PluginOverlayDocument, document)
 
     async def list_plugin_config(
         self,

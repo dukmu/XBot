@@ -86,6 +86,13 @@ class AgentCatalog(AgentCatalogPort):
             layer.pop(name, None)
         return removed
 
+    def replace_file_definition(self, definition: AgentDefinition, *, overlay: bool) -> None:
+        layer = self._overlay if overlay else self._base
+        layer[definition.name] = definition
+
+    def get_base(self, name: str) -> AgentDefinition | None:
+        return self._base.get(name)
+
     def get(self, name: str) -> AgentDefinition | None:
         return self._overlay.get(name) or self._base.get(name)
 

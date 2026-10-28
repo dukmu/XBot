@@ -9,6 +9,7 @@ import yaml
 from pydantic import BaseModel, JsonValue
 from XBotv2.loader.api.configuration import plugin_config_json_schema, validate_plugin_config
 from XBotv2.loader.api.tree import resolve_agent_tree
+from XBotv2.config.api.protocol import PluginOverlayDocument
 from XBotv2.config.api.contracts import (
     PatchPluginConfig,
     PluginConfigCatalog,
@@ -105,6 +106,24 @@ def update_plugin_config(
         yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
     )
     return plugin_config_catalog(paths, workspace, patch.scope, session_id, loader=loader)
+
+
+def read_overlay_document(paths: RuntimePaths, workspace_root: Path | str, scope: PluginConfigScope, session_id: str | None) -> PluginOverlayDocument:
+    path = _overlay_path(paths, Path(workspace_root).resolve(), scope, session_id)
+    return PluginOverlayDocument(scope=scope, revision=_revision(path), text=path.read_text(encoding="utf-8") if path.exists() else "plugins: []\n")
+
+
+def write_overlay_document(paths: RuntimePaths, workspace_root: Path | str, document: PluginOverlayDocument, session_id: str | None) -> PluginOverlayDocument:
+    path = _overlay_path(paths, Path(workspace_root).resolve(), document.scope, session_id)
+    if _revision(path) != document.revision:
+        raise PluginConfigConflict("Plugin overlay changed on disk; reload before saving.")
+    try:
+        value = yaml.safe_load(document.text)
+        PluginOverlay.parse(value)
+    except (TypeError, ValueError, yaml.YAMLError) as exc:
+        raise ValueError(f"Invalid plugin overlay: {exc}") from exc
+    write_text_atomic(path, document.text)
+    return read_overlay_document(paths, workspace_root, document.scope, session_id)
 
 
 def _descriptor(

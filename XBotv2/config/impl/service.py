@@ -116,6 +116,8 @@ class ConfigService(SettingsPort):
         policy = patch_session_policy(
             paths=self.paths,
             session_id=self.session_id,
+            replace_permissions=patch.replace_permissions,
+            replace_sandbox=patch.replace_sandbox,
             permissions=patch.permissions,
             remove_permissions=patch.remove_permissions,
             sandbox=patch.sandbox,

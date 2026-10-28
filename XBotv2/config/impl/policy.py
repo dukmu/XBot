@@ -26,6 +26,8 @@ def patch_session_policy(
     *,
     paths: RuntimePaths,
     session_id: str,
+    replace_permissions: dict[str, JsonValue] | None = None,
+    replace_sandbox: dict[str, JsonValue] | None = None,
     permissions: dict[str, str] | None = None,
     remove_permissions: Iterable[str] = (),
     sandbox: dict[str, JsonValue] | None = None,
@@ -34,7 +36,7 @@ def patch_session_policy(
     """Apply one session policy patch while preserving unrelated rules."""
     path = paths.session(session_id).config_file
     rows = _read_rows(path)
-    permission_config = dict(_plugin_config(rows, "permissions"))
+    permission_config = dict(replace_permissions if replace_permissions is not None else _plugin_config(rows, "permissions"))
     rules = list(permission_config.get("rules", []))
     for tool in (*remove_permissions, *(permissions or {})):
         pattern = re.escape(tool)
@@ -53,7 +55,7 @@ def patch_session_policy(
         permission_config["rules"] = rules
     else:
         permission_config.pop("rules", None)
-    sandbox_config = dict(_plugin_config(rows, "sandbox"))
+    sandbox_config = dict(replace_sandbox if replace_sandbox is not None else _plugin_config(rows, "sandbox"))
     for key in remove_sandbox:
         sandbox_config.pop(key, None)
     sandbox_config.update(sandbox or {})

@@ -1,7 +1,7 @@
 """Transport models owned by this plugin."""
 from __future__ import annotations
 from typing import Literal
-from pydantic import Field
+from pydantic import Field, JsonValue
 from XBotv2.protocol.api.models import WireModel
 from XBotv2.agents.api.contracts import AgentDefinition, AgentModelPolicy, AgentToolPolicy
 from XBotv2.core.api.domain import AgentExecutionLimits
@@ -43,3 +43,15 @@ class AgentSelectionResponse(WireModel):
     model: str
     model_mode: str = ""
     context_window: int = Field(ge=0)
+
+
+class AgentDefinitionNames(WireModel):
+    names: list[str]
+
+
+class AgentDocument(WireModel):
+    name: str
+    scope: Literal["global", "workspace"]
+    revision: str
+    metadata: dict[str, JsonValue]
+    prompt: str

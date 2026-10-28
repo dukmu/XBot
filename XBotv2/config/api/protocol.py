@@ -26,6 +26,8 @@ SandboxValue = StrictBool | SandboxAccess
 
 
 class SessionPolicyPatch(WireModel):
+    replace_permissions: PermissionPolicy | None = None
+    replace_sandbox: SandboxConfig | None = None
     permissions: dict[str, PermissionDecision] = Field(default_factory=dict)
     remove_permissions: list[str] = Field(default_factory=list)
     sandbox: dict[SandboxKey, SandboxValue] = Field(default_factory=dict)
@@ -49,6 +51,10 @@ class SessionPolicyPatch(WireModel):
 
     @model_validator(mode="after")
     def _validate_policy_patch(self) -> "SessionPolicyPatch":
+        if self.replace_permissions is not None and (self.permissions or self.remove_permissions):
+            raise ValueError("cannot combine replacement and permission patch")
+        if self.replace_sandbox is not None and (self.sandbox or self.remove_sandbox):
+            raise ValueError("cannot combine replacement and sandbox patch")
         permission_overlap = set(self.permissions).intersection(
             self.remove_permissions
         )
@@ -74,3 +80,9 @@ class SessionPolicyResponse(WireModel):
 class PluginConfigPatchRequest(WireModel):
     revision: str = Field(min_length=1)
     config: dict[str, JsonValue] = Field(default_factory=dict)
+
+
+class PluginOverlayDocument(WireModel):
+    scope: Literal["global", "workspace", "session"]
+    revision: str = Field(min_length=1)
+    text: str

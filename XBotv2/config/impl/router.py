@@ -18,13 +18,13 @@ from XBotv2.config.api.contracts import (
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config
+from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config, read_overlay_document, write_overlay_document
 from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.session.api.contracts import SessionsPort
 from XBotv2.config.api.protocol import (
-    PluginConfigPatchRequest, SessionPolicyPatch, SessionPolicyResponse,
+    PluginConfigPatchRequest, PluginOverlayDocument, SessionPolicyPatch, SessionPolicyResponse,
 )
 
 def _policy_response(
@@ -76,7 +76,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIR
         payload: SessionPolicyPatch,
     ) -> SessionPolicyResponse:
         thread_id = await _main_thread_id(session_id)
-        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(UPDATE_POLICY, PatchPolicy(permissions=dict(payload.permissions) or None, remove_permissions=tuple(payload.remove_permissions), sandbox=dict(payload.sandbox) or None, remove_sandbox=tuple(payload.remove_sandbox)))
+        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(UPDATE_POLICY, PatchPolicy(replace_permissions=payload.replace_permissions.model_dump(mode="json") if payload.replace_permissions is not None else None, replace_sandbox=payload.replace_sandbox.model_dump(mode="json") if payload.replace_sandbox is not None else None, permissions=dict(payload.permissions) or None, remove_permissions=tuple(payload.remove_permissions), sandbox=dict(payload.sandbox) or None, remove_sandbox=tuple(payload.remove_sandbox)))
         return _policy_response(session_id, snapshot)
 
     @router.get(
@@ -124,6 +124,21 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIR
             raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc
         except PluginConfigUnavailable as exc:
             raise HttpServerError("plugin_config_unavailable", str(exc), status=400) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/plugin-overlay", operation_id="get_plugin_overlay")
+    async def get_plugin_overlay(session_id: str, thread_id: str, scope: PluginConfigScope = Query(default="workspace")) -> PluginOverlayDocument:
+        thread = await sessions.thread_summary(session_id, thread_id)
+        return read_overlay_document(paths, thread.workspace_root, scope, session_id)
+
+    @router.put("/sessions/{session_id}/threads/{thread_id}/plugin-overlay", operation_id="save_plugin_overlay")
+    async def save_plugin_overlay(session_id: str, thread_id: str, payload: PluginOverlayDocument) -> PluginOverlayDocument:
+        thread = await sessions.thread_summary(session_id, thread_id)
+        try:
+            return write_overlay_document(paths, thread.workspace_root, payload, session_id)
+        except PluginConfigConflict as exc:
+            raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc
         except ValueError as exc:
             raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
 
