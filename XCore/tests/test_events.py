@@ -6,8 +6,8 @@ import asyncio
 
 import pytest
 
-from xcore import Context
-from xcore.events import is_bailed
+from xcore.api.context import Context
+from xcore.api.event_bus import is_bailed
 
 
 class Session:
@@ -33,6 +33,32 @@ async def test_prepend_inserts_at_head():
     ctx.on("evt", lambda s: order.append("c"), prepend=True)
     await ctx.emit("evt", None)
     assert order == ["c", "b", "a"]
+
+
+async def test_append_after_prepend_preserves_both_registration_orders():
+    ctx = Context()
+    order = []
+    ctx.on("evt", lambda: order.append("first"))
+    ctx.on("evt", lambda: order.append("second"))
+    ctx.on("evt", lambda: order.append("before"), prepend=True)
+    ctx.on("evt", lambda: order.append("last"))
+    await ctx.emit("evt")
+    assert order == ["before", "first", "second", "last"]
+
+
+async def test_disposing_shared_callback_preserves_other_subscription():
+    ctx = Context()
+    calls = []
+
+    def listener(session):
+        calls.append(session.platform)
+
+    ctx.select("platform", "qq").on("evt", listener)
+    dispose = ctx.select("platform", "other").on("evt", listener)
+    dispose()
+    await ctx.emit("evt", Session("qq"))
+    await ctx.emit("evt", Session("other"))
+    assert calls == ["qq"]
 
 
 async def test_once_fires_single_time_even_across_dispatches():

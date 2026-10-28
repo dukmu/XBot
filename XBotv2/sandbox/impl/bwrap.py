@@ -1,0 +1,185 @@
+"""Bubblewrap execution backend for XBotv2 sandboxing.
+
+The backend receives mount specs from SandboxPolicy and enforces
+them via bubblewrap process isolation. It does not inspect tool
+arguments or make access decisions.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import os
+import signal
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from pathlib import Path
+from typing import BinaryIO, Iterable, Literal
+
+
+@dataclass(frozen=True)
+class SandboxMountSpec:
+    source: Path
+    target: Path
+    access: Literal["readonly", "readwrite"]
+    kind: Literal["file", "dir"]
+    mask: bool = False
+
+
+@dataclass(frozen=True)
+class BubblewrapBackend:
+    workspace_root: Path
+    network: bool = True
+
+    def process_args(
+        self,
+        payload: list[str],
+        mount_specs: Iterable[SandboxMountSpec],
+        cwd: str | None = None,
+    ) -> list[str]:
+        bwrap = shutil.which("bwrap")
+        if not bwrap:
+            raise RuntimeError("Sandbox enabled but bubblewrap (bwrap) is not installed")
+
+        return [
+            bwrap,
+            *_build_args(
+                mount_specs,
+                self.network,
+                cwd or str(self.workspace_root),
+            ),
+            "--",
+            *payload,
+        ]
+
+    async def run_to_file(
+        self, payload, mount_specs, output: Path, *, cwd=None,
+    ) -> int:
+        """Capture bytes from process launch, without decoding or buffering output."""
+        with output.open("wb") as writer:
+            proc = subprocess.Popen(
+                self.process_args(payload, mount_specs, cwd),
+                stdin=subprocess.DEVNULL, stdout=writer, stderr=subprocess.STDOUT,
+                start_new_session=os.name == "posix",
+            )
+            try:
+                await _wait_process(proc)
+            except BaseException:
+                if proc.poll() is None:
+                    _kill_process_group(proc)
+                await _wait_process(proc)
+                raise
+        return proc.returncode
+
+    async def run(
+        self,
+        payload: list[str],
+        mount_specs: Iterable[SandboxMountSpec],
+        cwd: str | None = None,
+        stdin: str | None = None,
+    ) -> str:
+        with (
+            tempfile.TemporaryFile() as stdin_file,
+            tempfile.TemporaryFile() as stdout_file,
+            tempfile.TemporaryFile() as stderr_file,
+        ):
+            if stdin is not None:
+                stdin_file.write(stdin.encode("utf-8"))
+                stdin_file.seek(0)
+            proc = subprocess.Popen(
+                self.process_args(payload, mount_specs, cwd),
+                stdin=stdin_file,
+                stdout=stdout_file,
+                stderr=stderr_file,
+                start_new_session=os.name == "posix",
+            )
+            try:
+                await _wait_process(proc)
+            except BaseException:
+                if proc.poll() is None:
+                    _kill_process_group(proc)
+                await _wait_process(proc)
+                raise
+            stdout_file.seek(0)
+            stderr_file.seek(0)
+            stdout = _read_output(stdout_file)
+            stderr = _read_output(stderr_file)
+        if proc.returncode:
+            detail = stderr.strip() or stdout.strip() or "no error output"
+            raise RuntimeError(f"Sandbox command failed with exit code {proc.returncode}: {detail}")
+        return stdout
+
+
+async def _wait_process(proc: subprocess.Popen[bytes]) -> None:
+    while proc.poll() is None:
+        await asyncio.sleep(0.05)
+
+
+def _kill_process_group(proc: subprocess.Popen[bytes]) -> None:
+    try:
+        if os.name == "posix":
+            os.killpg(proc.pid, signal.SIGKILL)
+        else:
+            proc.kill()
+    except ProcessLookupError:
+        pass
+
+
+def _read_output(file: BinaryIO) -> str:
+    return file.read().decode("utf-8", errors="replace")
+
+
+def _build_args(
+    mount_specs: Iterable[SandboxMountSpec],
+    network: bool,
+    cwd: str,
+) -> list[str]:
+    mounts = sorted(mount_specs, key=lambda mount: len(mount.target.parts))
+    root = next((mount for mount in mounts if mount.target == Path("/")), None)
+    root_args = (
+        ["--tmpfs", "/"] if root is not None and root.mask
+        else ["--bind" if root is not None and root.access == "readwrite" else "--ro-bind", "/", "/"]
+    )
+    args = [
+        "--die-with-parent",
+        "--unshare-user",
+        "--unshare-pid",
+        "--unshare-ipc",
+        "--unshare-uts",
+        "--unshare-cgroup",
+        "--new-session",
+        *root_args,
+        "--dev", "/dev",
+        "--proc", "/proc",
+        "--tmpfs", "/tmp",
+    ]
+    if network:
+        # Share the host network namespace so DNS and TCP egress
+        # work inside the sandbox. Without this, --unshare-net is
+        # the default and any HTTP/curl/etc. fails with
+        # ``Connection timed out`` (see issue from XBotv2.session
+        # 20260609-170727-7449 where the model spent 12 turns
+        # trying to reach the internet before falling back).
+        args.append("--share-net")
+    else:
+        args.append("--unshare-net")
+
+    for mount in mounts:
+        if mount.target == Path("/"):
+            continue
+        if mount.mask:
+            if mount.kind == "dir":
+                args.extend(["--tmpfs", str(mount.target), "--remount-ro", str(mount.target)])
+            else:
+                args.extend(["--ro-bind", "/dev/null", str(mount.target)])
+            continue
+        bind_flag = "--bind-try" if mount.access == "readwrite" else "--ro-bind-try"
+        args.extend([bind_flag, str(mount.source), str(mount.target)])
+
+    args.extend(["--chdir", cwd])
+    return args
+
+
+def backend_available() -> bool:
+    return shutil.which("bwrap") is not None

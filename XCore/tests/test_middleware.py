@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from xcore import Context
+from xcore.api.context import Context
 
 
 class Session:

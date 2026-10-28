@@ -1,18 +1,20 @@
+import { projectUsage } from "./wireProjection";
 import {
   EMPTY_USAGE,
   EMPTY_SESSION_STATS,
   type AgentInfo,
-  type HistoryItem,
-  type ImageReference,
+  type HistoryViewItem,
+  type ArtifactRef,
   type InteractionRequest,
   type JsonObject,
-  type OpenSessionResponse,
+  type SessionView,
   type PendingInput,
   type ProviderInfo,
-  type ServerEvent,
-  type TaskData,
+  type ViewEvent,
+  type JobData,
   type TodoItemData,
   type ThreadSummary,
+  type ThreadListPage,
   type ToolCall,
   type TrajectoryItem,
   type UsageData,
@@ -22,15 +24,48 @@ import {
 export type TimelineEntry = MessageEntry | ToolEntry | NoticeEntry | RuntimeEntry;
 type TimelineOrigin = "trajectory" | "live";
 
+// Bounds for the retained window.  They are deliberately larger than the
+// rendered window (Timeline keeps its own 160-entry slice) so that scrolling
+// inside the retained window never needs a round trip, while still being a
+// constant: 240 rendered entries and 240 raw records are what the client holds
+// regardless of session length.
+export const MAX_TIMELINE_ENTRIES = 240;
+export const MAX_TRAJECTORY_WINDOW = 240;
+
+/**
+ * Bound a rendered transcript at `MAX_TIMELINE_ENTRIES`.
+ *
+ * `keepTail` decides which end survives: a reader following the newest output
+ * keeps it, and a reader who paged back keeps the window they are reading.
+ * The subagent mirror uses this too, so no surface can accumulate a whole
+ * thread's transcript in memory.
+ */
+export function boundTranscriptEntries(
+  entries: TimelineEntry[],
+  keepTail: boolean,
+): TimelineEntry[] {
+  if (entries.length <= MAX_TIMELINE_ENTRIES) return entries;
+  return keepTail
+    ? entries.slice(entries.length - MAX_TIMELINE_ENTRIES)
+    : entries.slice(0, MAX_TIMELINE_ENTRIES);
+}
+
 export interface MessageEntry {
   id: string;
   origin?: TimelineOrigin;
+  // Absolute trajectory record position; only durable entries have one, and it
+  // is what the paging anchor is computed from.
+  position?: number;
   deliveryState?: "accepted" | "claimed" | "consumed";
   kind: "message";
   role: "user" | "assistant";
   content: string;
   reasoning: string;
   streaming: boolean;
+  /** Why the provider stopped; a cut-off reply sets "length"/"max_tokens". */
+  stopReason?: string;
+  /** Model timing for a settled reply (`llm_ms`, `ttft_ms`, `decode_ms`). */
+  timing?: Record<string, number>;
   images: MessageImage[];
   messageId: string;
 }
@@ -44,16 +79,19 @@ export interface MessageImage {
 export interface RuntimeEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "runtime";
   source: string;
   event: string;
   content: string;
   messageId?: string;
+  images?: MessageImage[];
 }
 
 export interface ToolEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "tool";
   toolCallId: string;
   name: string;
@@ -70,6 +108,7 @@ export interface ToolEntry {
 export interface NoticeEntry {
   id: string;
   origin?: TimelineOrigin;
+  position?: number;
   kind: "notice";
   level: "info" | "error";
   content: string;
@@ -82,59 +121,76 @@ export interface RuntimeState {
   catalogEventStreamConnected: boolean;
   loading: boolean;
   threads: ThreadSummary[];
+  threadCursor: string | null;
+  threadPreviousCursor: string | null;
+  threadNextCursor: string | null;
+  threadPageLoading: boolean;
   providers: ProviderInfo[];
   agents: AgentInfo[];
   current: RuntimeSession | null;
+  // The transcript is a bounded window around the reader's cursor, never a
+  // copy of the conversation: both the durable baseline (``trajectory``) and
+  // its rendered projection (``entries``) are capped, so memory and per-event
+  // work stay independent of how long the session has been running.
   entries: TimelineEntry[];
-  assistantDraft: MessageEntry | null;
+  // Position of the oldest retained trajectory record, used as the exclusive
+  // ``before`` anchor for the next older page.  It is authoritative where
+  // ``historyCursor`` is not: trimming the window invalidates the cursor's
+  // offset, so paging from it would silently skip the trimmed records.
+  windowAnchor: number | null;
+  // True while the window ends at the newest record, so live output is
+  // materialized.  Once the reader moves back, live output is counted in
+  // ``pendingNewer`` instead of evicting what they are reading.
+  atTail: boolean;
+  pendingNewer: number;
   historyCursor: string | null;
   historyLoading: boolean;
   trajectory: TrajectoryItem[];
   trajectoryLoaded: boolean;
-  tasks: Record<string, TaskData>;
+  jobs: Record<string, JobData>;
   todos: TodoItemData[];
   interactions: InteractionRequest[];
   usage: UsageData;
   sessionStats: SessionStatsData;
   turnRunning: boolean;
+  // A subagent thread is observed read-only: the runtime is attached to it for
+  // history and events, but the client never sends into it.
+  viewingSubagent: boolean;
   pendingInputs: PendingInput[];
-  deliveryStates: Record<string, MessageEntry["deliveryState"]>;
   error: string;
 }
 
 export type RuntimeSession = Omit<
-  OpenSessionResponse,
-  "history" | "history_cursor" | "status" | "usage" | "session_stats" | "pending_inputs"
+  SessionView,
+  "history" | "history_cursor" | "status" | "turn_status" | "usage" | "session_stats" | "pending_inputs" | "pending_interactions"
 >;
 
 export type RuntimeAction =
-  | { type: "loading"; value: boolean }
-  | { type: "server_reachable"; value: boolean }
+  | { type: "loading"; value: boolean }  | { type: "server_reachable"; value: boolean }
   | { type: "session_attached"; value: boolean }
   | { type: "event_stream"; value: boolean }
   | { type: "catalog_event_stream"; value: boolean }
-  | { type: "threads"; threads: ThreadSummary[] }
+  | { type: "thread_page"; page: ThreadListPage; cursor: string | null }
+  | { type: "thread_page_loading"; value: boolean }
   | { type: "providers"; providers: ProviderInfo[] }
   | { type: "agents"; agents: AgentInfo[] }
-  | { type: "opened"; session: OpenSessionResponse }
+  | { type: "opened"; session: SessionView }
   | { type: "session_deleted"; sessionId: string }
-  | { type: "thread_synced"; thread: ThreadSummary }
-  | { type: "history"; history: HistoryItem[]; nextCursor?: string | null }
-  | { type: "history_prepend"; history: HistoryItem[]; nextCursor: string | null; expectedCursor: string }
+  | { type: "thread_synced" | "thread_observed"; thread: ThreadSummary }
   | { type: "history_loading"; value: boolean }
-  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ServerEvent[] }
-  | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedCursor: string }
-  | { type: "tasks"; tasks: TaskData[] }
+  | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ViewEvent[] }
+  | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedAnchor: number | null }
+  | { type: "jobs"; jobs: JobData[] }
   | { type: "todos"; todos: TodoItemData[] }
   | { type: "pending_inputs"; items: PendingInput[] }
   | { type: "pending_input_failed"; messageId: string }
   | { type: "user_message"; id: string; content: string; images: MessageImage[] }
   | { type: "user_message_failed"; id: string }
-  | { type: "event"; event: ServerEvent }
-  | { type: "events"; events: ServerEvent[] }
+  | { type: "event"; event: ViewEvent }
+  | { type: "events"; events: ViewEvent[] }
   | { type: "turn_error"; message: string }
   | { type: "interaction_resolved"; requestId: string }
-  | { type: "remove_task"; taskId: string }
+  | { type: "remove_job"; jobId: string }
   | { type: "agent_selected"; agent: string; provider: string; model: string; modelMode: string; contextWindow: number }
   | { type: "provider_selected"; provider: string; model: string; modelMode: string }
   | { type: "effort_selected"; modelMode: string }
@@ -148,27 +204,109 @@ export const initialRuntimeState: RuntimeState = {
   catalogEventStreamConnected: false,
   loading: true,
   threads: [],
+  threadCursor: null,
+  threadPreviousCursor: null,
+  threadNextCursor: null,
+  threadPageLoading: false,
   providers: [],
   agents: [],
   current: null,
+  viewingSubagent: false,
   entries: [],
-  assistantDraft: null,
+  windowAnchor: null,
+  atTail: true,
+  pendingNewer: 0,
   historyCursor: null,
   historyLoading: false,
   trajectory: [],
   trajectoryLoaded: false,
-  tasks: {},
+  jobs: {},
   todos: [],
   interactions: [],
   usage: { ...EMPTY_USAGE },
   sessionStats: { ...EMPTY_SESSION_STATS },
   turnRunning: false,
   pendingInputs: [],
-  deliveryStates: {},
   error: "",
 };
 
 export function runtimeReducer(state: RuntimeState, action: RuntimeAction): RuntimeState {
+  return boundTranscriptWindow(applyRuntimeAction(state, action), action, state);
+}
+
+/**
+ * The single place that enforces "the client holds a window, not a history".
+ *
+ * Two invariants hold after every action: `entries` and `trajectory` are at
+ * most `MAX_*` long, and `windowAnchor` is the position of the oldest record
+ * the client can still page back from.  Keeping it here rather than at each
+ * append site means no future action can reintroduce unbounded growth.
+ */
+function boundTranscriptWindow(
+  next: RuntimeState,
+  action: RuntimeAction,
+  previous: RuntimeState,
+): RuntimeState {
+  if (next === previous) return next;
+  if (action.type === "event" || action.type === "events" || action.type === "user_message") {
+    // Away from the tail the transcript is frozen: a live frame that would
+    // append or rewrite entries is counted instead, so the history the reader
+    // scrolled back to is not evicted underneath them.  Frames that only
+    // change non-transcript state (usage, jobs, todos, turn status) still
+    // apply, and the counter only moves when rendered content would have.
+    if (!previous.atTail && next.entries !== previous.entries) {
+      return boundArrays({
+        ...next,
+        entries: previous.entries,
+        pendingNewer: previous.pendingNewer + 1,
+      });
+    }
+  }
+  return boundArrays(next);
+}
+
+function boundArrays(state: RuntimeState): RuntimeState {
+  let next = state;
+  if (next.trajectory.length > MAX_TRAJECTORY_WINDOW) {
+    // At the tail the newest records matter; once the reader is inside history
+    // the retained front is what they are reading.
+    const trajectory = next.atTail
+      ? next.trajectory.slice(next.trajectory.length - MAX_TRAJECTORY_WINDOW)
+      : next.trajectory.slice(0, MAX_TRAJECTORY_WINDOW);
+    next = { ...next, trajectory, windowAnchor: oldestPosition(trajectory) };
+  }
+  const entries = boundTranscriptEntries(next.entries, next.atTail);
+  if (entries !== next.entries) next = { ...next, entries };
+  // Dropping front entries also drops the records they rendered, so the anchor
+  // has to advance with them; otherwise the next older page would start before
+  // the dropped records and leave a gap in the transcript.
+  const retained = oldestRetainedPosition(next.entries);
+  if (retained !== null) {
+    if (next.windowAnchor === null || retained > next.windowAnchor) {
+      next = { ...next, windowAnchor: retained };
+    }
+  } else if (next.windowAnchor !== null && next.entries.length) {
+    // Every retained entry is live output, so the window front has no durable
+    // position to page from.  Recording that as "no anchor" makes the next
+    // older request re-anchor on a fresh page instead of paging from a
+    // position the client no longer displays.
+    next = { ...next, windowAnchor: null };
+  }
+  return next;
+}
+
+function oldestPosition(items: TrajectoryItem[]): number | null {
+  return items.length ? items[0].position : null;
+}
+
+function oldestRetainedPosition(entries: TimelineEntry[]): number | null {
+  for (const entry of entries) {
+    if (entry.position !== undefined) return entry.position;
+  }
+  return null;
+}
+
+function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): RuntimeState {
   switch (action.type) {
     case "loading":
       return { ...state, loading: action.value };
@@ -180,8 +318,17 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return { ...state, eventStreamConnected: action.value };
     case "catalog_event_stream":
       return { ...state, catalogEventStreamConnected: action.value };
-    case "threads":
-      return { ...state, threads: action.threads, ...currentThreadProjection(state, action.threads) };
+    case "thread_page":
+      return {
+        ...state,
+        threads: action.page.threads,
+        threadCursor: action.cursor,
+        threadPreviousCursor: action.page.previous_cursor,
+        threadNextCursor: action.page.next_cursor,
+        threadPageLoading: false,
+      };
+    case "thread_page_loading":
+      return { ...state, threadPageLoading: action.value };
     case "providers":
       return { ...state, providers: action.providers };
     case "agents":
@@ -192,20 +339,27 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         sessionAttached: true,
         loading: false,
         current: runtimeSession(action.session),
+        threads: [],
+        threadCursor: null,
+        threadPreviousCursor: null,
+        threadNextCursor: null,
+        threadPageLoading: false,
         entries: historyEntries(action.session.history),
-        assistantDraft: null,
+        windowAnchor: null,
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: action.session.history_cursor ?? null,
         historyLoading: false,
         trajectory: [],
         trajectoryLoaded: false,
+        viewingSubagent: false,
         usage: normalizeUsage(action.session.usage),
         sessionStats: normalizeSessionStats(action.session.session_stats),
-        interactions: [],
-        tasks: {},
+        interactions: pendingInteractions(action.session.pending_interactions),
+        jobs: {},
         todos: [],
-        turnRunning: false,
+        turnRunning: action.session.turn_status === "running",
         pendingInputs: action.session.pending_inputs || [],
-        deliveryStates: Object.fromEntries((action.session.pending_inputs || []).map((item) => [item.message_id, "accepted"])),
         error: "",
       };
     case "session_deleted":
@@ -218,27 +372,35 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         sessionAttached: false,
         eventStreamConnected: false,
         threads: [],
+        threadCursor: null,
+        threadPreviousCursor: null,
+        threadNextCursor: null,
+        threadPageLoading: false,
         agents: [],
         current: null,
         entries: [],
-        assistantDraft: null,
+        windowAnchor: null,
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: null,
         historyLoading: false,
         trajectory: [],
         trajectoryLoaded: false,
-        tasks: {},
+        jobs: {},
         todos: [],
         interactions: [],
         usage: { ...EMPTY_USAGE },
         sessionStats: { ...EMPTY_SESSION_STATS },
         turnRunning: false,
         pendingInputs: [],
-        deliveryStates: {},
         error: "",
       };
     case "thread_synced":
-      return state.current ? {
+    case "thread_observed":
+      return state.current && state.current.session_id === action.thread.session_id
+        && state.current.thread_id === action.thread.thread_id ? {
         ...state,
+        threads: state.threads.map((thread) => thread.thread_id === action.thread.thread_id ? action.thread : thread),
         current: {
           ...state.current,
           agent_name: action.thread.agent,
@@ -248,45 +410,40 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
           context_window: action.thread.context_window,
           status_slots: action.thread.status_slots,
         },
-        usage: normalizeUsage(action.thread.usage),
-        sessionStats: normalizeSessionStats(action.thread.session_stats),
-        turnRunning: action.thread.turn_status === "running",
+        usage: action.type === "thread_observed"
+          ? mergeLiveUsage(state.usage, projectUsage(action.thread.usage))
+          : projectUsage(action.thread.usage),
+        sessionStats: action.type === "thread_observed"
+          ? mergeLiveStats(state.sessionStats, action.thread.session_stats)
+          : normalizeSessionStats(action.thread.session_stats),
+        turnRunning: action.type === "thread_observed"
+          ? state.turnRunning : action.thread.turn_status === "running",
+        viewingSubagent: action.thread.kind === "subagent",
       } : state;
-    case "history":
-      return {
-        ...state,
-        entries: historyEntries(action.history),
-        assistantDraft: null,
-        historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
-      };
-    case "history_prepend": {
-      if (action.expectedCursor !== state.historyCursor) {
-        return { ...state, historyLoading: false };
-      }
-      return {
-        ...state,
-        entries: [...historyEntries(action.history), ...state.entries],
-        historyCursor: action.nextCursor,
-        historyLoading: false,
-      };
-    }
     case "history_loading":
       return { ...state, historyLoading: action.value };
     case "trajectory":
       {
-        // A trajectory refresh is authoritative for persisted records, but
-        // frames received while it was in flight are not part of that page.
-        // Keep those live entries until a later refresh folds them into the
-        // durable baseline instead of briefly erasing them from the view.
-        const live = state.trajectoryLoaded
-          ? state.entries.filter((entry) => entry.origin !== "trajectory")
-          : [];
+        // A trajectory refresh is the durable baseline for the whole timeline,
+        // so the initial load replaces the entries seeded by the history page
+        // (keeping them would render every message twice).  Two kinds of live
+        // entry are not part of that page and must survive: frames received
+        // while the request was in flight once a baseline exists, and the
+        // assistant text still streaming from the current turn.
+        const live = state.entries.filter((entry) => (
+          state.trajectoryLoaded
+            ? entry.origin !== "trajectory"
+            : entry.kind === "message" && entry.streaming
+        ));
       const baselineEntries = trajectoryEntries(action.items);
       const baseline = {
         ...state,
         trajectory: action.items,
         trajectoryLoaded: true,
         entries: mergeTrajectoryWithLive(baselineEntries, live),
+        windowAnchor: oldestPosition(action.items),
+        atTail: true,
+        pendingNewer: 0,
         historyCursor: action.nextCursor,
       };
       return action.bufferedEvents?.length
@@ -294,44 +451,44 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         : baseline;
       }
     case "trajectory_prepend": {
-      if (action.expectedCursor !== state.historyCursor) {
+      // The page is only valid for the window it was requested for: a refresh
+      // or a session switch moves the anchor, and applying a stale page would
+      // splice unrelated records into the transcript.
+      if (state.windowAnchor !== action.expectedAnchor) {
         return { ...state, historyLoading: false };
       }
       const trajectory = [...action.items, ...state.trajectory];
-      const live = state.entries.filter((entry) => entry.origin !== "trajectory");
+      // Loading older records means the reader left the tail: the window now
+      // follows the anchor instead of the newest record, and live output is
+      // counted rather than materialized into a transcript they are not
+      // looking at.  The frozen live entries of the newer region are dropped
+      // here; returning to the tail re-fetches that region.
       return {
         ...state,
         trajectory,
-        entries: mergeTrajectoryWithLive(trajectoryEntries(trajectory), live),
+        entries: trajectoryEntries(trajectory),
+        windowAnchor: oldestPosition(trajectory),
+        atTail: false,
         historyCursor: action.nextCursor,
         historyLoading: false,
       };
     }
-    case "tasks":
+    case "jobs":
+      // Settled jobs stay: the ported list shows them newest-first beside the
+      // live ones, so whether a row survives must not depend on which path
+      // (this snapshot or a `job_updated` event) last reported it.
       return {
         ...state,
-        tasks: Object.fromEntries(
-          action.tasks
-            .filter((task) => task.status !== "completed" && task.status !== "stopped")
-            .map((task) => [task.task_id, task]),
-        ),
+        jobs: Object.fromEntries(action.jobs.map((job) => [job.id, job])),
       };
     case "todos":
       return { ...state, todos: action.todos };
     case "pending_inputs":
-      return {
-        ...state,
-        pendingInputs: action.items,
-        deliveryStates: {
-          ...state.deliveryStates,
-          ...Object.fromEntries(action.items.map((item) => [item.message_id, state.deliveryStates[item.message_id] || "accepted"])),
-        },
-      };
+      return { ...state, pendingInputs: action.items };
     case "pending_input_failed":
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== action.messageId),
-        deliveryStates: Object.fromEntries(Object.entries(state.deliveryStates).filter(([id]) => id !== action.messageId)),
       };
     case "user_message":
       return {
@@ -362,8 +519,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
       return {
         ...state,
         turnRunning: false,
-        entries: commitAssistantDraft(state.entries, state.assistantDraft),
-        assistantDraft: null,
+        entries: finalizeAssistantEntries(state.entries),
         error: action.message,
       };
     case "interaction_resolved":
@@ -371,10 +527,10 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
         ...state,
         interactions: state.interactions.filter((item) => item.request_id !== action.requestId),
       };
-    case "remove_task": {
-      const tasks = { ...state.tasks };
-      delete tasks[action.taskId];
-      return { ...state, tasks };
+    case "remove_job": {
+      const jobs = { ...state.jobs };
+      delete jobs[action.jobId];
+      return { ...state, jobs };
     }
     case "agent_selected":
       return state.current ? {
@@ -410,7 +566,7 @@ export function runtimeReducer(state: RuntimeState, action: RuntimeAction): Runt
   }
 }
 
-function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
+function applyEvent(state: RuntimeState, event: ViewEvent): RuntimeState {
   const data = event.data;
   switch (event.type) {
     case "turn_started":
@@ -425,12 +581,13 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         current: updateSlots(state.current, data.status_slots),
       };
     case "turn_finished":
-    case "turn_cancelled":
+    case "turn_cancelled": {
+      const status = event.type === "turn_cancelled" ? "cancelled" : "error";
       return {
         ...state,
         turnRunning: false,
         entries: [
-          ...commitAssistantDraft(state.entries, state.assistantDraft),
+          ...finalizePendingTools(finalizeAssistantEntries(state.entries), status),
           runtimeEntry(
             "turn",
             event.type,
@@ -440,17 +597,17 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
             eventIdentity(event),
           ),
         ],
-        assistantDraft: null,
         current: updateSlots(state.current, data.status_slots),
         sessionStats: Object.hasOwn(data, "session_stats")
           ? normalizeSessionStats(data.session_stats)
           : state.sessionStats,
       };
+    }
     case "assistant_message_delta":
       return {
         ...state,
-        assistantDraft: updateAssistantDraft(
-          state.assistantDraft,
+        entries: appendAssistantDelta(
+          state.entries,
           stringValue(data.content),
           stringValue(data.reasoning),
         ),
@@ -460,13 +617,12 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         ...state,
         entries: applyAssistantMessage(
           state.entries,
-          state.assistantDraft,
           stringValue(data.content),
           stringValue(data.reasoning),
           arrayValue(data.tool_calls),
           stringValue(data.id),
+          stringValue(data.stop_reason),
         ),
-        assistantDraft: null,
         sessionStats: addAssistantTiming(state.sessionStats, data.timing),
         current: updateSlots(state.current, data.status_slots),
       };
@@ -508,9 +664,22 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
     case "compaction_started":
       return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Compacting conversation history…", eventIdentity(event))] };
     case "compaction_completed":
-      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, "Conversation history compacted", eventIdentity(event))] };
+      return {
+        ...state,
+        entries: [
+          ...state.entries,
+          runtimeEntry(
+            "compact",
+            event.type,
+            stringValue(data.summary) || "Conversation history compacted",
+            eventIdentity(event),
+          ),
+        ],
+      };
     case "compaction_failed":
-      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
+      return { ...state, entries: [...state.entries, runtimeEntry("compact", event.type, stringValue(data.message) || stringValue(data.error) || "Conversation compaction failed", eventIdentity(event))] };
+    case "usage_snapshot":
+      return { ...state, usage: normalizeUsage(objectValue(data.usage)) };
     case "usage":
       return {
         ...state,
@@ -529,10 +698,6 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       const ids = new Set(arrayValue(data.message_ids).map(stringValue));
       return {
         ...state,
-        deliveryStates: {
-          ...state.deliveryStates,
-          ...Object.fromEntries([...ids].map((id) => [id, deliveryState])),
-        },
         pendingInputs: event.type === "input_consumed"
           ? state.pendingInputs.filter((item) => !ids.has(item.message_id))
           : state.pendingInputs,
@@ -543,33 +708,41 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
         )),
       };
     }
-    case "task_updated": {
-      const task = data as unknown as TaskData;
-      return { ...state, tasks: { ...state.tasks, [task.task_id]: task } };
+    case "job_updated": {
+      const job = data as unknown as JobData;
+      return { ...state, jobs: { ...state.jobs, [job.id]: job } };
     }
     case "todo_updated":
       return { ...state, todos: todoProjection(data) };
+    case "goal_updated": {
+      // Terminal Goal transitions carry the consumption recorded while the
+      // goal was active. Intermediate transitions only update the status slot.
+      const status = stringValue(data.kind);
+      if (status !== "complete" && status !== "blocked") return state;
+      const objective = stringValue(data.objective);
+      const consumption = goalConsumption(data.stats);
+      const detail = [objective, consumption].filter(Boolean).join(" · ");
+      return {
+        ...state,
+        entries: [...state.entries, noticeEntry(
+          `Goal ${status}${detail ? ` · ${detail}` : ""}`,
+          status === "complete" ? "info" : "error",
+        )],
+      };
+    }
     case "client_message":
       return {
         ...state,
         entries: [...state.entries, noticeEntry(stringValue(data.message), "info")],
         current: updateSlots(state.current, data.status_slots),
       };
-    case "input_rejected":
-      return {
-        ...state,
-        entries: [
-          ...state.entries,
-          noticeEntry(stringValue(data.reason) || "Input rejected", "error"),
-        ],
-        turnRunning: false,
-      };
     case "message": {
       const id = stringValue(data.id);
       if (!id || stringValue(data.role) !== "user") return state;
       const runtime = objectValue(data.runtime);
-      const runtimeSource = stringValue(runtime.source);
-      const runtimeEvent = stringValue(runtime.event);
+      const skill = runtime.source ? null : skillInvocationSource(stringValue(data.content));
+      const runtimeSource = stringValue(runtime.source) || skill || "";
+      const runtimeEvent = stringValue(runtime.event) || (skill ? "skill_invocation" : "");
       const runtimeId = runtimeSource ? `runtime:${id}` : "";
       const index = state.entries.findIndex((entry) => (
         entry.id === id
@@ -591,17 +764,16 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       return {
         ...state,
         pendingInputs: state.pendingInputs.filter((item) => item.message_id !== id),
-        deliveryStates: { ...state.deliveryStates, ...(id ? { [id]: "consumed" } : {}) },
         entries: [
           ...state.entries,
           runtimeSource
-            ? runtimeEntry(runtimeSource, runtimeEvent || "message", stringValue(data.content), runtimeId)
+            ? { ...runtimeEntry(runtimeSource, runtimeEvent || "message", stringValue(data.content), runtimeId), images: historyAttachments(arrayValue(data.media) as ArtifactRef[], arrayValue(data.artifacts).map(objectValue)) }
             : {
               ...messageEntry("user", stringValue(data.content)),
               id,
               messageId: id,
               images: historyAttachments(
-                arrayValue(data.images) as ImageReference[],
+                arrayValue(data.media) as ArtifactRef[],
                 arrayValue(data.artifacts).map(objectValue),
               ),
             },
@@ -609,7 +781,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       };
     }
     case "history_updated": {
-      const history = arrayValue(data.history) as HistoryItem[];
+      const history = arrayValue(data.history) as HistoryViewItem[];
       const operation = stringValue(data.operation);
       const entries = historyEntries(history);
       if (operation.startsWith("compact:")) {
@@ -620,10 +792,24 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           eventIdentity(event),
         ));
       }
-      if (state.trajectoryLoaded) {
+      if (operation === "undo" || operation === "clear") {
         return {
           ...state,
-          assistantDraft: null,
+          entries,
+          trajectoryLoaded: false,
+          historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
+          sessionStats: Object.hasOwn(data, "session_stats")
+            ? normalizeSessionStats(data.session_stats)
+            : state.sessionStats,
+        };
+      }
+      if (state.trajectoryLoaded) {
+        // The durable trajectory is the authoritative surface once it has been
+        // loaded, so this history page is not projected over it; the next
+        // trajectory refresh picks the mutation up.  In-flight assistant text
+        // already lives in ``entries`` and therefore survives either way.
+        return {
+          ...state,
           historyCursor: null,
           sessionStats: Object.hasOwn(data, "session_stats")
             ? normalizeSessionStats(data.session_stats)
@@ -632,8 +818,7 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
       }
       return {
         ...state,
-        entries,
-        assistantDraft: null,
+        entries: carryStreamingAssistant(entries, state.entries),
         historyCursor: typeof data.history_cursor === "string" ? data.history_cursor : null,
         sessionStats: Object.hasOwn(data, "session_stats")
           ? normalizeSessionStats(data.session_stats)
@@ -659,10 +844,9 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
           ...state,
           turnRunning: false,
           entries: [
-            ...commitAssistantDraft(state.entries, state.assistantDraft),
+            ...finalizeAssistantEntries(state.entries),
             noticeEntry(message, "error"),
           ],
-          assistantDraft: null,
           error: message,
         };
       }
@@ -671,25 +855,130 @@ function applyEvent(state: RuntimeState, event: ServerEvent): RuntimeState {
   }
 }
 
-export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
+/**
+ * A read-only parallel view of another thread: the main thread keeps running
+ * underneath while this projects that thread's history and live events into a
+ * separate entry list (see `useXBot.openThreadView`).
+ */
+export interface ThreadViewState {
+  threadId: string;
+  title: string;
+  entries: TimelineEntry[];
+  cursor: number;
+  mainBusy: boolean;
+  olderCursor: string | null;
+  loadingOlder: boolean;
+  // False once the reader paged into the thread's history: the mirror then
+  // keeps the window being read instead of the newest output.
+  atTail: boolean;
+}
+
+export interface ThreadViewRolling {
+  reasoning: string;
+  content: string;
+}
+
+function flushViewRolling(
+  entries: TimelineEntry[],
+  rolling: ThreadViewRolling,
+): TimelineEntry[] {
+  const content = rolling.content.trim();
+  const reasoning = rolling.reasoning.trim();
+  rolling.content = "";
+  rolling.reasoning = "";
+  if (!content && !reasoning) return entries;
+  const entry = messageEntry("assistant", content);
+  return [...entries, { ...entry, reasoning, messageId: entry.messageId || `view:${Math.random().toString(36).slice(2)}` }];
+}
+
+function viewToolLine(data: JsonObject, event: string): string {
+  const content = stringValue(data.content) || stringValue(data.summary) || "";
+  const preview = content.replace(/\s+/g, " ").trim().slice(0, 120);
+  const summary = `[tool] ${stringValue(data.name) || "tool"} ${stringValue(data.status) || ""}`;
+  return preview ? `${summary}${preview ? `\n${preview}` : ""}` : summary;
+}
+
+/** Map one thread's live frame onto its view entries. */
+export function applyViewEvent(
+  entries: TimelineEntry[],
+  event: ViewEvent,
+  rolling: ThreadViewRolling,
+): TimelineEntry[] {
+  const data = event.data;
+  switch (event.type) {
+    case "assistant_message_delta":
+      rolling.reasoning += stringValue(data.reasoning);
+      rolling.content += stringValue(data.content);
+      return entries;
+    case "assistant_message":
+      return applyAssistantMessage(
+        flushViewRolling(entries, rolling),
+        stringValue(data.content),
+        stringValue(data.reasoning),
+        arrayValue(data.tool_calls),
+        stringValue(data.id),
+        stringValue(data.stop_reason),
+      );
+    case "turn_started":
+    case "turn_finished":
+    case "turn_cancelled": {
+      const flushed = flushViewRolling(entries, rolling);
+      const label = event.type === "turn_started"
+        ? `Turn ${numberValue(data.turn) || "?"} started`
+        : event.type === "turn_cancelled"
+          ? `Turn ${numberValue(data.turn) || "?"} cancelled`
+          : `Turn ${numberValue(data.turn) || "?"} finished`;
+      return [...flushed, runtimeEntry("turn", event.type, label, eventIdentity(event))];
+    }
+    case "tool_result":
+    case "tool_started":
+    case "tool_call_delta":
+      return [
+        ...flushViewRolling(entries, rolling),
+        runtimeEntry("tool", event.type, viewToolLine(data, event.type), eventIdentity(event)),
+      ];
+    case "message":
+      {
+        // The observed thread replays its full event stream on top of the
+        // trajectory; a replayed accepted input must not render twice.
+        const id = stringValue(data.id);
+        const existing = entries.findIndex((entry) => (
+          (entry.kind === "message" || entry.kind === "runtime") && entry.messageId === id
+        ));
+        if (existing >= 0) {
+          return flushViewRolling(entries, rolling);
+        }
+        return [
+          ...flushViewRolling(entries, rolling),
+          { ...messageEntry("user", stringValue(data.content)), messageId: id || `view:${event.sequence}` },
+        ];
+      }
+    default:
+      return entries;
+  }
+}
+
+export function historyEntries(history: HistoryViewItem[]): TimelineEntry[] {
   let entries: TimelineEntry[] = [];
   for (const item of history) {
     if (item.role === "user") {
-      if (item.runtime) {
+      const skill = item.runtime ? null : skillInvocationSource(item.content);
+      if (item.runtime || skill) {
         entries.push({
           id: nextId("runtime"),
           kind: "runtime",
-          source: item.runtime.source ?? "runtime",
-          event: item.runtime.event ?? "message",
+          source: item.runtime?.source ?? skill ?? "runtime",
+          event: item.runtime?.event ?? "skill_invocation",
           content: item.content,
           messageId: item.id || "",
+          images: historyAttachments(item.media, item.artifacts),
         });
         continue;
       }
       entries.push({
         ...messageEntry("user", item.content),
         messageId: item.id || "",
-        images: historyAttachments(item.images, item.artifacts),
+        images: historyAttachments(item.media, item.artifacts),
       });
       continue;
     }
@@ -699,6 +988,7 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
           ...messageEntry("assistant", item.content),
           messageId: item.id || "",
           reasoning: item.reasoning || "",
+          ...(item.timing ? { timing: item.timing } : {}),
         });
       }
       entries = upsertToolCalls(entries, item.tool_calls);
@@ -711,7 +1001,8 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
       data: item.data,
       error: item.error,
       artifacts: item.artifacts,
-      images: item.images,
+      media: item.media,
+      outcome: item.outcome,
     });
   }
   return entries;
@@ -720,6 +1011,16 @@ export function historyEntries(history: HistoryItem[]): TimelineEntry[] {
 interface TrajectoryGroup {
   nodeId: string;
   entries: TimelineEntry[];
+}
+
+/**
+ * Trajectory entry ids are built here as `trajectory:<position>:...`, so the
+ * position of a rendered entry is recoverable without threading it through
+ * every group builder.
+ */
+function trajectoryPositionOf(id: string): number | undefined {
+  const match = /^trajectory:(\d+):/.exec(id);
+  return match ? Number(match[1]) : undefined;
 }
 
 export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
@@ -757,7 +1058,9 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
     if (item.transcript === "preserve") {
       if (replacements.length === 1) lineage.set(replacements[0].nodeId, sourceIds);
       const compactionId = item.operation.startsWith("compact:") ? item.operation.slice(8) : "";
-      upsertCompactionGroup(groups, item.position, compactionId, item.operation, {});
+      upsertCompactionGroup(groups, item.position, compactionId, item.operation, {
+        summary: stringValue(item.summary) || compactionSummaryText(item.messages[0]),
+      });
       continue;
     }
     const indexes = sourceIds
@@ -771,6 +1074,7 @@ export function trajectoryEntries(items: TrajectoryItem[]): TimelineEntry[] {
   return reconcileTrajectoryTools(groups).flatMap((group) => group.entries).map((entry) => ({
     ...entry,
     origin: "trajectory" as const,
+    position: trajectoryPositionOf(entry.id),
   }));
 }
 
@@ -837,6 +1141,18 @@ function isEmptyObject(value: unknown): boolean {
     && Object.keys(value).length === 0;
 }
 
+/**
+ * The durable summary is a `historical_context`/`conversation_summary` prompt
+ * container; pull its text out so a reloaded view can show what was kept.
+ */
+function compactionSummaryText(message: HistoryViewItem | undefined): string {
+  if (!message || typeof message.content !== "string") return "";
+  const match = message.content.match(
+    /<conversation_summary[^>]*>([\s\S]*?)<\/conversation_summary>/,
+  );
+  return (match ? match[1] : "").trim();
+}
+
 function upsertCompactionGroup(
   groups: TrajectoryGroup[],
   position: number,
@@ -856,7 +1172,7 @@ function upsertCompactionGroup(
   else groups.push({ nodeId, entries: [entry] });
 }
 
-function positionedEntries(position: number, history: HistoryItem[], suffix = "message"): TimelineEntry[] {
+function positionedEntries(position: number, history: HistoryViewItem[], suffix = "message"): TimelineEntry[] {
   return historyEntries(history).map((entry, index) => ({
     ...entry,
     id: `trajectory:${position}:${suffix}:${index}`,
@@ -899,63 +1215,131 @@ function trajectoryEventContent(event: string, data: JsonObject): string {
   return stringValue(data.message) || event;
 }
 
-function updateAssistantDraft(
-  draft: MessageEntry | null,
+/**
+ * Assistant text streams into ``entries`` from its first delta, so the live
+ * projection and durable history share one ordered surface.  ``streaming``
+ * marks the entry that later server output still updates in place.
+ */
+function appendAssistantDelta(
+  entries: TimelineEntry[],
   content: string,
   reasoning: string,
-): MessageEntry {
-  if (draft) {
-    return {
-      ...draft,
-      content: draft.content + content,
-      reasoning: draft.reasoning + reasoning,
-    };
+): TimelineEntry[] {
+  if (!content && !reasoning) return entries;
+  const index = streamingAssistantIndex(entries);
+  if (index < 0) {
+    return [...entries, {
+      ...messageEntry("assistant", content),
+      reasoning,
+      streaming: true,
+    }];
   }
-  return { ...messageEntry("assistant", content), reasoning, streaming: true };
+  return entries.map((entry, entryIndex) => (
+    entryIndex === index && entry.kind === "message"
+      ? {
+        ...entry,
+        content: entry.content + content,
+        reasoning: entry.reasoning + reasoning,
+        streaming: true,
+      }
+      : entry
+  ));
 }
 
 function applyAssistantMessage(
   entries: TimelineEntry[],
-  draft: MessageEntry | null,
   content: string,
   reasoning: string,
   calls: unknown[],
   messageId: string,
+  stopReason = "",
 ): TimelineEntry[] {
-  if (messageId && entries.some((entry) => entry.kind === "message" && entry.messageId === messageId)) {
-    return upsertToolCalls(entries, calls);
+  const streamingIndex = streamingAssistantIndex(entries);
+  if (streamingIndex >= 0) {
+    const next = entries.map((entry, index) => (
+      index === streamingIndex && entry.kind === "message"
+        ? {
+          ...entry,
+          content: content || entry.content,
+          reasoning: reasoning || entry.reasoning,
+          streaming: false,
+          messageId: messageId || entry.messageId,
+          ...(stopReason ? { stopReason } : {}),
+        }
+        : entry
+    ));
+    return upsertToolCalls(next, calls);
   }
-  let copy = entries;
-  if (draft) {
-    copy = [...copy, {
-      ...draft,
-      content: content || draft.content,
-      reasoning: reasoning || draft.reasoning,
-      streaming: false,
-      messageId,
-    }];
-  } else if (content || reasoning) {
-    copy = [...copy, {
+  const existingIndex = messageId
+    ? entries.findIndex((entry) => entry.kind === "message" && entry.messageId === messageId)
+    : -1;
+  if (existingIndex >= 0 && (entries[existingIndex] as MessageEntry).content === content) {
+    // The same message replayed by a durable page or a resumed stream.
+    // ``assistant_message`` carries no reasoning, so fill it in when the
+    // stored entry lacks it and never overwrite what the store already has.
+    const next = reasoning
+      ? entries.map((entry, index) => (
+        index === existingIndex && entry.kind === "message" && !entry.reasoning
+          ? { ...entry, reasoning }
+          : entry
+      ))
+      : entries;
+    return upsertToolCalls(next, calls);
+  }
+  // A reused id with a different body means two server messages share one id;
+  // keep the newer body as its own entry instead of hiding it behind the id.
+  if (!content && !reasoning) return upsertToolCalls(entries, calls);
+  return upsertToolCalls([
+    ...entries,
+    {
       ...messageEntry("assistant", content),
       reasoning,
       messageId,
-    }];
+      ...(stopReason ? { stopReason } : {}),
+    },
+  ], calls);
+}
+
+function streamingAssistantIndex(entries: TimelineEntry[]): number {
+  for (let index = entries.length - 1; index >= 0; index -= 1) {
+    const entry = entries[index];
+    if (entry.kind === "message" && entry.role === "assistant") {
+      return entry.streaming ? index : -1;
+    }
   }
-  copy = upsertToolCalls(copy, calls);
-  return copy;
+  return -1;
 }
 
-function commitAssistantDraft(
+/** Close an in-flight assistant entry when its turn ends without a message. */
+function finalizeAssistantEntries(entries: TimelineEntry[]): TimelineEntry[] {
+  const streaming = entries.some((entry) => entry.kind === "message" && entry.streaming);
+  if (!streaming) return entries;
+  return entries.map((entry) => (
+    entry.kind === "message" && entry.streaming ? { ...entry, streaming: false } : entry
+  ));
+}
+
+function finalizePendingTools(entries: TimelineEntry[], status: string): TimelineEntry[] {
+  return entries.map((entry) => (
+    entry.kind === "tool" && !terminalToolStatus(entry.status)
+      ? { ...entry, status }
+      : entry
+  ));
+}
+
+/** Keep assistant text that a durable history page does not carry yet. */
+function carryStreamingAssistant(
   entries: TimelineEntry[],
-  draft: MessageEntry | null,
+  previous: TimelineEntry[],
 ): TimelineEntry[] {
-  return draft ? [...entries, { ...draft, streaming: false }] : entries;
+  const live = previous.filter((entry) => entry.kind === "message" && entry.streaming);
+  return live.length ? [...entries, ...live] : entries;
 }
 
-function historyAttachments(images: ImageReference[] = [], artifacts: JsonObject[] = []): MessageImage[] {
-  return [...images.map((image) => ({
+function historyAttachments(media: ArtifactRef[] = [], artifacts: JsonObject[] = []): MessageImage[] {
+  return [...media.map((image) => ({
     label: `${image.media_type} · ${formatBytes(image.size)}`,
-    src: image.url,
+    src: image.media_type.startsWith("image/") ? image.url : undefined,
     href: image.url,
   })), ...artifacts.map((artifact) => ({
     label: String(artifact.name || artifact.id || "attachment"),
@@ -1051,7 +1435,12 @@ function applyToolResult(entries: TimelineEntry[], data: JsonObject): TimelineEn
       data: data.data ?? null,
       error: data.error ? objectValue(data.error) : null,
       artifacts: arrayValue(data.artifacts).map(objectValue),
-      images: arrayValue(data.images).map(objectValue),
+      images: [
+        ...arrayValue(data.media).map(objectValue),
+        ...arrayValue(objectValue(objectValue(data.outcome).output).parts)
+          .map(objectValue).filter((part) => part.kind === "media")
+          .map((part) => objectValue(part.artifact)),
+      ],
     };
   }
   return copy;
@@ -1079,11 +1468,24 @@ function updatePermissionTool(entries: TimelineEntry[], data: JsonObject, status
     : entry);
 }
 
-function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {
+/**
+ * A slash-invoked skill replaces the accepted input with the skills plugin's
+ * prompt container.  Its provenance lives inside that container, so the parser
+ * here is what lets the transcript show `Context injection <skill>` instead of
+ * the raw envelope.
+ */
+const SKILL_INVOCATION = /^<skill_invocation\b[^>]*\bname="([^"]+)"/;
+
+export function skillInvocationSource(content: string): string | null {
+  const match = SKILL_INVOCATION.exec(content.trimStart());
+  return match ? match[1] : null;
+}
+
+export function runtimeEntry(source: string, event: string, content: string, id?: string): RuntimeEntry {
   return { id: id || nextId("runtime"), kind: "runtime", source, event, content, messageId: "" };
 }
 
-function eventIdentity(event: ServerEvent): string {
+function eventIdentity(event: ViewEvent): string {
   return `event:${event.sequence}:${event.type}`;
 }
 
@@ -1091,6 +1493,29 @@ function eventIdentity(event: ServerEvent): string {
 function queueInteraction(state: RuntimeState, request: InteractionRequest): RuntimeState {
   if (!request.request_id || state.interactions.some((item) => item.request_id === request.request_id)) return state;
   return { ...state, interactions: [...state.interactions, request] };
+}
+
+/**
+ * Rebuild unanswered dialogs from an open/resume response.  A client that
+ * reloads or reconnects while an approval is pending can otherwise never show
+ * the dialog again, because the request only exists in the live event stream.
+ */
+function pendingInteractions(items: unknown): InteractionRequest[] {
+  const pending: InteractionRequest[] = [];
+  for (const raw of arrayValue(items)) {
+    const item = objectValue(raw);
+    const type = stringValue(item.type);
+    const data = objectValue(item.data);
+    const request = type === "permission_request"
+      ? permissionRequest(data)
+      : type === "user_input_required"
+        ? userInputRequest(data)
+        : null;
+    if (!request?.request_id) continue;
+    if (pending.some((existing) => existing.request_id === request.request_id)) continue;
+    pending.push(request);
+  }
+  return pending;
 }
 
 function permissionRequest(data: JsonObject): InteractionRequest {
@@ -1126,7 +1551,6 @@ function addUsage(current: UsageData, data: JsonObject): UsageData {
     input_tokens: current.input_tokens + numberValue(data.input_tokens),
     output_tokens: current.output_tokens + numberValue(data.output_tokens),
     total_tokens: current.total_tokens + numberValue(data.total_tokens),
-    requests: current.requests + numberValue(data.requests),
     context_tokens: Object.hasOwn(data, "context_tokens")
       ? numberValue(data.context_tokens)
       : current.context_tokens,
@@ -1172,8 +1596,8 @@ function normalizeUsage(usage: Partial<UsageData>): UsageData {
     input_tokens: numberValue(usage.input_tokens),
     output_tokens: numberValue(usage.output_tokens),
     total_tokens: numberValue(usage.total_tokens),
-    requests: numberValue(usage.requests),
     context_tokens: numberValue(usage.context_tokens),
+    ...(usage.context_estimated === undefined ? {} : { context_estimated: usage.context_estimated }),
     cache_read_input_tokens: numberValue(usage.cache_read_input_tokens),
     cache_creation_input_tokens: numberValue(usage.cache_creation_input_tokens),
     prompt_cache_write_tokens: numberValue(usage.prompt_cache_write_tokens),
@@ -1199,47 +1623,16 @@ function updateSlots(current: RuntimeSession | null, slots: unknown): RuntimeSes
   return { ...current, status_slots: slots as Record<string, string> };
 }
 
-function currentThreadProjection(
-  state: RuntimeState,
-  threads: ThreadSummary[],
-): Pick<RuntimeState, "current" | "usage" | "sessionStats"> {
-  const current = state.current;
-  if (!current) return {
-    current: null,
-    usage: state.usage,
-    sessionStats: state.sessionStats,
-  };
-  const thread = threads.find((item) => item.thread_id === current.thread_id);
-  if (!thread) return {
-    current,
-    usage: state.usage,
-    sessionStats: state.sessionStats,
-  };
-  return {
-    current: {
-      ...current,
-      agent_name: thread.agent,
-      provider: thread.provider,
-      model: thread.model,
-      model_mode: thread.model_mode,
-      context_window: thread.context_window,
-      status_slots: thread.status_slots,
-    },
-    usage: mergeLiveUsage(state.usage, thread.usage),
-    sessionStats: mergeLiveStats(state.sessionStats, thread.session_stats),
-  };
-}
-
 function mergeLiveUsage(current: UsageData, snapshot: UsageData): UsageData {
   const next = normalizeUsage(snapshot);
   return {
     input_tokens: Math.max(current.input_tokens, next.input_tokens),
     output_tokens: Math.max(current.output_tokens, next.output_tokens),
     total_tokens: Math.max(current.total_tokens, next.total_tokens),
-    requests: Math.max(current.requests, next.requests),
     // Context is a point-in-time value. Do not let a concurrently returned
     // snapshot move a newer stream event backwards during a running turn.
     context_tokens: Math.max(current.context_tokens, next.context_tokens),
+    ...((next.context_tokens >= current.context_tokens ? next.context_estimated : current.context_estimated) === undefined ? {} : { context_estimated: next.context_tokens >= current.context_tokens ? next.context_estimated : current.context_estimated }),
     cache_read_input_tokens: Math.max(current.cache_read_input_tokens, next.cache_read_input_tokens),
     cache_creation_input_tokens: Math.max(current.cache_creation_input_tokens, next.cache_creation_input_tokens),
     prompt_cache_write_tokens: Math.max(current.prompt_cache_write_tokens, next.prompt_cache_write_tokens),
@@ -1260,10 +1653,11 @@ function mergeLiveStats(current: SessionStatsData, snapshot: SessionStatsData): 
   };
 }
 
-function runtimeSession(session: OpenSessionResponse): RuntimeSession {
+function runtimeSession(session: SessionView): RuntimeSession {
   return {
     session_id: session.session_id,
     thread_id: session.thread_id,
+    title: session.title,
     agent_name: session.agent_name,
     workspace_root: session.workspace_root,
     provider: session.provider,
@@ -1315,21 +1709,44 @@ function pendingInputs(value: unknown): PendingInput[] {
       message_id: messageId,
       content: stringValue(item.content),
       target,
-      source: stringValue(item.source) || "user",
-      image_count: numberValue(item.image_count),
+      media_count: numberValue(item.media_count),
       artifact_count: numberValue(item.artifact_count),
     }];
   });
 }
 
-function todoProjection(data: JsonObject): TodoItemData[] {
-  if (data.kind !== "todo_snapshot") return [];
-  return arrayValue(data.items).flatMap((value) => {
+export function todoProjection(data: JsonObject): TodoItemData[] {
+  const edges = arrayValue(data.edges).map(objectValue);
+  return arrayValue(data.tasks).flatMap((value) => {
     const item = objectValue(value);
-    const content = stringValue(item.content);
+    const id = stringValue(item.id);
+    const subject = stringValue(item.subject);
     const status = stringValue(item.status);
-    return content && ["pending", "in_progress", "completed"].includes(status)
-      ? [{ content, status: status as TodoItemData["status"] }]
-      : [];
+    if (!subject || !["pending", "in_progress", "completed"].includes(status)) return [];
+    const activeForm = stringValue(item.activeForm);
+    const description = stringValue(item.description);
+    const owner = stringValue(item.owner);
+    return [{
+      id,
+      subject,
+      status: status as TodoItemData["status"],
+      blocks: edges.filter((edge) => edge.prerequisite === id).map((edge) => stringValue(edge.dependent)),
+      blockedBy: edges.filter((edge) => edge.dependent === id).map((edge) => stringValue(edge.prerequisite)),
+      ...(description ? { description } : {}),
+      ...(activeForm ? { activeForm } : {}),
+      ...(owner ? { owner } : {}),
+    }];
   });
+}
+
+function goalConsumption(value: unknown): string {
+  const stats = objectValue(value);
+  const parts = [
+    `${numberValue(stats.rounds_started)} turns`,
+    `${numberValue(stats.tool_calls)} tool calls`,
+    `${numberValue(stats.input_tokens) + numberValue(stats.output_tokens)} tokens`,
+  ];
+  const todoItems = numberValue(stats.todo_items);
+  if (todoItems) parts.push(`${numberValue(stats.todo_completed)}/${todoItems} todos`);
+  return parts.join(", ");
 }

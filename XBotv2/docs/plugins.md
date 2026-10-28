@@ -1,59 +1,47 @@
-# Built-in plugins
+# Plugins and scopes
 
-This page is only the navigation map. The complete contracts, dependencies,
-effects, state ownership, client/server facets, and examples are maintained in
-the skill's [plugin index](../.agents/skills/xbot-plugin-development/references/plugins_list.md)
-and [per-plugin references](../.agents/skills/xbot-plugin-development/references/plugins/README.md).
+Each owner keeps public contracts in `api/`, implementation in `impl/`, owner
+design in `doc/` and focused verification in `tests/`. Package roots are not
+facades. External consumers import the owning `api` contract.
 
-The bundled tree is `XBotv2/xcore.yaml`. `id` is the overlay identity and
-`name` is the import name. Profiles determine which carrier can mount an
-entry; activation itself is dependency-driven.
+The loader imports only `<owner>.impl.plugin` entries. A module defines ordinary
+`mount_process`, `mount_session` and/or `mount_thread` functions with explicit
+`inject` and `provide` declarations. Missing facets are skipped. Missing
+required services, cycles and configuration/activation failures prevent opening.
+An optional entry rolls back only itself; it cannot bypass a required guard.
 
-| id/name | profiles | primary responsibility | important injected services |
+There is one XCore process root. Session and thread scopes are real owner
+fibers; ordinary context extensions do not own independent lifetimes. Declared
+private services never fall back to a parent's same-named service, even when a
+thread facet is disabled. Closing rejects new work, awaits executing work and
+only then revokes services and releases storage/locks.
+
+| Owner | Process | Session | Thread |
 |---|---|---|---|
-| config | agent, server | settings, policy and configuration routes | runtime paths, launch, server/sessions |
-| persistence | agent, server, acp | history/state/artifact hydration and reader factory | loop state, thread persistence, runtime log |
-| usage | agent | normalized usage snapshot and events | state, loop state, runtime log |
-| agents | agent, server | Agent catalog, selection, engine creation | catalog, loop factory, LLM, tools, sessions |
-| session | agent, server, acp | SessionManager, thread runtime, history routes | launch, paths, artifacts, application factory |
-| jobs | agent, server | shell/subagent task registry | commands, engine, sessions |
-| commands | agent, server | human command catalog and dispatch | sessions/server where mounted |
-| llm | agent, server | provider/model directory and selection | runtime log, agent runtime, sessions |
-| agentloop | agent, server | Tool registry and AgentLoop factory | runtime log, session launch, sessions |
-| context_builder | agent | ordered context components | runtime log |
-| prompts | agent | prompt fragment registry | context builder |
-| sandbox | agent | filesystem/process/network ceiling | paths, session, tools, settings |
-| permissions | agent | regex Tool policy and approval flow | tools, interactions, state, settings |
-| coretools | agent | read/edit/path/search/shell Tools | tools, sandbox, artifacts, jobs |
-| subagents | agent | child Agent Tools and jobs | child applications, catalog, permissions |
-| goal | agent | durable objective and `/goal` | tools, commands, engine, state |
-| todolist | agent, server | atomic checklist snapshot | tools/state or sessions |
-| skills | agent | SKILL.md discovery and prompt/tool activation | tools, commands, sandbox |
-| mcp_plugin | agent | MCP server tool/resource/prompt bridges | tools, model, interactions, session |
-| content_cache | agent | oversized current user-input projection | artifacts |
-| compact | agent | append-only semantic history replacement | tools, commands, model, loop state |
-| browser | agent | web research and isolated browser Tools | tools, sandbox, artifacts |
-| token_manager | agent | request/context observation | session |
-| workspace_instructions | agent | AGENTS.md context contribution | variables, workspace root |
-| interactions | agent | ask-user and client input waiters | tools, client events, session launch |
-| workspaces | server, acp | workspace/session catalog and directory API | sessions, state, workspace root |
-| acp_plugin | acp | ACP carrier | sessions, ACP launch, runtime log |
-| server | server | FastAPI carrier and health/hello | runtime log |
+| loader | import/discovery/lifecycle | mount declared facets | mount declared facets |
+| config | defaults and carrier config routes | overlay files | resolved settings |
+| llm | directories and shared clients by resolved config | — | independent model binding |
+| agents | definition infrastructure | — | current definition and explicit selections |
+| session | opening/closing/identity/locating | owner identity | identity and event stream |
+| persistence | readers/resource definitions | writer lock | durable stores/artifacts |
+| jobs | one registry | — | authorized lifetime binding |
+| subagents | — | collaboration coordinator | delegation tools and owned children |
+| agentloop | HTTP routes | — | Engine, working set, inbox, turn execution |
+| server / ACP | listener and transport | — | locate owner capabilities through session API |
+| interactions | — | — | user interaction and client event sinks |
+| tui | terminal client | — | — |
 
-## Composition pattern
+Provider catalogs share only equal resolved configurations. Workspace/session
+overlays remain effective, and mutable model selection is thread-local. Agent
+resume resolves the saved Agent reference against current definitions and
+reapplies explicit provider/model/effort facts; it does not freeze old prompts.
 
-The root `plugin.py` is the only registration object. It can define named
-dependency-gated mount functions for catalog, runtime, commands, and HTTP.
-Routers are contributed through `server.contribute_router`; a route facet is
-not a second plugin. A plugin's `apply` should be short and declarative:
+The configuration order is bundled tree, global overlay, workspace overlay,
+session overlay, explicit memory override. `--no-plugins` disables entries
+marked `optional`; the loader has no list of business plugin names. External
+plugin directory discoveries are optional. Subagents currently limit nested
+delegation in their own thread facet.
 
-```python
-class ExamplePlugin:
-    name = "example"
-
-    async def apply(self, ctx: Context, config=None) -> None:
-        await ctx.inject(["tools", "settings"], mount_runtime)
-        await ctx.inject(["server"], mount_http)
-
-plugin = ExamplePlugin()
-```
+See [loader](../loader/doc/design.md), [session](../session/doc/design.md),
+[persistence](../persistence/doc/design.md) and the runnable
+[first-plugin guide](../.agents/skills/xbot-plugin-development/references/first-plugin.md).

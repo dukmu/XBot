@@ -8,7 +8,8 @@ import os
 
 import pytest
 
-from xcore import Context, StateService
+from xcore.api.context import Context
+from xcore.api.state import StateService
 
 
 def _path(tmp_path):
@@ -25,12 +26,79 @@ async def test_roundtrip_and_defaults(tmp_path):
     assert await state.get("k") is None
 
 
+async def test_memory_state_namespaces_share_values_without_creating_files(tmp_path):
+    state = StateService.memory()
+    ctx = Context(data_dir=tmp_path / "unused", state_service=state)
+    await ctx.start()
+    try:
+        source = {"items": ["one"]}
+        await ctx.state.namespace("goal").set("value", source)
+        source["items"].append("outside")
+        assert await state.namespace("goal").get("value") == {"items": ["one"]}
+        await asyncio.gather(*(
+            state.namespace("todo").set(str(index), index) for index in range(10)
+        ))
+        assert await ctx.state.namespace("todo").all() == {
+            str(index): index for index in range(10)
+        }
+        await state.namespace("todo").delete("0")
+        assert "0" not in await state.namespace("todo").keys()
+        await state.namespace("todo").clear()
+        assert await state.namespace("todo").all() == {}
+        await ctx.stop()
+        await ctx.start()
+        assert await ctx.state.namespace("goal").get("value") == {"items": ["one"]}
+        with pytest.raises(TypeError):
+            await state.set("bad", object())
+    finally:
+        await ctx.destroy()
+    assert list(tmp_path.iterdir()) == []
+    assert await StateService.memory().all() == {}
+
+
 async def test_persisted_across_instances(tmp_path):
     path = _path(tmp_path)
     await StateService(path=path).set("key", "value")
     # a fresh instance (simulating a restart) reads the same file
     recovered = StateService(path=path)
     assert await recovered.get("key") == "value"
+
+
+async def test_state_file_contains_current_values_not_mutation_history(tmp_path):
+    path = _path(tmp_path)
+    path.write_text('{"kept": 1, "value": "initial"}\n', encoding="utf-8")
+    state = StateService(path=path)
+    for index in range(30):
+        await state.set("value", str(index))
+    await state.set("removed", True)
+    await state.delete("removed")
+    assert json.loads(path.read_text(encoding="utf-8")) == {"kept": 1, "value": "29"}
+    assert await StateService(path=path).all() == {"kept": 1, "value": "29"}
+
+
+@pytest.mark.parametrize("existing", [False, True])
+@pytest.mark.parametrize("failure", ["replace", "fsync"])
+async def test_failed_snapshot_publish_preserves_disk_and_cache(tmp_path, monkeypatch, existing, failure):
+    path = _path(tmp_path)
+    state = StateService(path=path)
+    if existing:
+        await state.set("stable", 1)
+    prefix = path.read_bytes() if existing else b""
+
+    def fail(*args):
+        raise OSError("disk full")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, failure, fail)
+        with pytest.raises(OSError, match="disk full"):
+            await state.set("new", 2)
+    assert path.exists() == existing
+    assert sorted(tmp_path.iterdir()) == ([path] if existing else [])
+    if existing:
+        assert path.read_bytes() == prefix
+    assert await state.all() == ({"stable": 1} if existing else {})
+    await state.set("new", 2)
+    assert await StateService(path=path).all() == await state.all()
 
 
 async def test_atomic_write_leaves_no_temp_file(tmp_path):
@@ -150,6 +218,29 @@ async def test_state_service_via_context(tmp_path):
     await ctx.stop()
     await ctx.start()
     assert await ctx.state.get("session") == {"turns": 3}
+
+
+async def test_context_state_resolves_plugin_owned_service(tmp_path):
+    ctx = Context(data_dir=tmp_path)
+    state = StateService.memory()
+
+    def provider(scope, config):
+        scope.set("state", state)
+
+    async def consumer(scope, config):
+        assert scope.state is state
+        await scope.state.set("value", "shared")
+
+    consumer.inject = ["state"]
+    ctx.plugin(consumer)
+    ctx.plugin(provider)
+    try:
+        await ctx.start()
+        assert ctx.state is state
+        assert await ctx.state.get("value") == "shared"
+        assert not (tmp_path / "state.json").exists()
+    finally:
+        await ctx.destroy()
 
 
 async def test_context_uses_explicit_state_service(tmp_path):

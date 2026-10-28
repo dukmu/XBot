@@ -24,12 +24,6 @@
   white-space: nowrap;
 }
 
-.lifecycle code {
-  flex: none;
-  color: var(--dsw-alias-label-caption);
-  font-size: 11px;
-}
-
 .row summary {
   display: flex;
   align-items: center;
@@ -73,5 +67,31 @@
   .row summary { min-height: 22px; font-size: 13px; }
   .body { padding: 3px 0 3px 18px; font-size: 12px; }
   .lifecycle { min-height: 22px; font-size: 12px; }
-  .lifecycle code { font-size: 10px; }
+}
+
+.compact summary {
+  color: var(--dsw-alias-label-secondary);
+  font-weight: 600;
+}
+
+.compact summary code {
+  font-weight: 400;
+}
+
+/* Ported row anatomy: title, separator dot, producer, detail. */
+.separator {
+  flex: none;
+  width: 2px;
+  height: 2px;
+  border-radius: 1px;
+  margin: 0 8px;
+  background: var(--dsw-alias-label-caption);
+}
+
+.source {
+  color: var(--dsw-alias-label-secondary);
+}
+
+.event {
+  color: var(--dsw-alias-label-tertiary);
 }

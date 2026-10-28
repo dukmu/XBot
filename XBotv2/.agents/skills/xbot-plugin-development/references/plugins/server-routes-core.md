@@ -1,7 +1,7 @@
 # `server-routes-core`
 
 Core protocol routes — health check, hello, and server status.
-Registered via `contribute_router()` as `xbot.http.core`.
+Registered via `contribute_router()` as `xbot.server.http`.
 
 - **Import/profile:** `server-routes-core`, server profile.
 - **Source:** `XBotv2/server/protocol.py`.

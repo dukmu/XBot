@@ -1,0 +1,291 @@
+"""Behavioral contract for the agent-owned DSH-style inbox."""
+
+import pytest
+from XBotv2.agentloop.api.contracts import (
+    Claimed,
+    Consumed,
+    Edited,
+    HumanInput,
+    InboxItem,
+    Inserted,
+    Removed,
+    Retargeted,
+    RuntimeInput,
+)
+from XBotv2.core.api.domain import InboxTarget
+from XBotv2.agentloop.api.events import Events, ObserveInbox
+from XBotv2.agentloop.impl.inbox import AgentInbox, input_fingerprint, content_digest
+from XBotv2.persistence.api.models import CommitUncertain
+
+
+class MemoryInboxSink:
+    def __init__(self):
+        self.items = []
+        self.accepted_fingerprints = {}
+        self.sizes = []
+        self.fail = False
+
+    async def load(self):
+        return list(self.items)
+
+    async def accepted(self, input_id, fingerprint):
+        previous = self.accepted_fingerprints.get(input_id)
+        if previous is not None and previous != fingerprint:
+            from XBotv2.core.api.errors import OperationError
+            raise OperationError("input_id_conflict", "Input ID was already accepted with different content")
+        return previous is not None
+
+    async def current_content_sha256(self, input_id):
+        return content_digest(next(item.input.content for item in self.items if item.id == input_id))
+
+    async def append(self, change):
+        if self.fail:
+            raise OSError("disk full")
+        if isinstance(change, Inserted):
+            fingerprint = change.request_fingerprint or input_fingerprint(change.item.input)
+            if await self.accepted(change.item.id, fingerprint):
+                return False
+            self.accepted_fingerprints[change.item.id] = fingerprint
+            self.items.append(change.item)
+        elif isinstance(change, Edited):
+            self.items = [item.model_copy(update={"input": item.input.model_copy(update={"content": change.content})})
+                          if item.id == change.id else item for item in self.items]
+        elif isinstance(change, Retargeted):
+            item = next(item for item in self.items if item.id == change.id)
+            self.items.remove(item)
+            self.items.append(item.model_copy(update={"target": change.target}))
+        else:
+            ids = (change.id,) if isinstance(change, Removed) else change.ids
+            self.items = [item for item in self.items if item.id not in ids]
+        self.items.sort(key=lambda item: item.target is InboxTarget.NEXT_TURN)
+        self.sizes.append(len(self.items))
+        return True
+
+
+class MemoryEvents:
+    def __init__(self):
+        self.changes = []
+
+    async def serial(self, event, payload):
+        assert event == Events.PREPARE_INPUT
+        return None
+
+    async def emit(self, event, payload):
+        assert event == Events.INBOX_CHANGED
+        assert isinstance(payload, ObserveInbox)
+        self.changes.append(payload.change)
+
+
+def human_input(input_id, content, target=InboxTarget.NEXT_TURN):
+    return InboxItem(
+        id=input_id,
+        target=target,
+        input=HumanInput(content=content),
+    )
+
+
+@pytest.mark.asyncio
+async def test_typed_inputs_share_two_fifo_targets_and_wakeup_semantics():
+    events = MemoryEvents()
+    sink = MemoryInboxSink()
+    inbox = AgentInbox(events=events, sink=sink)
+    await inbox.submit(InboxItem(
+        id="notice",
+        target=InboxTarget.NEXT_STEP,
+        input=RuntimeInput(source="jobs", event="completed", content="notice"),
+    ), wake=False)
+    await inbox.submit(human_input("steer", "correction", InboxTarget.NEXT_STEP), wake=True)
+    await inbox.submit(human_input("followup", "question"), wake=True)
+
+    assert [change.wake for change in events.changes[:3] if isinstance(change, Inserted)] == [
+        False, True, True,
+    ]
+    assert sink.sizes[:3] == [1, 2, 3]
+
+    claimed = await inbox.claim_turn()
+    assert [item.id for item in claimed] == ["notice", "steer", "followup"]
+    assert isinstance(events.changes[-1], Claimed)
+    assert events.changes[-1].ids == ("notice", "steer", "followup")
+    assert len(inbox) == 0
+    assert len(sink.items) == 3
+
+    await inbox.commit([item.id for item in claimed])
+    assert isinstance(events.changes[-1], Consumed)
+    assert events.changes[-1].ids == ("notice", "steer", "followup")
+    assert sink.items == []
+
+
+@pytest.mark.asyncio
+async def test_uncommitted_claim_is_pending_after_restore():
+    sink = MemoryInboxSink()
+    inbox = AgentInbox(events=MemoryEvents(), sink=sink)
+    await inbox.submit(human_input("first", "first"), wake=True)
+    await inbox.claim_turn()
+
+    restored = AgentInbox(events=MemoryEvents(), items=sink.items, sink=sink)
+
+    assert [item.id for item in restored.pending] == ["first"]
+    assert (await restored.claim_turn())[0].input.content == "first"
+
+
+@pytest.mark.asyncio
+async def test_item_ids_are_unique_across_both_targets():
+    inbox = AgentInbox(events=MemoryEvents(), sink=MemoryInboxSink())
+    await inbox.submit(human_input("same", "one"), wake=True)
+
+    from XBotv2.core.api.errors import OperationError
+    assert not await inbox.submit(human_input("same", "one", InboxTarget.NEXT_STEP), wake=True)
+    with pytest.raises(OperationError, match="different content"):
+        await inbox.submit(human_input("same", "two", InboxTarget.NEXT_STEP), wake=True)
+    assert [(item.id, item.input.content) for item in inbox.pending] == [("same", "one")]
+
+
+@pytest.mark.asyncio
+async def test_failed_sink_write_does_not_change_pending_or_claimed_state():
+    failed_sink = MemoryInboxSink()
+    failed_sink.fail = True
+    inbox = AgentInbox(events=MemoryEvents(), sink=failed_sink)
+
+    with pytest.raises(OSError, match="disk full"):
+        await inbox.submit(human_input("failed", "not durable"), wake=True)
+
+    assert inbox.pending == []
+    assert len(inbox) == 0
+
+    sink = MemoryInboxSink()
+    events = MemoryEvents()
+    inbox = AgentInbox(events=events, sink=sink)
+    await inbox.submit(human_input("durable", "durable"), wake=True)
+    claimed = await inbox.claim_turn()
+    sink.fail = True
+
+    with pytest.raises(OSError, match="disk full"):
+        await inbox.commit([claimed[0].id])
+
+    assert not any(isinstance(change, Consumed) for change in events.changes)
+    assert len(inbox) == 0
+    assert sink.items[0].id == "durable"
+    sink.fail = False
+    restored = AgentInbox(events=MemoryEvents(), items=sink.items, sink=sink)
+    assert [item.id for item in restored.pending] == ["durable"]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("boundary", ["turn", "step"])
+async def test_failed_claim_observer_does_not_strand_input(boundary):
+    class FailingObserver(MemoryEvents):
+        fail = True
+
+        async def emit(self, event, payload):
+            if self.fail and isinstance(payload.change, Claimed):
+                raise RuntimeError("claim observer failed")
+            await super().emit(event, payload)
+
+    events = FailingObserver()
+    sink = MemoryInboxSink()
+    inbox = AgentInbox(events=events, sink=sink)
+    item = human_input("retry", "hello", InboxTarget.NEXT_STEP)
+    await inbox.submit(item, wake=False)
+    claim = inbox.claim_turn if boundary == "turn" else inbox.claim_step
+    with pytest.raises(RuntimeError, match="claim observer failed"):
+        await claim()
+    assert inbox.pending == [item]
+    assert sink.items == [item]
+    events.fail = False
+    assert await claim() == [item]
+    await inbox.commit([item.id])
+    assert sink.items == []
+
+
+@pytest.mark.asyncio
+async def test_consumption_is_committed_before_observers_run():
+    sink = MemoryInboxSink()
+
+    class FailingObserver(MemoryEvents):
+        async def emit(self, event, payload):
+            if isinstance(payload.change, Consumed):
+                assert sink.items == []
+                raise RuntimeError("observer failed after commit")
+            await super().emit(event, payload)
+
+    inbox = AgentInbox(events=FailingObserver(), sink=sink)
+    await inbox.submit(human_input("accepted", "hello"), wake=False)
+    await inbox.claim_turn()
+    with pytest.raises(RuntimeError, match="observer failed after commit"):
+        await inbox.commit(["accepted"])
+    assert await inbox.claim_turn() == []
+    assert AgentInbox(events=MemoryEvents(), items=sink.items, sink=sink).pending == []
+
+
+@pytest.mark.asyncio
+async def test_pending_input_mutations_keep_sink_and_live_queue_consistent():
+    sink = MemoryInboxSink()
+    events = MemoryEvents()
+    inbox = AgentInbox(events=events, sink=sink)
+    await inbox.submit(human_input("edit-me", "draft"), wake=True)
+    await inbox.submit(human_input("remove-me", "remove"), wake=True)
+
+    edited = await inbox.edit("edit-me", "edited")
+    retargeted = await inbox.retarget("edit-me", InboxTarget.NEXT_STEP)
+    removed = await inbox.remove("remove-me")
+
+    assert edited.input.content == "edited"
+    assert retargeted.target is InboxTarget.NEXT_STEP
+    assert removed.id == "remove-me"
+    assert [(item.id, item.input.content, item.target) for item in inbox.pending] == [
+        ("edit-me", "edited", InboxTarget.NEXT_STEP),
+    ]
+    assert [(item.id, item.input.content, item.target) for item in sink.items] == [
+        ("edit-me", "edited", InboxTarget.NEXT_STEP),
+    ]
+    assert events.changes[-3:] == [
+        Edited(id="edit-me", content="edited", content_sha256=content_digest("edited")),
+        Retargeted(id="edit-me", target=InboxTarget.NEXT_STEP),
+        Removed(id="remove-me"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_claimed_or_unknown_input_cannot_be_mutated():
+    inbox = AgentInbox(events=MemoryEvents(), sink=MemoryInboxSink())
+    await inbox.submit(human_input("claimed", "claimed"), wake=True)
+    await inbox.claim_turn()
+
+    for operation in (
+        lambda: inbox.edit("claimed", "changed"),
+        lambda: inbox.remove("claimed"),
+        lambda: inbox.retarget("missing", InboxTarget.NEXT_STEP),
+    ):
+        with pytest.raises(KeyError):
+            await operation()
+
+
+@pytest.mark.asyncio
+async def test_synchronizing_durable_recovery_wakes_observers_without_duplicate_events():
+    class UncertainSink(MemoryInboxSink):
+        async def append(self, change):
+            result = await super().append(change)
+            if isinstance(change, Inserted):
+                raise CommitUncertain("index confirmation failed")
+            return result
+
+    sink = UncertainSink()
+    events = MemoryEvents()
+    inbox = AgentInbox(events=events, sink=sink)
+    item = human_input("recovered", "steer", InboxTarget.NEXT_STEP)
+    with pytest.raises(CommitUncertain):
+        await inbox.submit(item, wake=False)
+    observer = inbox.subscribe()
+    assert not observer.is_set()
+    assert await inbox.submit(item, wake=False)
+    assert observer.is_set()
+    assert inbox.pending == [item]
+    assert events.changes == []
+
+    observer.clear()
+    sink.items[0] = item.model_copy(update={"target": InboxTarget.NEXT_TURN})
+    await inbox.retarget(item.id, InboxTarget.NEXT_TURN)
+    assert observer.is_set()
+    assert inbox.pending[0].target is InboxTarget.NEXT_TURN
+    assert events.changes == []
+    inbox.unsubscribe(observer)

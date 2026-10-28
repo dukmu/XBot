@@ -2,19 +2,35 @@ export const PROTOCOL_VERSION = "xbotv2.v3";
 
 export type JsonObject = Record<string, unknown>;
 
-export interface ImageInput {
+export interface MediaInput {
   data: string;
   media_type: string;
-}
-
-export interface AttachmentInput extends ImageInput {
   name: string;
 }
 
-export interface ImageReference {
-  path: string;
+export interface AttachmentInput extends MediaInput {
+  name: string;
+}
+
+export interface MessageRequest {
+  content: string;
+  request_id: string;
+  delivery: "queue" | "steer";
+  media: MediaInput[];
+  attachments: AttachmentInput[];
+}
+
+export interface RegenerateRequest {
+  request_id: string;
+}
+
+export interface ArtifactRef {
+  id: string;
   media_type: string;
+  name: string;
+  kind: string;
   size: number;
+  sha256: string;
   url?: string;
 }
 
@@ -22,8 +38,8 @@ export interface UsageData {
   input_tokens: number;
   output_tokens: number;
   total_tokens: number;
-  requests: number;
   context_tokens: number;
+  context_estimated?: boolean;
   cache_read_input_tokens: number;
   cache_creation_input_tokens: number;
   prompt_cache_write_tokens: number;
@@ -47,26 +63,29 @@ export interface SessionSummary {
   thread_count: number;
   blank: boolean;
   workspace_root?: string;
-  title?: string;
+  title: string;
 }
 
 export interface SessionListData {
   sessions: SessionSummary[];
   event_cursor: number;
+  next_cursor: string | null;
+  previous_cursor: string | null;
 }
 
 export interface WorkspaceData {
   workspace_id: string;
   path: string;
   title: string;
-  session_ids: string[];
+  session_count: number;
   created_at: string;
   updated_at: string;
 }
 
 export interface WorkspaceListData {
   items: WorkspaceData[];
-  archived_session_ids: string[];
+  next_cursor: string | null;
+  previous_cursor: string | null;
   event_cursor: number;
 }
 
@@ -85,6 +104,13 @@ export interface DirectoryListingData {
   truncated: boolean;
 }
 
+export interface ThreadListPage {
+  session_id: string;
+  threads: ThreadSummary[];
+  previous_cursor: string | null;
+  next_cursor: string | null;
+}
+
 export interface ThreadSummary {
   session_id: string;
   thread_id: string;
@@ -98,15 +124,15 @@ export interface ThreadSummary {
   model_mode: string;
   context_window: number;
   message_count: number;
-  usage: UsageData;
+  usage: import("./wire").UsageSnapshot;
   session_stats: SessionStatsData;
   pending_interactions: string[];
   status_slots: Record<string, string>;
   workspace_root?: string;
-  title?: string;
+  title: string;
 }
 
-export interface HistoryItem {
+export interface HistoryViewItem {
   role: "user" | "assistant" | "tool";
   id?: string;
   content: string;
@@ -117,15 +143,18 @@ export interface HistoryItem {
   data: unknown;
   error: JsonObject | null;
   artifacts: JsonObject[];
-  images: ImageReference[];
+  media?: ArtifactRef[];
+  outcome?: JsonObject;
   runtime?: Record<string, string> | null;
   timing?: Record<string, number> | null;
 }
 
-export interface OpenSessionResponse {
+export interface SessionView {
   session_id: string;
   thread_id: string;
+  title: string;
   status: "ready";
+  turn_status: "idle" | "running";
   agent_name: string;
   workspace_root: string;
   provider: string;
@@ -134,19 +163,28 @@ export interface OpenSessionResponse {
   context_window: number;
   usage: UsageData;
   session_stats: SessionStatsData;
-  history: HistoryItem[];
+  history: HistoryViewItem[];
   history_cursor?: string | null;
   event_cursor: number;
   status_slots: Record<string, string>;
   pending_inputs: PendingInput[];
+  pending_interactions: PendingInteraction[];
+}
+
+/**
+ * One unanswered client interaction, replayed by an open/resume response so a
+ * reloaded client can present the dialog again.
+ */
+export interface PendingInteraction {
+  type: string;
+  data: JsonObject;
 }
 
 export interface PendingInput {
   message_id: string;
   content: string;
   target: "next-turn" | "next-step";
-  source: string;
-  image_count: number;
+  media_count: number;
   artifact_count: number;
 }
 
@@ -188,16 +226,11 @@ export interface PluginConfigCatalog {
   plugins: PluginConfigDescriptor[];
 }
 
-export interface MessagePage {
-  messages: HistoryItem[];
-  next_cursor: string | null;
-}
-
 export interface TrajectoryMessageItem {
   position: number;
   kind: "message";
   message_id: string;
-  message: HistoryItem;
+  message: HistoryViewItem;
 }
 
 export interface TrajectorySurfaceReplaceItem {
@@ -206,7 +239,8 @@ export interface TrajectorySurfaceReplaceItem {
   operation: string;
   transcript: "preserve" | "replace";
   source_node_ids: string[];
-  messages: HistoryItem[];
+  messages: HistoryViewItem[];
+  summary: string;
 }
 
 export interface TrajectoryEventItem {
@@ -225,6 +259,9 @@ export type TrajectoryItem =
 export interface TrajectoryPage {
   items: TrajectoryItem[];
   next_cursor: string | null;
+  // Absolute position of the newest record at the time of the request; the
+  // client anchors its window on positions rather than on cursor offsets.
+  newest_position: number;
 }
 
 export interface ProviderInfo {
@@ -241,16 +278,26 @@ export interface ModelInfo {
   reasoning_effort: string;
   effort: string[];
   thinking: string;
-  input_modalities: ("text" | "image")[];
+  input_modalities: ("text" | "image" | "audio" | "video")[];
 }
 
 export interface AgentInfo {
   name: string;
   description: string;
   mode: "primary" | "subagent" | "all";
-  provider: string;
-  model: string;
-  context_window: number;
+  model_policy: JsonObject;
+  limits: JsonObject;
+  tool_policy: JsonObject;
+}
+
+/** One entry of the agent-loop tool catalog (`GET .../tools`). */
+export interface ToolInfo {
+  name: string;
+  registered_name: string;
+  namespace: string;
+  description: string;
+  parameters: Record<string, unknown>;
+  timeout_seconds: number | null;
 }
 
 export interface CommandInfo {
@@ -263,7 +310,7 @@ export interface CommandInfo {
   parameters: Record<string, unknown>;
 }
 
-export type CommandEffect = "history" | "thread" | "agents" | "tasks" | "commands" | "sessions";
+export type CommandEffect = "history" | "thread" | "agents" | "jobs" | "commands" | "sessions";
 
 export interface CommandResultData {
   command: string;
@@ -277,25 +324,24 @@ export interface CommandResult {
   data: CommandResultData;
 }
 
-export interface TaskData {
-  task_id: string;
-  kind: "shell" | "agent";
-  command: string;
-  cwd: string;
-  status: "pending" | "running" | "completed" | "failed" | "stopped";
-  created_at: number;
-  started_at: number;
-  finished_at: number;
-  output: string;
-  error: string;
-  agent: string;
-  thread_id: string;
-  usage: Record<string, unknown>;
+export interface JobData {
+  id: string;
+  kind: string;
+  label: string;
+  state: "queued" | "running" | "succeeded" | "failed_before_start" | "failed_running" | "cancelled_before_start" | "cancelled_running";
+  elapsed_ms: number;
+  summary: string | null;
 }
 
 export interface TodoItemData {
-  content: string;
+  id: string;
+  subject: string;
+  description?: string;
   status: "pending" | "in_progress" | "completed";
+  activeForm?: string;
+  owner?: string;
+  blocks: string[];
+  blockedBy: string[];
 }
 
 export interface ToolCall {
@@ -332,7 +378,7 @@ export interface UserInputRequest {
 
 export type InteractionRequest = PermissionRequest | UserInputRequest;
 
-export interface ServerEvent {
+export interface ViewEvent {
   protocol_version: string;
   session_id: string;
   thread_id: string;
@@ -353,7 +399,6 @@ export const EMPTY_USAGE: UsageData = {
   input_tokens: 0,
   output_tokens: 0,
   total_tokens: 0,
-  requests: 0,
   context_tokens: 0,
   cache_read_input_tokens: 0,
   cache_creation_input_tokens: 0,

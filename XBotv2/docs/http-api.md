@@ -6,7 +6,7 @@ skill's [HTTP route references](../.agents/skills/xbot-plugin-development/refere
 and [XBot API guide](../.agents/skills/xbot-plugin-development/references/xbot-api.md).
 
 The server is FastAPI with typed Pydantic wire models. The route owner is the
-plugin's `protocol.py`; the root `plugin.py` contributes the router when the
+plugin's `api/protocol.py`; `impl/plugin.py` contributes the router when the
 server carrier and required services exist. `GET /hello` is not used: the
 protocol handshake is `POST /hello`.
 
@@ -27,33 +27,135 @@ protocol handshake is `POST /hello`.
 | PATCH | `/sessions/{session_id}` | `rename_session` | `SessionSummary` |
 | POST | `/sessions/{session_id}/fork` | `fork_session` | `ForkResponse` |
 | DELETE | `/sessions/{session_id}` | `delete_session` | `DeleteSessionResponse` |
-| GET | `/sessions/{session_id}/threads` | `list_threads` | `ThreadListResponse` |
+| GET | `/sessions/{session_id}/threads` | `list_threads` | paginated `ThreadListResponse` |
 | POST | `/sessions/{session_id}/threads` | `open_thread` | `OpenSessionResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}` | `get_thread` | `ThreadSummary` |
 | POST | `/sessions/{session_id}/close` | `close_session` | `CloseResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/close` | `close_thread` | `CloseResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/interrupt` | `interrupt_thread` | `InterruptResponse` |
 
+For `open_session` in `resume` mode, an existing thread's persisted
+`workspace_root` is authoritative. Omitting `workspace_root` resumes in that
+workspace; supplying a different path fails with `workspace_conflict` rather
+than moving the thread. Reopening an already active thread is an attachment to
+the existing runtime and does not reconfigure its workspace.
+
+Catalog lists use `limit` (1–100, default 100) and an opaque `cursor`.
+`GET /sessions` returns `sessions`, `next_cursor`, `previous_cursor`, and
+`event_cursor`, ordered by session ID; `workspace_root` optionally filters the
+authoritative session workspace. `GET /workspaces` returns the same cursors and
+`items`, ordered by workspace preference. `GET /workspaces/{workspace_id}/sessions`
+and `GET /workspaces/archived-sessions` return paged `sessions` with the same
+cursors and an `archived_session_ids` subset of that page. Workspace member pages
+exclude archived sessions; `session_count` counts unarchived members. A null
+page cursor marks the corresponding end. A page cursor is a position, not a
+snapshot: changes or reordering can move items across pages. Use the returned
+catalog event cursor and refresh affected pages on events; expired event replay
+requires a fresh listing. Invalid page cursors return `invalid_catalog_cursor`.
+
+Workspace and member reorder events identify the moved entity and its optional
+before anchor. Archive events contain one `session_id` and `archived` flag.
+Session summaries remain authoritative in the session store. Startup repairs
+workspace membership in bounded batches; listing does not rescan the catalog.
+The session change deduplication cache holds at most 256 summaries, an internal
+budget rather than a measured optimum.
+
+`GET /sessions/{session_id}/threads` returns `threads`, `previous_cursor`, and
+`next_cursor`. It accepts `limit` (1–100), an opaque `cursor`, and optional
+`parent_thread_id` and `kind` (`main` or `subagent`) filters. Filtering precedes
+pagination; active threads that have not yet persisted are included. Threads
+are ordered by ID, and cursor boundaries are positions rather than snapshots.
+Use `kind=main&limit=1` to locate a session's main thread, or
+`GET /sessions/{session_id}/threads/{thread_id}` for an exact thread.
+
 ## Messages, history, queue, and stream
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `ThreadMessagesResponse` |
-| GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `ThreadTrajectoryResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/messages` | `list_messages` | cursor-paginated `HistoryPage[ConversationRecord]` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/display-messages` | `display_messages_endpoint` | cursor-paginated `HistoryPage[DisplayRecord]` previews |
+| GET | `/sessions/{session_id}/threads/{thread_id}/display-messages/{message_id}/body` | `display_body_endpoint` | one bounded display field page |
+| GET | `/sessions/{session_id}/threads/{thread_id}/trajectory` | `list_trajectory` | append-order `TrajectoryRead` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}` | `get_artifact` | artifact bytes with media headers |
-| POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | SSE turn stream |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutationResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutationResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | SSE turn stream |
+| POST | `/sessions/{session_id}/threads/{thread_id}/messages` | `send_message` | `202 Accepted` command submission |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/clear` | `clear_thread_history` | `HistoryMutation` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/undo` | `undo_thread_history` | `HistoryMutation` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/history/regenerate` | `regenerate_message` | `202 Accepted` command submission |
 | GET | `/sessions/{session_id}/threads/{thread_id}/queue` | `list_pending_inputs` | `PendingInputListResponse` |
 | PATCH | `/sessions/{session_id}/threads/{thread_id}/queue/{message_id}` | `update_pending_input` | updated `PendingInputListResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/events` | `stream_events` | replay/live SSE stream |
 
+### History items and windowed reads
+
+History reads and completed live-message events use the same discriminated
+`ConversationRecord` projection (`human_input`, `runtime_notice`, `assistant`,
+`tool`, or `compaction_summary`). Each record's required `id` is the canonical
+conversation-message identity, so clients can merge live and paged records
+without inventing a second identity. Trajectory positions remain a separate
+identity for append-log entries and are not substituted for message IDs.
+
+`display-messages` is a separate presentation contract: each field carries a
+bounded preview and full length, not a complete `ConversationRecord`. Its body
+endpoint accepts `field`, `offset`, and `limit` and returns one page. Message
+fields use character offsets; `artifact:<id>` fields for referenced text tool
+artifacts use byte offsets and UTF-8 replacement decoding. Original records and
+artifact downloads remain available through their full-content endpoints.
+
+A client that does not want the whole conversation asks for a bounded window:
+
+- `POST /sessions` (`open_session`) and `POST .../threads` (`open_thread`) accept
+  `history_limit` (1-500) and `include_history` (default `true`). Set
+  `include_history=false` to omit the history body from the attach snapshot. The response's `history` is a `HistoryPage` with the
+  newest that many records and `older_cursor` naming the page before them; the
+  cursor is `null` when the window already holds the beginning.
+- `GET .../messages?limit=N` reads the newest `N` records. `cursor` accepts
+  either `older_cursor` or `newer_cursor` from a previous page. The respective
+  cursor is `null` at the beginning or end of the transcript. `before_id` and
+  `after_id` read a page adjacent to a canonical message ID; pass at most one
+  of these anchors or `cursor`. Appending records leaves a cursor valid; a rewrite (`/history/undo`,
+  `/history/clear`, compaction) invalidates it, and the read then answers
+  `invalid_cursor` rather than a page from a different history.
+- History clear/undo responses return `HistoryMutation(removed_turns, history,
+  stats)`. Its `history` is the same `HistoryPage` used by attach and
+  `/messages`; clear also accepts the optional `history_limit` query parameter.
+- `GET .../trajectory` returns `TrajectoryRead(page=HistoryPage[TrajectoryEntry],
+  newest_position=...)` and also accepts `before=<position>` as an absolute
+  anchor, which is what a client uses once it has released the front of its own
+  window. A newly opened thread with no persisted records returns an empty
+  page with `newest_position=0`; an unknown thread returns not found.
+
 `MessageRequest` supports `content`, `request_id`, `delivery` (`queue` or
-`steer`), images, and attachments. SSE envelopes carry sequence, session,
-thread, request, event type, and typed data. The event stream is replayable
-from an opaque `after` cursor; an expired cursor is an explicit conflict, not
-silent truncation.
+`steer`), `media`, and `attachments`. Each media upload contains base64 `data`,
+`media_type`, and an optional `name`. A media-only message is valid. Persisted
+inputs and history records expose `media` as complete `ArtifactRef` values
+(`id`, `kind`, `media_type`, `name`, `size`, `sha256`); download the original bytes
+through the artifact endpoint. Base64 belongs to the upload request. Model
+requests resolve logical references to current absolute paths and encode bytes
+at the provider boundary. Current adapters support their declared text and image
+inputs; unsupported media is reported before a provider request is sent.
+
+SSE envelopes carry sequence, session,
+thread, typed event scope, kind, and payload. A `turn` scope carries the
+independent `turn_id`; it is not the message's `request_id` or an interaction
+id. The event stream is replayable from an opaque `after` cursor; an expired
+cursor is an explicit conflict, not silent truncation.
+
+Message and regeneration POSTs are command submissions and always return
+`202 Accepted`, regardless of `Accept`. Subscribe to `GET .../events` for all
+turn, tool, background-task, and regeneration events; it is the sole SSE
+transport and supports replay through the `after` cursor.
+
+Each connection owns only its cursor over the session's authoritative event
+log. Closing the connection releases that cursor; it does not cancel the
+session turn or any background job.
+
+An attached session SSE consumer receives every live frame in sequence while
+its cursor remains inside the retained replay window. The live notification is
+only a bounded wakeup; a slow consumer is never silently truncated or
+detached. If it falls behind the replay window, the server returns an
+explicit cursor conflict. Clients should keep network reading independent
+from expensive rendering and recover from a cursor conflict with the session
+snapshot's returned `event_cursor`.
 
 Queued and steering inputs use the same replayable stream as conversation
 output. `input_accepted`, `input_claimed`, and `input_consumed` carry
@@ -75,17 +177,21 @@ are intentionally maintained in the skill rather than duplicated here.
   "protocol_version": "xbotv2.v3",
   "session_id": "<session>",
   "thread_id": "<thread>",
-  "request_id": "<request>",
   "sequence": 17,
-  "type": "assistant_message | tool_result | usage | turn_finished | ...",
-  "data": {}
+  "scope": {"kind": "turn", "turn_id": "<turn>"},
+  "kind": "assistant_completed | tool_completed | usage_updated | turn_ended | ...",
+  "payload": {}
 }
 ```
 
-The `data` object is validated by the producer-owned event schema in
-`agentloop/protocol.py`, `session/protocol.py`, or the owning plugin's
-`protocol.py`; clients should preserve unknown event types and use `sequence`
-for ordering.
+Loop outputs are owned by `agentloop/outputs.py`, live session events by
+`session/events.py`, and capability events by their producing plugin. HTTP
+modules own transport envelopes and routes, not runtime event definitions.
+The SSE adapter projects completed messages into canonical conversation
+records and otherwise serializes the producer's event fields without `kind`
+(already carried by the envelope). Clients validate that payload with the
+corresponding producer-owned type, use `sequence` for ordering, and surface
+an unsupported kind instead of silently skipping it.
 
 ## Interactions
 
@@ -99,10 +205,40 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 
 ## Commands and Tools
 
+The command plane exposes server command discovery and execution. The catalogue
+shape is stable, while entries vary by active thread and loaded plugins. Client
+commands may also appear in the catalogue, but they are local affordances and
+are not executable through these HTTP routes. In the Textual TUI, `/help` is a
+local command which lists local commands and the current server catalogue, and
+`/help <command>` shows the selected entry's usage, parameters, and examples;
+see [Clients and runtime behavior](clients.md). Third-party HTTP clients must
+not assume TUI-local handlers exist.
+
+| Field | Meaning |
+|---|---|
+| `name` / `slash` | the command and its `/` form |
+| `kind` | who runs it: `client` (local affordance), `server` (this resource), `prompt` (submit the line as a message) |
+| `description` / `usage` / `examples` / `parameters` | what the user reads |
+| `effects` | what running it can touch (`history`, `thread`, `agents`, `jobs`, `commands`, `sessions`, `policy`), declared *before* it runs |
+| `exclusive` | whether it must run while nothing else is |
+
+`POST` takes **one line, exactly as typed**: `{"raw": "/model use m2"}`. The
+server resolves the name from its own catalogue and hands the rest to the
+command unchanged; a line the command cannot parse comes back as an error
+*result* (`status: "error"`, with the reason in `message`), not as a transport
+failure. There is no `kind` in the request: the catalogue already says who runs
+the line, and repeating it in every client would be a second implementation of
+the same rule. The route resolves against the server catalogue and dispatches
+server commands; prompt entries are submitted through the message endpoint by a
+client, and client entries never execute through this route. The returned
+`effects` are the handler-reported changes for a successful (`status: "ok"`)
+execution; error responses omit them. Do not infer effects from the command's
+name or declaration alone.
+
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | `CommandListResponse` (hidden from OpenAPI schema) |
-| POST | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandResponse` (hidden from OpenAPI schema) |
+| GET | `/sessions/{session_id}/threads/{thread_id}/commands` | `list_commands` | `CommandListResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/commands` | `run_command` | `CommandResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/tools` | `list_tools` | `ToolListResponse` |
 
 ## Agent and model selection
@@ -122,9 +258,9 @@ owned by `interactions`. A response ID is opaque and is not parsed by clients.
 | GET | `/sessions/{session_id}/policy` | `get_session_policy` | `SessionPolicyResponse` |
 | PATCH | `/sessions/{session_id}/policy` | `update_session_policy` | `SessionPolicyResponse` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/todos` | `get_todos` | Todo response |
-| GET | `/sessions/{session_id}/threads/{thread_id}/tasks` | `list_tasks` | `TaskListResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/tasks/{task_id}/stop` | `stop_task` | `TaskStopResponse` |
-| POST | `/sessions/{session_id}/threads/{thread_id}/tasks/stop` | `stop_all_tasks` | `TaskStopResponse` |
+| GET | `/sessions/{session_id}/threads/{thread_id}/jobs` | `list_jobs` | `JobListResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
+| POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_jobs` | `JobStopResponse` |
 
 ## Plugin configuration
 
@@ -167,6 +303,8 @@ plugin-directory discovery mechanism.
 | GET | `/directories` | `list_workspace_directories` | `DirectoryListing` |
 | GET | `/workspaces` | `list_workspaces` | `WorkspaceListResponse` |
 | GET | `/workspaces/events` | `stream_workspace_events` | catalog SSE stream |
+| GET | `/workspaces/{workspace_id}/sessions` | `list_workspace_sessions` | `WorkspaceSessionPageResponse` |
+| GET | `/workspaces/archived-sessions` | `list_archived_sessions` | `WorkspaceSessionPageResponse` |
 | POST | `/workspaces` | `create_workspace` | `WorkspaceCreateResponse` |
 | PATCH | `/workspaces/{workspace_id}` | `rename_workspace` | `WorkspaceResponse` |
 | DELETE | `/workspaces/{workspace_id}` | `delete_workspace` | `WorkspaceDeleteResponse` |

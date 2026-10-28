@@ -8,7 +8,6 @@ function usage(overrides: Partial<UsageData> = {}): UsageData {
     input_tokens: 0,
     output_tokens: 0,
     total_tokens: 0,
-    requests: 0,
     context_tokens: 0,
     cache_read_input_tokens: 0,
     cache_creation_input_tokens: 0,

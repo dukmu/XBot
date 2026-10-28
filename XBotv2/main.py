@@ -10,8 +10,20 @@ import subprocess
 import sys
 import webbrowser
 from pathlib import Path
-
-from XBotv2.core.paths import RuntimePaths
+from traceback import format_exception_only
+from xcore.api.errors import ServiceNotFoundError
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.loader.api.contracts import LoadError
+from XBotv2.agentloop.api.outputs import (
+    AssistantCompleted,
+    LoopError,
+    LoopTurnEnded,
+    ToolCompleted,
+    TurnCancelled,
+)
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.interactions.api.models import ClientNotice
 
 __version__ = "0.2.0"
 
@@ -49,15 +61,15 @@ def _common_parser() -> argparse.ArgumentParser:
         help="runtime data directory (env: XBOT_DATA_DIR)",
     )
     parser.add_argument(
-        "--provider", default=_env("PROVIDER", "default"),
-        help="provider configuration name (env: XBOT_PROVIDER)",
+        "--provider", default=_env("PROVIDER"),
+        help="provider configuration name; defaults to the configured provider (env: XBOT_PROVIDER)",
     )
     parser.add_argument("--session", default=_env("SESSION"), help="session to resume")
     parser.add_argument(
         "--workspace", default=None,
         help="Agent workspace; defaults to the current directory",
     )
-    parser.add_argument("--thread", default=_env("THREAD", "agent"), help="thread ID")
+    parser.add_argument("--thread", default=_env("THREAD", "main"), help="thread ID")
     parser.add_argument("--agent", default=_env("AGENT"), help="Agent definition name")
     parser.add_argument(
         "--no-plugins",
@@ -103,6 +115,27 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     tui.add_argument(
         "--port", type=int, default=_env("PORT", "4096"), help=argparse.SUPPRESS
+    )
+    tui.add_argument(
+        "--history-window",
+        type=int,
+        default=None,
+        help="conversation entries fetched when attaching and per older page",
+    )
+    tui.add_argument(
+        "--history-retention",
+        type=int,
+        default=None,
+        help="conversation entries kept in memory before released pages are dropped",
+    )
+    display = tui.add_mutually_exclusive_group()
+    display.add_argument(
+        "--fullscreen", dest="fullscreen", action="store_true", default=None,
+        help="use the alternate screen instead of inline terminal display",
+    )
+    display.add_argument(
+        "--inline", dest="fullscreen", action="store_false",
+        help="display inline and keep the output after exit (default)",
     )
 
     serve = commands.add_parser(
@@ -172,7 +205,7 @@ def _parse_args(
 def main(argv: list[str] | None = None):
     parser, args = _parse_args(argv)
 
-    from XBotv2.application.logging import setup_logging
+    from XBotv2.log_output import setup_logging
 
     setup_logging(
         data_dir=args.data_dir,
@@ -190,18 +223,13 @@ def main(argv: list[str] | None = None):
         elif args.command == "once":
             asyncio.run(_run_once(args))
         elif args.command == "acp":
-            from XBotv2.acp_plugin.server import run_acp
-
-            asyncio.run(run_acp(
-                data_dir=args.data_dir,
-                provider_name=args.provider,
-                no_plugins=args.no_plugins,
-                selected_agent=args.agent,
-            ))
+            asyncio.run(_run_acp(args))
         else:
             parser.print_help()
-    except ValueError as exc:
+    except (ValueError, LoadError) as exc:
         parser.exit(2, f"Error: {exc}\n")
+    except ServiceNotFoundError as exc:
+        parser.exit(2, "Error: " + "".join(format_exception_only(exc)))
 
 
 def _run_server(args) -> None:
@@ -226,34 +254,36 @@ def _run_server(args) -> None:
         print(f"Error: uvicorn not installed: {exc}", file=sys.stderr)
         sys.exit(2)
 
-    paths = RuntimePaths.from_data_dir(args.data_dir)
-    workspace_root = str(_workspace_root(args))
-    from XBotv2.application.server import start_server_application
+    asyncio.run(_serve(args))
 
-    root_ctx = asyncio.run(start_server_application(
-        paths=paths,
-        provider_name=args.provider,
-        workspace_root=workspace_root,
-        no_plugins=args.no_plugins,
-    ))
-    app = root_ctx.server
-    uds = args.uds
+
+async def _serve(args) -> None:
+    """Keep plugin resources, HTTP serving and teardown on the same loop."""
+    import uvicorn
+
+    from XBotv2.loader.api.contracts import PluginOverlay
+
+    session_config = {}
+    if args.workspace is not None:
+        session_config["workspace_root"] = args.workspace
+    if args.provider is not None:
+        session_config["provider_name"] = args.provider
+    if args.no_plugins:
+        session_config["no_plugins"] = True
+    root_ctx = await open_runtime(
+        paths=RuntimePaths.from_data_dir(args.data_dir),
+        overrides=PluginOverlay.parse([{"id": "session", "config": session_config}]),
+    )
     try:
+        uds = args.uds
         if uds:
             uds_path = Path(uds).expanduser()
             uds_path.parent.mkdir(parents=True, exist_ok=True)
-            uvicorn.run(
-                app,
-                uds=str(uds_path),
-                log_config=None,
-                ws="none",
-            )
-        else:
-            uvicorn.run(
-                app, host=args.bind, port=args.port, log_config=None, ws="none"
-            )
+            uds = str(uds_path)
+        from XBotv2.server.api.contracts import HTTP_LISTENER
+        await root_ctx.require(HTTP_LISTENER).serve(host=args.bind, port=args.port, uds=uds)
     finally:
-        asyncio.run(root_ctx.stop())
+        await root_ctx.close()
 
 
 def _run_tui(args) -> None:
@@ -269,21 +299,34 @@ def _run_tui(args) -> None:
         args.log_level,
     )
 
+    from XBotv2.loader.api.contracts import PluginOverlay
+
+    session_id = getattr(args, "session", None)
+    tui_config = {"thread_id": args.thread}
+    if args.workspace is not None:
+        tui_config["workspace"] = str(_workspace_root(args))
+    for key, value in (
+        ("session_id", session_id), ("agent", args.agent),
+        ("history_window", args.history_window),
+        ("history_retention", args.history_retention),
+        ("fullscreen", args.fullscreen),
+    ):
+        if value is not None:
+            tui_config[key] = value
     server_url, uds_path, spawned_server = _local_server(args, "xbotv2")
-
-    from XBotv2.tui.textual_client import TextualTuiClient
-
-    client = TextualTuiClient(
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        agent=getattr(args, "agent", None),
-        workspace_root=str(_workspace_root(args)),
-        session_mode="resume" if getattr(args, "session", None) else "new",
-        base_url=server_url,
-        uds_path=uds_path,
-    )
     try:
-        asyncio.run(client.run())
+        overrides = PluginOverlay.parse([
+            {"id": "client-transport", "config": {
+                "base_url": server_url, "uds_path": uds_path,
+            }},
+            {"id": "textual-tui", "config": tui_config},
+        ])
+        asyncio.run(
+            run_terminal(
+                paths=RuntimePaths.from_data_dir(args.data_dir),
+                overrides=overrides,
+            )
+        )
     finally:
         _cleanup_spawned_server(spawned_server, uds_path)
 
@@ -296,7 +339,8 @@ def _run_web(args) -> None:
     ).is_dir():
         raise SystemExit(
             f"Error: compiled Web client not found at {static_root}; "
-            "run `npm run build` in XBotv2/web"
+            "install a distribution containing the Web assets, or build the "
+            "frontend in a source checkout before building the wheel"
         )
     if args.web_bind != "127.0.0.1":
         raise SystemExit("Error: Web mode only supports --web-bind 127.0.0.1")
@@ -389,10 +433,11 @@ def _spawn_server(args) -> subprocess.Popen:
         sys.executable, "-m", "XBotv2.main",
         "serve",
         "--data-dir", args.data_dir,
-        "--provider", args.provider,
         "--workspace", str(_workspace_root(args)),
         "--log-level", args.log_level,
     ]
+    if args.provider is not None:
+        cmd.extend(["--provider", args.provider])
     uds = getattr(args, "uds", None)
     if uds:
         cmd.extend(["--uds", uds])
@@ -462,57 +507,113 @@ def _workspace_root(args) -> Path:
 
 async def _run_once(args):
     """Run a single prompt and exit."""
-    from XBotv2.application.app import start_application
-    from XBotv2.application.host import mounted_application
-    from XBotv2.session.runtime import SessionRuntime
+    from XBotv2.loader.api.contracts import PluginOverlay
+    from XBotv2.session.api.contracts import SESSIONS, OpenSession
 
-    context = await start_application(
-        paths=RuntimePaths.from_data_dir(args.data_dir),
-        provider_name=args.provider,
-        session_id=getattr(args, "session", None),
-        thread_id=getattr(args, "thread", "agent"),
-        workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
-        selected_agent=getattr(args, "agent", None),
-        interactive=False,
-    )
-    application = mounted_application(context)
-    engine = application.driver
-    await engine.start_session()
-    session = context.loop_state.session
-    runtime = SessionRuntime(
-        session_id=session.session_id,
-        thread_id=session.thread_id,
-        provider_name=args.provider,
-        paths=RuntimePaths.from_data_dir(args.data_dir),
-        workspace_root=str(_workspace_root(args)),
-        no_plugins=args.no_plugins,
-        application=application,
-        engine=engine,
-        interactive=False,
+    paths = RuntimePaths.from_data_dir(args.data_dir)
+    workspace = str(_workspace_root(args))
+    host = await open_runtime(
+        paths=paths,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": args.provider,
+            "workspace_root": workspace,
+            "no_plugins": args.no_plugins,
+        }}]),
     )
     try:
-        async for event in runtime.stream_message(args.prompt, "once"):
-            etype = event.get("type", "")
-            data = event.get("data", {})
-
-            if etype == "assistant_message":
-                content = data.get("content", "")
-                if content:
-                    print(content)
-            elif etype == "tool_result":
-                tc_id = data.get("tool_call_id", "")
-                content = data.get("content", "")
-                print(f"\n[{tc_id}]: {content[:300]}")
-            elif etype == "client_message":
-                print(f"\n[message] {data.get('message', '')}")
-            elif etype == "permission_denied":
-                print(f"\n[permission denied] {data.get('reason', '')}")
-            elif etype == "error":
-                print(f"\nError: {data.get('message', 'unknown')}")
+        session_id = getattr(args, "session", None)
+        scope = await host.require(SESSIONS).open(OpenSession(
+            session_id=session_id,
+            thread_id=getattr(args, "thread", "main"),
+            provider_name=args.provider,
+            workspace_root=args.workspace if session_id else workspace,
+            selected_agent=getattr(args, "agent", None),
+            mode="resume" if session_id else "new",
+            no_plugins=args.no_plugins,
+            interactive=False,
+        ))
+        from XBotv2.agentloop.api.contracts import AGENT_LOOP
+        runtime = scope.require(AGENT_LOOP)
+        from XBotv2.session.api.contracts import THREAD_EVENTS
+        events = scope.require(THREAD_EVENTS).subscribe()
+        try:
+            await runtime.send_message(args.prompt, "once")
+            async for frame in events:
+                event = frame.event
+                if isinstance(event, AssistantCompleted):
+                    content = "".join(
+                        part.text for part in event.message.parts
+                        if isinstance(part, TextPart)
+                    )
+                    if content:
+                        print(content)
+                elif isinstance(event, ToolCompleted):
+                    outcome = event.execution.message.outcome
+                    if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+                        content = "".join(
+                            part.text
+                            for part in outcome.output.parts
+                            if isinstance(part, TextPart)
+                        )
+                    elif isinstance(outcome, (ToolDenied, ToolCancelled)):
+                        content = outcome.reason
+                    else:
+                        raise TypeError(
+                            f"Unsupported tool outcome: {type(outcome).__name__}"
+                        )
+                    print(f"\n[{event.execution.message.call.id}]: {content[:300]}")
+                elif isinstance(event, ClientNotice):
+                    print(f"\n[message] {event.message}")
+                elif isinstance(event, LoopError):
+                    print(f"\nError: {event.message}")
+                if isinstance(event, (LoopTurnEnded, LoopError)):
+                    # A failed turn may never reach ``turn_started`` and therefore
+                    # has no lifecycle terminal frame; the typed error ends it.
+                    break
+        finally:
+            await events.aclose()
     finally:
-        await runtime.close()
+        await host.stop()
 
+
+
+
+async def _run_acp(args):
+    from XBotv2.acp_plugin.api.contracts import ACP_SERVER
+    from XBotv2.loader.api.contracts import PluginOverlay
+    root = await open_runtime(paths=RuntimePaths.from_data_dir(args.data_dir), profile="acp", overrides=PluginOverlay.parse([{"id": "acp", "config": {"provider_name": args.provider, "no_plugins": args.no_plugins, "selected_agent": args.agent}}]))
+    try:
+        await root.require(ACP_SERVER).serve()
+    finally:
+        await root.close()
+
+
+async def open_runtime(*, paths: RuntimePaths, profile: str = "server", overrides=None, plugin_dirs=()):
+    """CLI composition: one XCore root, shared resources and loader."""
+    from xcore.api.context import Context
+    from XBotv2.loader.api.tree import load_process_tree
+    from XBotv2.loader.api.service import LOADER
+    from XBotv2.loader.api.service import create_loader
+    from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
+    ctx = Context(data_dir=paths.data_dir)
+    ctx.set("runtime_paths", paths)
+    ctx.set("runtime_log", DEFAULT_RUNTIME_LOG)
+    ctx.set("client_profile", profile == "client")
+    loader = create_loader(plugin_dirs=plugin_dirs)
+    ctx.dispose(loader.close)
+    ctx.set("plugin_dirs", tuple(plugin_dirs))
+    ctx.provide(LOADER, loader)
+    await loader.mount(ctx, load_process_tree(paths=paths, profile=profile, overrides=overrides, plugin_dirs=plugin_dirs), kind="process")
+    return ctx
+
+
+async def run_terminal(*, paths, overrides):
+    from XBotv2.tui.api.service import TERMINAL_CLIENT
+    ctx = await open_runtime(paths=paths, profile="client", overrides=overrides)
+    try:
+        await ctx.require(TERMINAL_CLIENT).run()
+    finally:
+        await ctx.close()
 
 if __name__ == "__main__":
     main()

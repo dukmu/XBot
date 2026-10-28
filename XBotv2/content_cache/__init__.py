@@ -1,1 +1,0 @@
-"""Provider content cache plugin."""

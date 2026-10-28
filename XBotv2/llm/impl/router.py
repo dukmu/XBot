@@ -1,0 +1,77 @@
+"""LLM C/S wire models and route contribution."""
+
+from __future__ import annotations
+from XBotv2.agentloop.api.contracts import AGENT_LOOP
+
+from fastapi import APIRouter
+from XBotv2.core.api.operations import EmptyRequest, dispatch_operation
+from XBotv2.llm.api.contracts import (
+    LlmSelectionError,
+    LIST_PROVIDERS,
+    ProviderCatalog,
+    SELECT_EFFORT,
+    SELECT_PROVIDER,
+    SelectEffort,
+    SelectProvider,
+)
+from XBotv2.protocol.api.http_util import HttpServerError
+from XBotv2.session.api.contracts import SessionsPort
+from xcore.api.events import EventDispatch
+from XBotv2.llm.api.protocol import (
+    EffortSelectionRequest, EffortSelectionResponse,
+    ProviderSelectionRequest, ProviderSelectionResponse,
+)
+
+def build_router(*, events: EventDispatch, sessions: SessionsPort) -> APIRouter:
+    router = APIRouter()
+
+    @router.get("/providers", operation_id="list_providers")
+    async def list_providers() -> ProviderCatalog:
+        return await dispatch_operation(events, LIST_PROVIDERS, EmptyRequest())
+
+    @router.put(
+        "/sessions/{session_id}/threads/{thread_id}/provider",
+        operation_id="select_provider",
+    )
+    async def select_provider(
+        session_id: str,
+        thread_id: str,
+        payload: ProviderSelectionRequest,
+    ) -> ProviderSelectionResponse:
+        try:
+            selected = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(SELECT_PROVIDER, SelectProvider(payload.name, payload.model))
+        except LlmSelectionError as exc:
+            # The selection error carries the wire code; no message matching.
+            raise HttpServerError(exc.code, str(exc), status=404) from exc
+        return ProviderSelectionResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            provider=selected.provider,
+            model=selected.model,
+            model_mode=selected.model_mode,
+        )
+
+    @router.put(
+        "/sessions/{session_id}/threads/{thread_id}/effort",
+        operation_id="select_effort",
+    )
+    async def select_effort(
+        session_id: str,
+        thread_id: str,
+        payload: EffortSelectionRequest,
+    ) -> EffortSelectionResponse:
+        try:
+            selected = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(SELECT_EFFORT, SelectEffort(payload.effort))
+        except ValueError as exc:
+            raise HttpServerError("unsupported_effort", str(exc), status=400) from exc
+        return EffortSelectionResponse(
+            session_id=session_id,
+            thread_id=thread_id,
+            provider=selected.provider,
+            model=selected.model,
+            reasoning_effort=selected.reasoning_effort,
+            model_mode=selected.model_mode,
+            available=list(selected.available),
+        )
+
+    return router

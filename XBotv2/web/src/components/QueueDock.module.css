@@ -26,8 +26,7 @@
 }
 
 .header,
-.row,
-.steering {
+.row {
   display: flex;
   box-sizing: border-box;
   width: 100%;
@@ -76,12 +75,6 @@
   white-space: nowrap;
 }
 
-.state {
-  flex: none;
-  color: var(--dsw-alias-label-tertiary);
-  font-size: 11px;
-  text-transform: capitalize;
-}
 
 .editor {
   box-sizing: border-box;
@@ -116,11 +109,3 @@
 .header:focus-visible,
 .action:focus-visible { outline: 2px solid var(--dsw-alias-label-tertiary); outline-offset: -2px; }
 
-.steering {
-  color: var(--dsw-alias-label-tertiary);
-  box-shadow: inset 0 1px 0 var(--dsw-alias-border-l1);
-  font-size: 12px;
-}
-
-.steering span { min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.steering small { color: var(--dsw-alias-state-business-primary); }

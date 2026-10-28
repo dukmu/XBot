@@ -1,19 +1,42 @@
 import { describe, expect, it, vi } from "vitest";
-import type { OpenSessionResponse, ServerEvent } from "../api/types";
-import { XBotApiError } from "../api/client";
+import type { SessionView } from "../api/types";
+import type { ServerEvent } from "../api/wire";
+import { XBotApi, XBotApiError } from "../api/client";
 import { SessionEventConnection, type SessionEventListener } from "./SessionEventConnection";
 
 const session = {
   session_id: "session-1",
   thread_id: "agent",
   event_cursor: 4,
-} as OpenSessionResponse;
+} as SessionView;
 
 describe("SessionEventConnection", () => {
+  it("marks an idle stream connected after the HTTP response opens", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream(), { status: 200 }),
+    );
+    const listener: SessionEventListener = {
+      onEvent: vi.fn(),
+      onConnection: vi.fn(),
+      onDisconnect: vi.fn(),
+      onResetRequired: vi.fn(),
+    };
+    const connection = new SessionEventConnection(new XBotApi("http://xbot.test"));
+    try {
+      connection.start(session, listener);
+      await vi.waitFor(() => expect(listener.onConnection).toHaveBeenCalledWith(true));
+      expect(listener.onEvent).not.toHaveBeenCalled();
+      expect(listener.onDisconnect).not.toHaveBeenCalled();
+    } finally {
+      connection.stop();
+      fetchMock.mockRestore();
+    }
+  });
+
   it("reconnects after a transport failure and delivers the next stream", async () => {
     let calls = 0;
     const cursors: number[] = [];
-    const event = { type: "usage", data: {}, sequence: 5 } as ServerEvent;
+    const event = { kind: "usage", payload: {}, sequence: 5 } as ServerEvent;
     const transport = {
       async *streamEvents(_sessionId: string, _threadId: string, after: number) {
         calls += 1;
@@ -112,7 +135,7 @@ describe("SessionEventConnection", () => {
     const disconnected: boolean[] = [];
     const transport = {
       async *streamEvents() {
-        yield { ...({ type: "usage", data: {} } as ServerEvent), sequence: 6 };
+        yield { ...({ kind: "usage", payload: {} } as ServerEvent), sequence: 6 };
       },
     };
     const listener: SessionEventListener = {

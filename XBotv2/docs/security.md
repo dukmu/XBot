@@ -10,8 +10,9 @@ references.
 
 The sandbox is a hard capability ceiling: mounts, network, workspace access,
 runtime data visibility, and host execution are decided by sandbox policy.
-The permission system is a Tool-call policy: it matches the exact Tool name
-and parameter values using bounded full-match regular expressions.
+The permission system is a Tool-call policy: it matches Tool names, parameter
+values, and supported resolved filesystem paths using bounded full-match
+regular expressions.
 
 Approval cannot widen the sandbox. If a sandbox guard rejects a call, that
 permission-layer attempt is consumed as an authorization attempt but execution
@@ -30,10 +31,17 @@ payloads and share only the approval transport.
   through the parent permission chain.
 - `deny`: always wins over an allow at the same effective policy layer.
 
-`check()` is a read-only policy query. `check_tool_call()` is the consuming
-authorization path. It must not log raw command bodies, patch content, or
-permission regexes. Audit logs record request id, source, outcome, and failure
-class.
+`check()` is a read-only policy query. The registered permission guard owns the
+authorization attempt and consumes a matching one-shot grant only after the
+final decision is `allow`. It must not log raw command bodies, patch content,
+or permission regexes. Audit logs record request id, source, outcome, and
+failure class.
+
+While a turn is live, a client that reloads or reconnects rebuilds an
+unanswered dialog from `OpenSessionResponse.pending_interactions`; clients must
+not rely on the bounded event-replay window for a request that requires an
+answer. Deciding when an unanswered request may be abandoned is a client
+concern, not a server-side timeout.
 
 ## Sandbox and cwd
 
@@ -44,12 +52,25 @@ human `/sandbox` command and the authenticated session-policy route are the
 configuration surfaces for changing the policy; an Agent cannot rewrite the
 policy through shell text.
 
+The escalation parameter belongs to the shell Tool, not to permission policy.
+The shell declares a typed per-call sandbox-escape predicate on its Tool
+registration. The generic execution, permission, and sandbox layers consume
+that declaration without hard-coding the shell name or its argument values. A
+blanket Tool allow therefore still asks for approval unless an explicit allow
+rule constrains the declared escape argument.
+
 ## Paths
 
 `RuntimeVariables.for_thread(...)` and `ArtifactStore.model_path()` provide
 absolute model-facing paths. Artifact IDs remain logical and persisted. A
 relative Tool path resolves inside the workspace; `session/...` is an ordinary
 workspace path, not a virtual storage prefix.
+Permission `path_scope` is a bounded full-match regex over every resolved path
+argument supported by the Tool operation. Config variables use `$${NAME}` and
+are expanded by the shared configuration loader before plugin validation;
+`${...}` remains literal. Variable values are inserted verbatim, including
+regex metacharacters. See the [permission configuration guide](../.agents/skills/xbot-plugin-development/references/plugins/permissions.md#yaml-configuration-and-variable-expansion)
+for rule fields, matching, examples, and precedence.
 
 ## Limits
 

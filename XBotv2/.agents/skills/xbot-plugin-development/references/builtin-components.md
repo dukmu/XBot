@@ -29,7 +29,7 @@ and the component source before depending on one.
 
 | Inject name | Typical owner | Use |
 |---|---|---|
-| `tools` | `agentloop.tool_service` | register/resolve standard Tools |
+| `tools` | `agentloop.impl.tool_service` | register/resolve standard Tools |
 | `commands` | `commands` | register human slash commands |
 | `model` | LLM/session composition | selected model service for auxiliary model work |
 | `interactions` | `interactions` | typed user input and cancellation |
@@ -40,9 +40,9 @@ and the component source before depending on one.
 | `loop_state` | agent loop | active loop/session facts for documented hooks |
 | `agent_catalog` | Agent catalog | register/discover Agent definitions |
 | `jobs` | jobs | background job/subagent lifecycle |
-| `variables` | application/session | documented runtime variable expansion |
+| `variables` | session thread | documented runtime variable expansion |
 
-`ctx.state` is XCore's root state service and supports logical namespaces. A
+`ctx.state` resolves the current owner's state service and supports logical namespaces. Thread state comes from that thread's persistence; process state is separate. A
 plugin should not infer a physical state path from `runtime_paths`; typed paths
 are for artifact/session/runtime owners whose contract explicitly grants one.
 
@@ -56,7 +56,7 @@ For component-specific behavior, read the corresponding section in
 the matching plugin reference before depending on it. Check the current tree because
 profiles and disabled entries can change what is mounted in a given process.
 
-Before adding a service, search package-root exports and the built-in tree.
+Before adding a service, search owner API contracts and the built-in tree.
 Before adding a Tool, search registered names and Tools documentation. Before
 adding persistence, identify the canonical owner so the plugin does not
 duplicate history, usage, inbox, compact input, or artifacts in its own state.

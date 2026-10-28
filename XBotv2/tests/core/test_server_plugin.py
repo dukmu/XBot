@@ -1,15 +1,15 @@
 """Server host and dumb web-carrier plugin tests."""
 
 from pathlib import Path
-
 import pytest
 import pytest_asyncio
+import httpx
 import yaml
 from fastapi import APIRouter, FastAPI
-
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.server.contracts import REGISTER_ROUTE, RouteContribution
-from XBotv2.server.plugin import WebServer
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.loader.api.contracts import PluginOverlay
+from XBotv2.server.api.contracts import REGISTER_ROUTE, RouteContribution
+from XBotv2.server.impl.plugin import WebServer, route_keys
 
 
 def test_web_server_register_is_an_effect() -> None:
@@ -25,7 +25,7 @@ def test_web_server_register_is_an_effect() -> None:
         return {"ok": True}
 
     def paths() -> set[str]:
-        return {getattr(route, "path", None) for route in app.routes}
+        return {path for _method, path in route_keys(app)}
 
     assert "/hmr/marker" not in paths()
     dispose = carrier.register(router)
@@ -33,6 +33,29 @@ def test_web_server_register_is_an_effect() -> None:
 
     dispose()
     assert "/hmr/marker" not in paths()
+
+
+@pytest.mark.asyncio
+async def test_mounted_router_is_dispatched_until_its_disposer_runs() -> None:
+    """Registration is an effect on real dispatch, not only on route bookkeeping."""
+
+    app = FastAPI()
+    carrier = WebServer(app)
+
+    router = APIRouter()
+
+    @router.get("/effect/probe")
+    async def probe() -> dict[str, bool]:
+        return {"ok": True}
+
+    dispose = carrier.register(router)
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        assert (await client.get("/effect/probe")).json() == {"ok": True}
+        dispose()
+        assert (await client.get("/effect/probe")).status_code == 404
 
 
 def test_web_server_duplicate_path_is_rejected() -> None:
@@ -62,9 +85,33 @@ def test_web_server_duplicate_path_is_rejected() -> None:
     raise AssertionError("duplicate path registration must raise")
 
 
+
+
+@pytest.mark.asyncio
+async def test_existing_process_state_keeps_tui_session_routes_available(tmp_path):
+    from XBotv2.main import open_runtime
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    from XBotv2.persistence.api.contracts import PERSISTENCE
+
+    initial = await open_runtime(paths=paths)
+    await initial.require(PERSISTENCE).state().set("unrelated.setting", "preserved")
+    await initial.close()
+    context = await open_runtime(paths=paths)
+    try:
+        async with httpx.AsyncClient(
+            transport=httpx.ASGITransport(app=context.server), base_url="http://test",
+        ) as client:
+            assert (await client.get("/sessions")).status_code == 200
+            assert (await client.get("/workspaces")).status_code == 200
+        assert await context.require(PERSISTENCE).state().get("unrelated.setting") == "preserved"
+    finally:
+        await context.destroy()
+
+
 @pytest_asyncio.fixture
 async def booted_server(tmp_path: Path):
-    from XBotv2.application.server import start_server_application
+    from XBotv2.main import open_runtime
 
     data_dir = tmp_path / "data"
     (data_dir / "config").mkdir(parents=True)
@@ -74,7 +121,7 @@ async def booted_server(tmp_path: Path):
                 "id": "llm",
                 "name": "llm",
                 "config": {
-                    "default": "default",
+                    "default_provider": "default",
                     "providers": {
                         "default": {
                             "protocol": "openai",
@@ -99,16 +146,16 @@ async def booted_server(tmp_path: Path):
         "sandbox:\n  enabled: false\n  resources: []\n",
         encoding="utf-8",
     )
-    server = await start_server_application(
-        provider_name="default",
+    server = await open_runtime(
         paths=RuntimePaths.from_data_dir(data_dir),
-        workspace_root=str(tmp_path),
-        no_plugins=True,
+        overrides=PluginOverlay.parse([{"id": "session", "config": {
+            "provider_name": "default", "workspace_root": str(tmp_path), "no_plugins": True,
+        }}]),
     )
     try:
         yield server
     finally:
-        await server.stop()
+        await server.close()
 
 
 @pytest.mark.asyncio
@@ -134,10 +181,6 @@ async def test_router_contribution_is_routed_through_xcore(booted_server) -> Non
         RouteContribution(owner="test", router=router),
     )
     assert callable(dispose)
-    assert "/event-owned" in {
-        getattr(route, "path", None) for route in booted_server.server.routes
-    }
+    assert "/event-owned" in {path for _method, path in route_keys(booted_server.server)}
     dispose()
-    assert "/event-owned" not in {
-        getattr(route, "path", None) for route in booted_server.server.routes
-    }
+    assert "/event-owned" not in {path for _method, path in route_keys(booted_server.server)}

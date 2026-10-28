@@ -19,14 +19,22 @@ explicit data directory and workspace for tests:
 xbot once --data-dir ./run-data --workspace ./workspace "List the files"
 ```
 
-An external plugin is a normal package. Its root `plugin.py` exports one
-module-level `plugin` object; public declarations belong in `contracts.py`,
-`events.py`, and `protocol.py`:
+Interactive terminal use is `xbot tui` (also the default when no subcommand is
+given). It starts a local API server unless `--server URL` points to an
+existing one. `xbot serve` starts only the HTTP/SSE API; `xbot web` serves the
+compiled Web client included in the release wheel; `xbot acp` runs the ACP carrier. Use `xbot --help` and
+`xbot <mode> --help` for the installed version's flags. TUI history paging and
+retention flags and its client plugin settings are summarized in
+[clients](clients.md).
+
+An external plugin is a normal package. Its `impl/plugin.py` declares scope facet functions;
+public declarations belong in `api/contracts.py`, `api/events.py`, and
+`api/protocol.py`:
 
 ```text
 weather-plugin/
 ├── pyproject.toml
-├── src/weather_plugin/{__init__.py,contracts.py,events.py,protocol.py,plugin.py}
+├── src/weather_plugin/{api/,impl/plugin.py,doc/,tests/}
 └── tests/
 ```
 
@@ -47,3 +55,22 @@ XBotv2/xcore.yaml
 The session document uses the same `plugins` overlay schema. Sandbox and
 permissions are the `sandbox` and `permissions` plugin declarations, not
 separate configuration files.
+
+Resuming an existing session is independent of the caller's current directory.
+The server restores the workspace recorded in that session, including its
+workspace plugin configuration and runtime paths. A supplied launch workspace
+sets the default for new sessions; it does not relocate a resumed session.
+
+Provider `request_timeout_seconds` defaults to 60 seconds and configures SDK
+transport timeouts (connection, read inactivity, write, and pool acquisition).
+It is not a total generation deadline: reasoning, text, or SSE heartbeats that
+keep arriving may keep a request alive for longer. A provider that sends nothing
+while thinking can still hit the read timeout; increase the value for that
+endpoint, or set it to `null` to disable transport timeouts.
+
+Timeout failures use the normal provider retry policy, including backoff and
+`XBOT_PROVIDER_MAX_RETRIES`. The default remains 16 retries; `none`/`infinite`
+explicitly requests unlimited retries. Once any model output has been emitted,
+the request is not replayed, avoiding duplicated output or tool calls. Retry
+exhaustion (or a failure after partial output) reaches the client as a normal
+provider failure, not a separate deadline wrapper.

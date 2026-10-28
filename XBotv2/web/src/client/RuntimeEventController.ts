@@ -1,13 +1,14 @@
+import { projectEvent } from "../state/wireProjection";
 import type { XBotApi } from "../api/client";
-import type { OpenSessionResponse, ServerEvent, ThreadSummary } from "../api/types";
+import type { SessionView, ViewEvent, ThreadSummary } from "../api/types";
 import { SessionEventConnection } from "./SessionEventConnection";
 
-type SessionAddress = Pick<OpenSessionResponse, "session_id" | "thread_id" | "event_cursor">;
+type SessionAddress = Pick<SessionView, "session_id" | "thread_id" | "event_cursor">;
 
 export interface RuntimeEventListener {
-  onEvents(events: ServerEvent[]): void;
-  onThreads(threads: ThreadSummary[]): void;
-  onTaskExpired(taskId: string): void;
+  onEvents(events: ViewEvent[]): void;
+  onThread(thread: ThreadSummary): void;
+  onJobExpired(jobId: string): void;
   onConnection(connected: boolean): void;
   onError(error: unknown): void;
   onResetRequired(): void;
@@ -15,16 +16,16 @@ export interface RuntimeEventListener {
 
 export class RuntimeEventController {
   private readonly connection: SessionEventConnection;
-  private events: ServerEvent[] = [];
+  private events: ViewEvent[] = [];
   private flushTimer: number | null = null;
-  private threadRefreshTimer: number | null = null;
   private liveRefreshTimer: number | null = null;
   private liveRefreshGeneration: number | null = null;
-  private readonly taskTimers = new Map<string, number>();
+  private readonly jobTimers = new Map<string, number>();
   private generation: number | null = null;
+  private address: SessionAddress | null = null;
 
   constructor(
-    private readonly api: Pick<XBotApi, "streamEvents" | "listThreads">,
+    private readonly api: Pick<XBotApi, "streamEvents" | "getThread" | "artifactUrl">,
     private readonly listener: RuntimeEventListener,
   ) {
     this.connection = new SessionEventConnection(api);
@@ -32,9 +33,10 @@ export class RuntimeEventController {
 
   start(session: SessionAddress, generation: number, running = false): void {
     this.generation = generation;
+    this.address = session;
     let resetRequested = false;
     this.connection.start(session, {
-      onEvent: (event) => this.handle(event, generation),
+      onEvent: (event) => this.handle(projectEvent(event, (id) => this.api.artifactUrl(event.session_id, event.thread_id, id)), generation),
       onConnection: (connected) => {
         if (this.isCurrent(generation)) this.listener.onConnection(connected);
       },
@@ -48,25 +50,31 @@ export class RuntimeEventController {
         }
       },
     });
-    if (running) this.startLiveRefresh(session.session_id, generation);
+    if (running) this.startLiveRefresh(generation);
   }
 
   stop(): void {
     this.generation = null;
+    this.address = null;
     this.connection.stop();
     if (this.flushTimer !== null) window.clearTimeout(this.flushTimer);
-    if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
     if (this.liveRefreshTimer !== null) window.clearTimeout(this.liveRefreshTimer);
-    for (const timer of this.taskTimers.values()) window.clearTimeout(timer);
+    for (const timer of this.jobTimers.values()) window.clearTimeout(timer);
     this.events = [];
     this.flushTimer = null;
-    this.threadRefreshTimer = null;
     this.liveRefreshTimer = null;
     this.liveRefreshGeneration = null;
-    this.taskTimers.clear();
+    this.jobTimers.clear();
   }
 
-  handle(event: ServerEvent, generation: number): void {
+  /** Update the refresh loop after a stream was attached before catalogs loaded. */
+  setRunning(generation: number, running: boolean): void {
+    if (!this.isCurrent(generation)) return;
+    if (running) this.startLiveRefresh(generation);
+    else this.stopLiveRefresh();
+  }
+
+  handle(event: ViewEvent, generation: number): void {
     if (!this.isCurrent(generation)) return;
     if (event.type === "assistant_message_delta" || event.type === "tool_call_delta") {
       this.events.push(event);
@@ -77,20 +85,20 @@ export class RuntimeEventController {
       this.flush(generation);
       this.listener.onEvents([event]);
     }
-    if (event.type === "turn_started") this.startLiveRefresh(event.session_id, generation);
+    if (event.type === "turn_started") this.startLiveRefresh(generation);
     if (["turn_finished", "turn_cancelled", "error"].includes(event.type)) {
       this.stopLiveRefresh();
-      this.refreshThreads(event.session_id, generation);
+      this.refreshThread(generation);
     }
-    if (event.type === "task_updated") this.handleTask(event, generation);
+    if (event.type === "job_updated") this.handleJob(event, generation);
   }
 
-  private startLiveRefresh(sessionId: string, generation: number): void {
+  private startLiveRefresh(generation: number): void {
     this.stopLiveRefresh();
     this.liveRefreshGeneration = generation;
     const refresh = () => {
       if (this.liveRefreshGeneration !== generation || !this.isCurrent(generation)) return;
-      void this.refreshThreads(sessionId, generation).finally(() => {
+      void this.refreshThread(generation).finally(() => {
         if (this.liveRefreshGeneration !== generation || !this.isCurrent(generation)) return;
         this.liveRefreshTimer = window.setTimeout(refresh, 750);
       });
@@ -104,10 +112,12 @@ export class RuntimeEventController {
     this.liveRefreshTimer = null;
   }
 
-  private refreshThreads(sessionId: string, generation: number): Promise<void> {
-    return this.api.listThreads(sessionId)
-      .then((threads) => {
-        if (this.isCurrent(generation)) this.listener.onThreads(threads);
+  private refreshThread(generation: number): Promise<void> {
+    const address = this.address;
+    if (!address) return Promise.resolve();
+    return this.api.getThread(address.session_id, address.thread_id)
+      .then((thread) => {
+        if (this.isCurrent(generation)) this.listener.onThread(thread);
       })
       .catch((error) => {
         if (this.isCurrent(generation)) this.listener.onError(error);
@@ -123,24 +133,17 @@ export class RuntimeEventController {
     if (this.isCurrent(generation)) this.listener.onEvents(events);
   }
 
-  private handleTask(event: ServerEvent, generation: number): void {
-    const taskId = String(event.data.task_id || "");
-    const status = String(event.data.status || "");
-    const existing = this.taskTimers.get(taskId);
+  private handleJob(event: ViewEvent, generation: number): void {
+    const jobId = String(event.data.id || "");
+    const status = String(event.data.state || "");
+    const existing = this.jobTimers.get(jobId);
     if (existing !== undefined) window.clearTimeout(existing);
-    if (taskId && (status === "completed" || status === "stopped")) {
-      this.taskTimers.set(taskId, window.setTimeout(() => {
-        if (this.isCurrent(generation)) this.listener.onTaskExpired(taskId);
-        this.taskTimers.delete(taskId);
+    if (jobId && status !== "queued" && status !== "running") {
+      this.jobTimers.set(jobId, window.setTimeout(() => {
+        if (this.isCurrent(generation)) this.listener.onJobExpired(jobId);
+        this.jobTimers.delete(jobId);
       }, 4000));
     }
-    if (!event.session_id || (event.data.kind !== "agent" && !event.data.thread_id)) return;
-    if (this.threadRefreshTimer !== null) window.clearTimeout(this.threadRefreshTimer);
-    this.threadRefreshTimer = window.setTimeout(() => {
-      this.threadRefreshTimer = null;
-      if (!this.isCurrent(generation)) return;
-      void this.refreshThreads(event.session_id, generation);
-    }, 250);
   }
 
   private isCurrent(generation: number): boolean {

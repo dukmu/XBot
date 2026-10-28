@@ -1,36 +1,23 @@
-"""Tests for ThreadPersistence message persistence."""
+"""Thread state is independent across threads in one session."""
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.core.api.messages import HumanInputMessage
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.session.api.contracts import OpenThread, SESSIONS
+from XBotv2.tests.runtime import thread_scope
 
-from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.messages import Message
-from XBotv2.core.paths import RuntimePaths
 
-
-def _session_paths(data_dir, session_id="s1"):
-    return RuntimePaths.from_data_dir(data_dir).session(session_id)
-
-
-class TestThreadPersistenceCreation:
-    """State store creation and directory layout."""
-
-    def test_create_initializes_directories(self, temp_data_dir):
-        store = ThreadPersistence.create(
-            _session_paths(temp_data_dir),
-            thread_id="t1", workspace_root="/workspace", provider="default"
-        )
-        assert store.paths.state_dir.exists()
-        assert not store.history.path.exists()
-        assert not store.paths.artifacts_dir.exists()
-
-    def test_threads_keep_independent_state(self, temp_data_dir):
-        paths = _session_paths(temp_data_dir)
-        first = ThreadPersistence.create(
-            paths, thread_id="first", workspace_root="/workspace", provider="default"
-        )
-        second = ThreadPersistence.create(
-            paths, thread_id="second", workspace_root="/workspace", provider="default"
-        )
-
-        first.history.append([Message(role="user", content="first thread")])
-        assert second.history.load() == []
-        assert first.paths.state_dir == paths.threads_dir / "first" / "state"
-        assert second.paths.state_dir == paths.threads_dir / "second" / "state"
+async def test_threads_keep_independent_history(tmp_path):
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    first = await thread_scope(paths=paths, session_id="s1", llm_override=MockLLM())
+    try:
+        await first.require(LOOP_STATE).history.append(HumanInputMessage(id="one", parts=(TextPart(text="first"),)))
+        second = await first.root.require(SESSIONS).open_thread(OpenThread(
+            session_id="s1", thread_id="second", parent_thread_id="main",
+            mode="new", model_override=MockLLM(), workspace_root=None, provider_name=None, no_plugins=False,
+        ))
+        assert tuple(second.require(LOOP_STATE).history) == ()
+        assert [m.id for m in first.require(LOOP_STATE).history] == ["one"]
+    finally:
+        await first.root.close()

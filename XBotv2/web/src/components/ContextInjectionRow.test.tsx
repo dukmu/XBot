@@ -3,21 +3,27 @@ import { describe, expect, it } from "vitest";
 import { ContextInjectionRow } from "./ContextInjectionRow";
 
 describe("ContextInjectionRow", () => {
-  it("shows lifecycle activity directly instead of an empty disclosure", () => {
+  it.each([
+    ["turn_started", "Turn 2 started"],
+    ["turn_finished", "Turn 2 finished"],
+    ["turn_cancelled", "Turn 2 cancelled"],
+  ])("shows %s as a readable lifecycle status", (event, content) => {
     render(
       <ContextInjectionRow
         entry={{
           id: "event:4:turn_started",
           kind: "runtime",
           source: "turn",
-          event: "turn_started",
-          content: "Turn 2 started",
+          event,
+          content,
         }}
       />,
     );
 
-    expect(screen.getByRole("status")).toHaveTextContent("Turn 2 started");
-    expect(screen.queryByText("Injected context")).not.toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent(content);
+    expect(screen.getByRole("status")).not.toHaveTextContent(event);
+    expect(screen.getByRole("status")).toHaveAttribute("title", event);
+    expect(screen.queryByText("Context injection")).not.toBeInTheDocument();
   });
 
   it("keeps injected context expandable with its provenance", () => {
@@ -33,7 +39,9 @@ describe("ContextInjectionRow", () => {
       />,
     );
 
-    expect(screen.getByText("Injected context")).toBeVisible();
-    expect(screen.getByText("workspace · instructions")).toBeVisible();
+    // The accessible name is dsh's: title, producer, detail.
+    expect(screen.getByText("Context injection")).toBeVisible();
+    const summary = screen.getByText("Context injection").closest("summary");
+    expect(summary?.textContent).toBe("Context injectionworkspaceinstructions");
   });
 });

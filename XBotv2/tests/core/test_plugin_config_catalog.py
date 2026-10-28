@@ -3,16 +3,17 @@
 from __future__ import annotations
 
 import pytest
+from functools import partial
+from XBotv2.loader.impl.runtime import Loader
+from XBotv2.config.api.contracts import PatchPluginConfig
+from XBotv2.config.impl.plugin_catalog import PluginConfigConflict, plugin_config_catalog as _catalog, update_plugin_config as _update
 
-from XBotv2.config.contracts import PatchPluginConfig
-from XBotv2.config.plugin_catalog import (
-    PluginConfigConflict,
-    plugin_config_catalog,
-    update_plugin_config,
-)
-from XBotv2.config.seed import ensure_initial_config
-from XBotv2.core.paths import RuntimePaths
-from XBotv2.compact.contracts import CompactConfig
+loader = Loader()
+plugin_config_catalog = partial(_catalog, loader=loader)
+update_plugin_config = partial(_update, loader=loader)
+from XBotv2.config.impl.seed import ensure_initial_config
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.compact.api.contracts import CompactConfig
 
 
 def test_catalog_exposes_declared_schema_without_plugin_specific_rules(tmp_path):
@@ -95,7 +96,10 @@ def test_session_scope_uses_workspace_as_its_lower_layer(tmp_path):
     )
 
     catalog = plugin_config_catalog(paths, workspace, "session", "session-1")
-    assert catalog.applies_to == "current_session"
+    # Session-scope writes are read live by settings readers, but mounted
+    # plugins keep their config until the next mount, so the catalog reports
+    # the conservative value instead of promising current-session behavior.
+    assert catalog.applies_to == "new_sessions"
     compact = next(item for item in catalog.plugins if item.plugin_id == "compact")
     assert compact.effective_config["automatic"] is False
 
@@ -121,17 +125,17 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
     plugin_root = workspace / ".xbot" / "plugins"
     plugin_root.mkdir(parents=True)
     (plugin_root / "external_demo").mkdir()
-    (plugin_root / "external_demo" / "plugin.py").write_text(
+    (plugin_root / "external_demo" / "impl").mkdir()
+    (plugin_root / "external_demo" / "impl" / "plugin.py").write_text(
         "from pydantic import BaseModel, ConfigDict\n"
         "class ExternalConfig(BaseModel):\n"
         "    model_config = ConfigDict(extra='forbid')\n"
         "    enabled: bool = True\n"
-        "class ExternalDemo:\n"
-        "    name = 'external_demo'\n"
-        "    Config = ExternalConfig\n"
-        "    def apply(self, ctx, config=None):\n"
-        "        return None\n"
-        "plugin = ExternalDemo()\n",
+        "def mount_thread(ctx, config):\n"
+        "    pass\n"
+        "mount_thread.inject = ()\n"
+        "mount_thread.provide = ()\n"
+        "mount_thread.Config = ExternalConfig\n",
         encoding="utf-8",
     )
     (workspace / ".xbot" / "config.yaml").write_text(
@@ -139,7 +143,7 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
         encoding="utf-8",
     )
     (workspace / ".xbot" / "plugins.yaml").write_text(
-        "- id: external_demo\n  name: external_demo\n  config: {}\n",
+        "- id: external_demo\n  name: external_demo.impl.plugin\n  config: {}\n",
         encoding="utf-8",
     )
     monkeypatch.syspath_prepend(str(plugin_root))
@@ -151,3 +155,45 @@ def test_catalog_discovers_external_plugin_from_workspace_overlay(tmp_path, monk
     assert external.config_schema["type"] == "object"
     assert external.config_schema["properties"]["enabled"]["type"] == "boolean"
     assert external.config_schema["additionalProperties"] is False
+
+
+def test_user_context_follows_session_overlay_writes(tmp_path):
+    """The settings service reads the user identity live: a session-scope
+    overlay write is visible without rebuilding the service, matching the
+    freshness policy() already had."""
+    from XBotv2.config.impl.service import ConfigService
+    from XBotv2.core.api.runtime_logging import DEFAULT_RUNTIME_LOG
+    from xcore.api.context import Context
+
+    paths = RuntimePaths.from_data_dir(tmp_path / "data")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    ensure_initial_config(paths)
+
+    service = ConfigService(
+        paths,
+        session_id="s",
+        workspace_root=workspace,
+        events=Context(),
+        runtime_log=DEFAULT_RUNTIME_LOG,
+    )
+    # The resolved tree is the single source of the user context.
+    assert service.user_context().user_name == "User"
+
+    catalog = plugin_config_catalog(paths, workspace, "session", "s")
+    update_plugin_config(
+        paths,
+        workspace,
+        "config",
+        PatchPluginConfig(
+            scope="session",
+            revision=catalog.revision,
+            config={"user": {"user_name": "live-user", "user_id": "live-id"}},
+        ),
+        session_id="s",
+    )
+
+    # Same service instance: the reader re-resolves the overlay.
+    refreshed = service.user_context()
+    assert refreshed.user_name == "live-user"
+    assert refreshed.user_id == "live-id"

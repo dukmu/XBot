@@ -35,7 +35,9 @@ describe("SettingsDialog", () => {
     render(<SettingsDialog themePreference="system" onThemeChange={vi.fn()} sessionId="s1" threadId="t1" loadPluginConfig={loadPluginConfig} updatePluginConfig={updatePluginConfig} onClose={vi.fn()} />);
 
     fireEvent.click(screen.getByRole("button", { name: /Session/ }));
-    await screen.findByRole("button", { name: "Save plugin configuration" });
+    const save = await screen.findByRole("button", { name: "Save plugin configuration" });
+    expect(save).toBeDisabled();
+    fireEvent.click(screen.getByLabelText("Automatic"));
     fireEvent.click(screen.getByRole("button", { name: "Save plugin configuration" }));
 
     await waitFor(() => expect(updatePluginConfig).toHaveBeenCalledWith("s1", "t1", "compact", "session", "r", expect.any(Object)));

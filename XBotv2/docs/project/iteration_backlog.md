@@ -1,7 +1,117 @@
 # Architecture Iteration Backlog
 
+> **带日期的历史迭代记录，不是当前 TODO 或实现状态清单。** 条目记录各自
+> 标注日期/分支时的观察和验证；其中 `open`、`working branch`、旧测试路径、
+> 客户端状态不能自动外推到当前代码。当前功能请查对应源码、生产路径测试及
+> 项目入口文档。
+
 This backlog tracks the next architecture iterations. It is ordered to reduce
 ambiguity before large implementation changes.
+
+## 0.3 Runtime resilience and compaction contract unification (2026-09-12, working branch)
+
+Confirmed defects and fixes in this working branch:
+
+- A provider stream exception after `turn_started` emitted an HTTP error but no
+  shared `turn_finished` boundary. The session runtime now closes that
+  lifecycle, and the TUI reconnects boundedly before reporting a terminal error.
+- Trajectory recording reparsed the complete `messages.jsonl` for every event,
+  making append latency quadratic. A process-local writer allocator now keeps
+  positions synchronized across live stores; ordinary telemetry uses bounded
+  delay flushing while message appends, surface replacements, and
+  `compaction/*` markers remain forced.
+- Writes are exclusive per session: a runtime owns `<session>/session.lock` for
+  its lifetime and a second runtime fails fast with `session_in_use`, while
+  readers stay allowed and take no lock. The trajectory folds incrementally and
+  is cached per path within a bounded budget, so repeated reads no longer
+  re-parse or re-fold the log.
+- Provider-confirmed context overflow now has a typed adapter boundary and a
+  bounded compaction/rebuild/retry. Retry is allowed only after an append-only
+  surface replacement changes the current nodes.
+- Usage snapshot mutation is serialized inside `UsageService`: cumulative
+  counters and the latest effective context projection cannot overwrite one
+  another when a model-response usage update overlaps a compaction update.
+  This lock is process-local and does not claim cross-process session ownership.
+
+Contract unification in the same branch:
+
+- One request anchor. `core.tokens.RequestAnchor` with `read_request_anchor` /
+  `write_request_anchor` is the only reader or writer of the
+  `xbotv2_request_*` metadata keys. The engine records it for every assistant
+  message and compaction records the post-compaction projection through the
+  same API, so provider/model/window matching and the honest `context_tokens`
+  value are validated in one place instead of being re-derived per reader.
+- One compaction metrics schema. `compact.protocol.CompactionMetrics` is the
+  single definition; the parallel internal `TypedDict` is gone and the service
+  builds, finalizes, and publishes that model. `compact/contracts.py` re-exports
+  it for the proposal.
+- One compaction reason vocabulary. `CompactionReason` is
+  `automatic | manual | context-overflow`, and the `force_overflow` flag is gone
+  because the reason already carries that decision. Wire events additionally
+  carry `automatic`, so clients render the unrequested-compaction notice without
+  re-deriving the vocabulary from the reason string. This fixes a real defect:
+  the TUI compared `reason == "automatic"` while the service satisfied that
+  condition only for threshold compaction, so the notice disappeared as soon as
+  the client-side comparison and the service vocabulary drifted.
+- One trajectory transaction query. `TrajectoryTransaction` lives in
+  `core.history`, the history port exposes `open_transactions(transaction)`
+  (replacing the three-argument `unmatched_event_ids`), and compaction declares
+  `COMPACTION_TRANSACTION` once.
+- Compaction recovery. An open transaction no longer disables compaction
+  forever: the next attempt closes the bracket with a `compaction/end` record
+  carrying an `aborted:` error, which is the only safe recovery because the
+  surface is a fold of the trajectory.
+- One tool-pairing implementation. `compact.history.tool_pairing_boundaries` is
+  the single fold; the redundant private import and the two `tool_pairing_*`
+  wrappers are gone.
+- Typed provider call options. `ModelRequestOptions(max_output_tokens=...)`
+  replaces the untyped `**kwargs` side channel through `BaseProvider.astream`,
+  `ModelPort.astream`, and `LlmService.astream`; adapters read a validated field
+  and Anthropic's required `max_tokens` stays a config-boundary error.
+- Declarative provider error vocabulary. `llm.provider_errors.provider_context_overflow`
+  classifies overflow from `types` / `codes` / `statuses` / `message_prefixes`
+  that each adapter declares as data, replacing per-adapter inline `body`
+  sniffing (including `startswith("prompt is too long")` inside the Anthropic
+  adapter, now a declared 400-status prefix).
+- Typed request-error outcome. `ModelRequestErrorOutcome` documents what a
+  `model/request-error` listener asks for; the engine validates the hook result
+  before acting on it.
+
+Removed in this branch: incremental stream timing and streamed usage deltas.
+The engine briefly published a pre-stream context estimate, per-delta TTFT and
+decode metrics, and delta-ified provider usage snapshots, with the web and TUI
+accumulating them client-side. That duplicated the terminal statistics channel
+(`assistant_message.timing`, `turn_finished.session_stats`, provider
+`usage_metadata`), broke the published turn event sequence, forced tests to
+strip a `timing` field before comparing fixtures, and re-estimated the whole
+accumulated text on every delta. Provider usage is once again reported only
+through the finished `ModelResponse`.
+
+Verification for this branch, with the repository environment and full access:
+`pytest` over `XBotv2/tests` passed 894 tests, `pytest XCore/tests` passed 96,
+`pytest evaluation/tests` in the evaluation environment passed 8, `npx vitest
+run` passed 99 tests across 22 files, `npx tsc --noEmit` is clean, and
+`npx playwright test` passed 71 end-to-end tests with 1 skipped.
+
+Session ownership is tested with real child processes: a second process cannot
+own a session, ownership is shared and refcounted (and safe when several
+threads race for it) inside one process, a killed owner does not block the next
+runtime, readers keep working while a runtime owns the session,
+`start_application` refuses an owned session, and closing the application
+releases it. Torn-tail handling is pinned separately: readers ignore
+a fragment without its newline and the next append removes it.
+
+A 20,000-record trajectory (6.6 MB) reads as follows before and after the fold
+cache: cold `load_surface` 558 ms (was 504 ms), then `load_surface` 0.06 ms (was
+504 ms), `count()` 0.00 ms (was 528 ms), `page(limit=50)` 0.61 ms (was 510 ms),
+a fresh store instance re-reading the same path 0.15 ms, and one appended
+message extending both folds in 0.24 ms. The cached records plus both
+projections of that trajectory hold 15.8 MB traced.
+
+No real external provider was contacted and no real-TCP stress result is
+claimed here. The retained stress runner output under `scripts/stress/reports/`
+is local, git-ignored evidence that predates the current source and is therefore
+not presented as this branch's result.
 
 ## 0.2 Plugin-owned configuration contracts (2026-09-10)
 
@@ -299,7 +409,7 @@ limits are described in the sections above.
    refreshes the thread list indirectly after an `agent` task event. There is
    no cross-thread live event aggregation, subagent-specific title/status
    surface, or independent open/close/resume view while the parent remains
-   visible. A missed `task_updated`/cursor recovery leaves a newly spawned
+   visible. A missed `job_updated`/cursor recovery leaves a newly spawned
    thread absent until refresh or re-open. The implementation should align
    with DSH’s explicit subagent/session navigation rather than inventing a
    second session store.
@@ -516,33 +626,41 @@ Implement these as public-API consumers and reference plugins, in this order:
   token-budget trigger remains; do not duplicate provider tokenizers inside
   the plugin or add another Hook stage.
 
-### Todo List
+### Task List
 
-- The plugin provides one atomic `update_todos` Tool; every call supplies the
-  complete ordered checklist instead of per-item CRUD operations.
-- A versioned `TodoSnapshot` in the plugin's shared `StateService` namespace
-  makes each changed list one immediate persisted replacement. Resume retains
-  the current active items.
-- Todo calls and results remain on the normal conversation path so the next
-  model call sees the update confirmation. The plugin does not repeatedly
-  inject the active list. ToolResult carries a typed current-snapshot
-  projection used consistently by persisted history, WebUI, and TUI; HTTP
-  close/resume and completion clearing are covered with MockLLM.
+- The plugin provides the four fine-grained task tools (`task_create`,
+  `task_get`, `task_update`, `task_list`) instead of one full-replace tool,
+  matching Claude Code's default `TaskCreate`/`TaskGet`/`TaskUpdate`/`TaskList`
+  set.
+- A versioned `TaskList` in the plugin's shared `StateService` namespace holds
+  id-addressable `Task` entities (`subject`, `description`, `activeForm`,
+  `owner`, `status`, `blocks`, `blockedBy`, `metadata`) with a monotonic id
+  watermark, bidirectional dependency maintenance, deletion through
+  `status="deleted"`, and a verification nudge when a plan closes without a
+  verification step.
+- Guardrails (list size, text limits, reminder cadence, verification nudge)
+  are a validated `TaskConfig` mounted per tree layer and advertised in the
+  tool JSON schema, and the plugin exposes no human command.
+- Task calls and results remain on the normal conversation path and are the
+  list state; nothing is projected into the system prompt or rebuilt per
+  request. The plugin authors only two persisted reminders: a stale-task nudge
+  after `reminder_after_turns` unchanged turns, and a post-compaction block
+  that restates the outstanding work after the summary shadowed its tool
+  calls. Both carry `source`/`event` provenance so clients render them as
+  runtime entries. ToolResult carries a typed projection used consistently by
+  persisted history, WebUI, and TUI; HTTP close/resume and deletion are covered
+  with MockLLM.
 
 ### Goal
 
-- `/goal` owns human lifecycle control. Agent-facing `create_goal`, `get_goal`,
-  and `update_goal` use structured schemas and the normal Tool runtime.
-- A versioned `GoalSnapshot` in the Goal namespace retains objective, status,
-  summary, and optional token budget. Only continuation turns replace their
-  accepted input with the active Goal context; terminal state does not inject
-  context into unrelated turns.
-- Todo items remain concrete work tracking. Active Goal continuation uses the
-  runtime-only continuation; ESC pauses it and resume does not restore it. Real-provider tool selection, internal permission baseline,
-  restart recovery, context injection, and terminal retention are verified.
-- Connect an explicitly requested Goal `token_budget` to provider-reported
-  usage. `/goal` must distinguish declared, used, and remaining tokens before
-  any automatic pause or budget-exhaustion behavior is claimed.
+- The current redesign replaces the separate per-turn evaluator with explicit
+  Agent-facing goal updates and same-session continuation through the existing
+  inbox. Todo completion does not determine goal completion. The Goal plugin
+  no longer depends on an auxiliary model or owns retry/check-in timers.
+- Goal identity and revision protect state updates; durable state and live
+  continuation authority are separate. Cold resume does not silently restart
+  work or reset statistics. Source comparisons, exact current scope and pending
+  verification are maintained in [goal-todo-design.md](../goal-todo-design.md).
 
 Each plugin needs lifecycle rollback/unload tests, persistence and resume tests,
 structured tool-result tests, public API boundary tests, and current
@@ -576,7 +694,7 @@ documentation before it becomes a shipped default.
   only on wide terminals. Plan progress still requires authoritative runtime
   data.
 - Background shell and subagent tasks expose stable IDs and authoritative
-  lifecycle snapshots through `task_updated`; the TUI updates one collapsible
+  lifecycle snapshots through `job_updated`; the TUI updates one collapsible
   Tasks control in place and distinguishes their `kind` without parsing text.
 - Queued follow-ups now render ordered summaries beside Tasks in one runtime
   band. Their display lifecycle reuses the existing client request map while

@@ -1,618 +1,1924 @@
-"""Behavior tests for the built-in conversation compaction plugin."""
+from XBotv2.tests.runtime import engine_of
+from XBotv2.agentloop.api.state import LOOP_STATE
+from XBotv2.agentloop.api.storage import ARCHIVE
+from XBotv2.context_builder.impl.builder import ContextBuilder
+"""Compaction preserves typed history boundaries and bounded summaries."""
 
-from XBotv2.tests.helpers import make_engine
-
-import json
-import xml.etree.ElementTree as ET
-
+import asyncio
+from pathlib import Path
 import pytest
-
-from XBotv2.compact.plugin import (
-    CompactPlugin,
-    _compact_prefix_end,
-    _history_chars,
+from XBotv2.agentloop.api.contracts import HumanInput, InboxItem
+from XBotv2.agentloop.api.outputs import LoopError, ToolCompleted
+from XBotv2.agentloop.api.events import Events, ModelRequestReady
+from XBotv2.tests.runtime import thread_scope
+from XBotv2.agentloop.api.events import RUNTIME_EVENT
+from XBotv2.commands.api.contracts import EXECUTE_COMMAND, ExecuteCommand
+from XBotv2.compact.impl.history import compact_prefix_end, history_chars
+from XBotv2.compact.api.events import PRE_COMPACT
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed
+from XBotv2.compact.impl.summary import compacted_message, normalize_summary, strip_summary_heading, summary_request
+from XBotv2.core.api.artifacts import ArtifactKind, ArtifactRef
+from XBotv2.core.api.domain import (
+    InboxTarget,
+    MessageId,
+    ProviderError,
+    ToolCallId,
+    ToolTiming,
+    TransactionAborted,
+    TransactionEnded,
+    TransactionRef,
+    TransactionStarted,
 )
-from XBotv2.application import RUNTIME_EVENT
-from XBotv2.compact import POST_COMPACT, PRE_COMPACT
-from XBotv2.core import (
-    ConversationHistory,
-    Message,
-    ModelResponse,
-    ToolCall,
-    estimate_request_tokens,
+from XBotv2.core.api.tokens import (
+    context_token_limit,
+    estimate_messages_tokens,
+    estimate_model_request_tokens,
 )
-from XBotv2.agentloop import EventContext, Events, LoopSettings, ModelRequest
-from XBotv2.core.tokens import (
-    REQUEST_CONTEXT_WINDOW_KEY,
-    REQUEST_ESTIMATE_KEY,
-    REQUEST_PROVIDER_KEY,
+from XBotv2.core.api.history import DurableEventRecorded
+from XBotv2.core.api.messages import (
+    AssistantMessage,
+    CompactionSummaryMessage,
+    HumanInputMessage,
+    ToolMessage,
 )
-from XBotv2.core.timing import TIMING_METADATA_KEY, conversation_stats
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.config.contracts import RuntimeConfig
-from XBotv2.agentloop.engine import Engine
-import xcore
-from plugin_harness import mount_plugin_standalone
-from XBotv2.llm.mock import MockLLM
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.session import SessionInfo
+from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.provider import ProviderSystem, ProviderTool, ProviderUser
+from XBotv2.core.api.stream import ModelFailed
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutput, ToolSucceeded
+from XBotv2.llm.impl.mock import MockLLM
 
 
-def make_session(turn_count: int) -> SessionInfo:
-    return SessionInfo("s", "t", provider="test", turn_count=turn_count)
+async def _surface(scope):
+    session = scope.require(LOOP_STATE).session
+    return await scope.root.require(ARCHIVE).surface(session.session_id, session.thread_id)
 
 
-def make_plugin(config=None):
-    from XBotv2.compact.plugin import CompactPlugin
-
-    component = mount_plugin_standalone(CompactPlugin(), config)
-    return component.ctx.compact
-
-
-class SetupContext:
-    """Post-apply view of a plugin's registrations on a real XCore context."""
-
-    def __init__(self, plugin) -> None:
-        self.ctx = plugin._events
-        self.tool = None
-        self.options = None
-        self.commands: dict = {}
-        entries = self.ctx.tools.registrations()
-        if entries:
-            entry = entries[0]
-            self.tool = entry.tool
-            self.options = type(
-                "Options", (), {"namespace": entry.namespace}
-            )()
-        for command in self.ctx.commands.all():
-            self.commands[command.name] = command
+async def _trajectory(scope):
+    session = scope.require(LOOP_STATE).session
+    return (await scope.root.require(ARCHIVE).trajectory_page(
+        session.session_id, session.thread_id, limit=100
+    )).page.items
 
 
-def history(turns: int, *, content: str = "message") -> list[Message]:
-    messages = []
-    for index in range(turns):
-        messages.extend([
-            Message(role="user", content=f"user {index} {content}"),
-            Message(role="assistant", content=f"assistant {index} {content}"),
-        ])
-    return messages
-
-
-def set_history(plugin, messages: list[Message]) -> None:
-    plugin.state.set_history(ConversationHistory(messages))
-
-
-class FailingModel:
-    """Provider whose streaming summary call raises the given error."""
-
-    def __init__(self, error: Exception) -> None:
-        self._error = error
-
-    async def astream(self, _messages):
-        if False:  # pragma: no cover - keeps this an async generator
-            yield None
-        raise self._error
-
-
-def test_compact_prefix_preserves_recent_complete_turns():
-    messages = history(3)
-    messages[3].tool_calls = [ToolCall(id="call-1", name="shell", args={"command": "pwd"})]
-    messages.insert(
-        4,
-        Message(role="tool", content="/tmp", tool_call_id="call-1"),
+def _human(index: int, text: str) -> HumanInputMessage:
+    return HumanInputMessage(
+        id=MessageId(f"message-{index}"),
+        parts=(TextPart(text=text),),
     )
 
-    split = _compact_prefix_end(messages, keep_recent_turns=2)
 
-    assert [message.role for message in messages[split:]] == [
-        "user",
-        "assistant",
-        "tool",
-        "user",
-        "assistant",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_commit_dispatches_pre_and_post_compact_bracket():
-    """Compaction commit brackets replacement with PRE/POST events."""
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin)
-    plugin.model = MockLLM(responses=[{"content": "Earlier context."}])
-    calls = []
-
-    async def pre_compact(ctx):
-        calls.append(("pre", ctx.reason, len(ctx.messages)))
-
-    async def post_compact(ctx):
-        calls.append((
-            "post",
-            ctx.reason,
-            ctx.previous_message_count,
-            ctx.current_message_count,
-        ))
-
-    setup.ctx.on(PRE_COMPACT, pre_compact)
-    setup.ctx.on(POST_COMPACT, post_compact)
-    plugin._manual_requested = True
-    original = history(3)
-    set_history(plugin, original)
-    ctx = EventContext(messages=original, session=make_session(3))
-    result = await plugin._on_before_context(ctx)
-
-    assert result == {"rebuild": True}
-    assert calls == [
-        ("pre", "manual", 3),
-        ("post", "manual", 6, 3),
-    ]
-
-
-@pytest.mark.asyncio
-async def test_manual_tool_requests_compaction_below_threshold():
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin)
-    plugin.model = MockLLM(responses=[{"content": "Important earlier context"}])
-    tool_result = await setup.tool.ainvoke({})
-
-    original = history(3)
-    set_history(plugin, original)
-    ctx = EventContext(
-        messages=original,
-        session=make_session(3),
+async def _externalized_tool_message(store, text: str = "bounded provider preview") -> ToolMessage:
+    """One tool message whose complete result lives in the ArtifactStore."""
+    ref = await store.put(
+        ArtifactKind.TOOL_RESULT,
+        b"the complete original tool result",
+        media_type="text/plain; charset=utf-8",
+        name="original-tool-result.txt",
+        suffix=".txt",
     )
-    result = await setup.ctx.serial(Events.BEFORE_CONTEXT, ctx)
+    return ToolMessage(
+        id=MessageId("message-tool"),
+        call=ToolCallRef(id=ToolCallId("call-1"), name="read"),
+        outcome=ToolSucceeded(output=ToolOutput(
+            parts=(TextPart(text=text),),
+            artifacts=(ref,),
+        )),
+        timing=ToolTiming(duration_ms=1),
+    )
 
-    request = ET.fromstring(plugin.model.get_call_messages(0)[-1].content)
-    assert request.tag == "summary_request"
-    assert request.text.strip() == "Produce the conversation summary now."
-    assert tool_result.status == "success"
-    assert result == {"rebuild": True}
-    assert ctx.messages[0].role == "system"
-    assert "Important earlier context" in ctx.messages[0].content
-    assert ctx.messages[1:] == original[-2:]
+
+def test_compaction_prefix_retains_requested_recent_turns():
+    messages = tuple(_human(index, f"turn {index}") for index in range(4))
+    assert compact_prefix_end(messages, keep_recent_turns=2) == 2
+    assert compact_prefix_end(messages, keep_recent_turns=4) == 0
+    assert history_chars(messages) == sum(len(f"turn {index}") for index in range(4))
+
+
+def test_compaction_prefix_requires_at_least_one_recent_turn():
+    with pytest.raises(ValueError, match=">= 1"):
+        compact_prefix_end((_human(1, "one"),), keep_recent_turns=0)
+
+
+def test_summary_normalization_removes_heading_and_keeps_full_text():
+    assert strip_summary_heading("## Conversation Summary\nbody") == "body"
+    # The summary is never truncated: an overlong answer is kept verbatim so
+    # no evidence is lost, and length stays a prompt-level instruction.
+    overlong = "## Conversation Summary\n" + "a" * 100
+    assert normalize_summary(overlong) == "a" * 100
+    with pytest.raises(RuntimeError, match="empty"):
+        normalize_summary("  ")
+
+
+def test_summary_request_is_provider_typed_and_does_not_mutate_history():
+    message = _human(1, "important decision")
+    request = summary_request((message,), max_chars=500, compiler=ContextBuilder())
+    assert isinstance(request[0], ProviderSystem)
+    assert isinstance(request[1], ProviderUser)
+    assert isinstance(request[-1], ProviderUser)
+    assert message.parts[0].text == "important decision"
+
+
+async def test_summary_request_resolves_tool_artifacts_through_the_store(artifact_store):
+    message = await _externalized_tool_message(artifact_store)
+
+    request = summary_request(
+        (message,),
+        max_chars=500,
+        artifacts=artifact_store,
+        compiler=ContextBuilder(),
+    )
+
+    tool = next(item for item in request if isinstance(item, ProviderTool))
+    prompt = "".join(part.text for part in tool.parts if isinstance(part, TextPart))
+    path = artifact_store.model_path(message.outcome.output.artifacts[0])
+    assert path in prompt
+    assert 'name="original-tool-result.txt"' in prompt
+    assert "Use filesystem or shell tools" in prompt
+    # The summary input keeps the bounded preview, never the full original.
+    assert "the complete original tool result" not in prompt
+    assert "bounded provider preview" in prompt
+
+
+def test_summary_request_requires_a_store_for_artifact_bearing_history():
+    ref = ArtifactRef(
+        id="tool_results/unresolvable.txt",
+        media_type="text/plain",
+        name="original-tool-result.txt",
+        kind=ArtifactKind.TOOL_RESULT,
+        size=1,
+    )
+    message = ToolMessage(
+        id=MessageId("message-tool"),
+        call=ToolCallRef(id=ToolCallId("call-1"), name="read"),
+        outcome=ToolSucceeded(output=ToolOutput(
+            parts=(TextPart(text="preview"),),
+            artifacts=(ref,),
+        )),
+        timing=ToolTiming(duration_ms=1),
+    )
+
+    with pytest.raises(RuntimeError, match="ArtifactStore for tool outputs"):
+        summary_request((message,), max_chars=500, compiler=ContextBuilder())
+
+
+def test_compacted_message_has_its_own_canonical_kind_and_identity():
+    message = compacted_message("kept facts", reason="manual")
+    repeated = compacted_message("kept facts", reason="manual")
+    assert isinstance(message, CompactionSummaryMessage)
+    assert message.id.startswith("summary-")
+    assert repeated.id != message.id
+    assert message.summary == "kept facts"
+
+
+async def _run_turn(engine, content: str) -> None:
+    item = InboxItem(
+        target=InboxTarget.NEXT_TURN,
+        input=HumanInput(content=content),
+    )
+    [event async for event in engine.run_turn(item)]
 
 
 @pytest.mark.asyncio
-async def test_human_command_compacts_and_persists_immediately(
-    caplog,
-    state_store,
-    temp_workspace,
+async def test_compact_command_runs_through_application_and_persists_summary(
+    temp_data_dir, temp_workspace
 ):
-    caplog.set_level("INFO", logger="xbotv2.compact")
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin)
-    original = history(3)
-    original[1].response_metadata[TIMING_METADATA_KEY] = {
-        "llm_ms": 1200,
-        "ttft_ms": 200,
-        "decode_ms": 1000,
-    }
-    original[1].usage_metadata["output_tokens"] = 25
-    stats_before = conversation_stats(original)
-    state_store.history.replace(original)
-    llm = MockLLM(responses=[{
-        "content": "Earlier requirements.",
-        "reasoning": "Selected durable facts.",
-        "response_metadata": {"request_id": "compact-request"},
-        "additional_kwargs": {"finish_reason": "stop"},
-        "usage_metadata": {
-            "input_tokens": 30,
-            "output_tokens": 4,
-            "total_tokens": 34,
-        },
-    }])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=ToolRegistry(),
-        plugin_ctx=setup.ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
-    )
-    setup.ctx.model.replace(llm)
-    plugin.state = engine.state
-    engine.state.metadata.update(provider="trace-provider", model="trace-model")
-    engine.state.session.turn_count = 3
-    await engine.start_session()
-    runtime_events = []
-
-    def record_runtime_event(event: EventContext) -> None:
-        if event.client_event is not None:
-            runtime_events.append(event.client_event.model_dump(mode="json"))
-
-    setup.ctx.on(RUNTIME_EVENT, record_runtime_event)
-    result = await setup.commands["compact"].handler("")
-
-    records = [
-        json.loads(line)
-        for line in state_store.history.path.read_text(encoding="utf-8").splitlines()
-    ]
-    assert all(record["schema_version"] == 1 for record in records)
-    trajectory = state_store.history.path.read_text(encoding="utf-8")
-    assert "user 0 message" in trajectory
-    assert '"record_type": "surface_replace"' in trajectory
-    assert '"event": "compaction/summary"' in trajectory
-    summary_record = next(
-        record for record in records
-        if record.get("event") == "compaction/summary"
-    )
-    assert summary_record["data"]["raw_output"] == {
-        "content": "Earlier requirements.",
-        "reasoning": "Selected durable facts.",
-        "response_metadata": {"request_id": "compact-request"},
-        "additional_kwargs": {"finish_reason": "stop"},
-    }
-    assert summary_record["data"]["provider"] == "trace-provider"
-    assert summary_record["data"]["model"] == "trace-model"
-
-    assert result.status == "ok"
-    history_chars_before = _history_chars(original)
-    history_chars_after = _history_chars(engine.messages)
-    # Compaction reduces message count; character count may not always decrease
-    # when a system summary is prepended.
-    assert len(engine.messages) < len(original)
-    assert "context tokens" in result.message
-    assert "30 input and 4 output tokens" in result.message
-    assert [event["type"] for event in runtime_events] == [
-        "compaction_started",
-        "usage",
-        "usage",
-        "compaction_completed",
-    ]
-    assert "context tokens" in result.message
-    assert "30 input and 4 output tokens" in result.message
-    assert (
-        f"history_chars_before={history_chars_before} "
-        f"history_chars_after={history_chars_after}"
-    ) in caplog.text
-    assert "input_tokens=30 output_tokens=4 total_tokens=34" in caplog.text
-    assert setup.ctx.usage.records == [({
-        "input_tokens": 30,
-        "output_tokens": 4,
-        "total_tokens": 34,
-        "context_tokens": 30,
-    }, False)]
-    assert setup.ctx.usage.context_updates == [
-        plugin._last_compaction["context_tokens_after_estimate"]
-    ]
-    assert llm.call_count == 1
-    assert engine.messages[0].role == "system"
-    assert "Earlier requirements." in engine.messages[0].content
-    assert state_store.history.load() == engine.messages
-    assert conversation_stats(engine.messages) == stats_before
-    assert [message.content for message in state_store.history.load_transcript()] == [
-        message.content for message in original
-    ]
-
-
-@pytest.mark.asyncio
-async def test_compaction_does_not_append_duplicate_human_directives():
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    plugin._manual_requested = True
-    original = history(3)
-    original[2].content = "Do not ask me again; decide the safest option."
-    set_history(plugin, original)
-
-    plugin.model = MockLLM(responses=[{
-        "content": "## Conversation Summary\n\nOlder context only."
-    }])
-
-    ctx = EventContext(
-        messages=original,
-        session=make_session(3),
-    )
-    result = await plugin._on_before_context(ctx)
-
-    summary = ctx.messages[0].content
-    root = ET.fromstring(summary)
-    assert root.tag == "historical_context"
-    assert root.attrib == {"source": "compaction"}
-    assert root.find("conversation_summary") is not None
-    assert "## Recent Human Directives (verbatim)" not in summary
-    assert summary.count("Older context only.") == 1
-
-
-@pytest.mark.asyncio
-async def test_large_context_does_not_use_fixed_character_threshold():
-    plugin = make_plugin({"keep_recent_turns": 1})
-    original = history(3, content="x" * 13_500)
-    set_history(plugin, original)
-    context = [Message(role="system", content="x" * 80_000), *original]
-
-    result = await plugin._on_before_model_request(EventContext(
-        messages=original,
-        model_request=ModelRequest(context, [], plugin.model),
-        settings=LoopSettings(
-            provider="test",
-            context_window=1_048_576,
-        ),
-        session=make_session(3),
-    ))
-
-    assert result is None
-
-
-@pytest.mark.asyncio
-async def test_automatic_threshold_uses_provider_window_and_output_limit():
-    plugin = make_plugin({"keep_recent_turns": 1})
-    original = history(3, content="x" * 5_000)
-    context = [Message(role="system", content="stable"), *original]
-    request_estimate = estimate_request_tokens(context)
-    original[-1].response_metadata[REQUEST_ESTIMATE_KEY] = request_estimate
-    original[-1].response_metadata[REQUEST_CONTEXT_WINDOW_KEY] = 200_000
-    original[-1].response_metadata[REQUEST_PROVIDER_KEY] = "test"
-    original[-1].usage_metadata["context_tokens"] = 136_000
-    set_history(plugin, original)
-
-    plugin.model = MockLLM(responses=[{"content": (
-        "## Requirements\nKeep constraints.\n\n"
-        "## Decisions\nUse evidence.\n\n"
-        "## Current State\nOlder work done.\n\n"
-        "## Remaining Work\nContinue."
-    )}])
-
-    result = await plugin._on_before_model_request(EventContext(
-        messages=original,
-        model_request=ModelRequest(context, [], plugin.model),
-        settings=LoopSettings(
-            provider="test",
-            context_window=200_000,
-            max_output_tokens=64_000,
-        ),
-        session=make_session(3),
-    ))
-
-    sent = plugin.model.get_call_messages(0)
-    assert sent[0].content == "stable"
-    assert ET.fromstring(sent[1].content).tag == "summary_instructions"
-    assert result == {"rebuild": True}
-    assert plugin._last_compaction["context_limit"] == 136_000
-    assert plugin._last_compaction["estimate_source"] == "provider_calibrated"
-    assert plugin._last_compaction["context_tokens_after_estimate"] < 136_000
-
-
-@pytest.mark.asyncio
-async def test_automatic_compaction_preserves_recent_tool_iterations():
-    plugin = make_plugin({"keep_recent_turns": 2, "trigger_ratio": 0.01})
-    original = [Message(role="system", content="Goal continuation")]
-    for index in range(6):
-        call_id = f"call-{index}"
-        original.extend([
-            Message(
-                role="assistant",
-                content=f"step {index}",
-                tool_calls=[ToolCall(id=call_id, name="echo", args={"value": index})],
-            ),
-            Message(role="tool", content=f"result {index}", tool_call_id=call_id),
-        ])
-
-    plugin.model = MockLLM(responses=[{"content": (
-        "## Requirements\nContinue goal.\n\n"
-        "## Decisions\nNone.\n\n"
-        "## Current State\nFour steps summarized.\n\n"
-        "## Remaining Work\nTwo steps remain."
-    )}])
-
-    ctx = EventContext(
-        messages=original,
-        model_request=ModelRequest(
-            [Message(role="system", content="stable"), *original],
-            [],
-            plugin.model,
-        ),
-        settings=LoopSettings(
-            provider="test",
-            context_window=100,
-        ),
-        session=make_session(1),
-    )
-    set_history(plugin, original)
-    result = await plugin._on_before_model_request(ctx)
-
-    assert [message.role for message in ctx.messages[1:]] == [
-        "assistant", "tool", "assistant", "tool",
-    ]
-
-
-@pytest.mark.asyncio
-async def test_failed_summary_leaves_history_untouched():
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    plugin._manual_requested = True
-    original = history(2)
-
-    plugin.model = FailingModel(RuntimeError("summary unavailable"))
-
-    ctx = EventContext(
-        messages=original,
-        session=make_session(2),
-    )
-
-    with pytest.raises(RuntimeError, match="summary unavailable"):
-        await plugin._on_before_context(ctx)
-
-    assert ctx.messages == original
-    assert plugin._manual_requested is False
-    assert plugin.diagnostics()["compactions"] == 0
-
-
-@pytest.mark.asyncio
-async def test_failed_automatic_summary_continues_with_original_history():
-    plugin = make_plugin({"trigger_ratio": 0.1, "keep_recent_turns": 1})
-    original = history(3, content="x" * 1_000)
-
-    plugin.model = FailingModel(ConnectionError("summary provider unavailable"))
-
-    ctx = EventContext(
-        messages=original,
-        model_request=ModelRequest(
-            [Message(role="system", content="stable"), *original],
-            [],
-            plugin.model,
-        ),
-        settings=LoopSettings(
-            provider="test",
-            context_window=1_000,
-        ),
-        session=make_session(2),
-    )
-
-    assert await plugin._on_before_model_request(ctx) is None
-    assert ctx.messages == original
-    assert plugin.diagnostics()["compactions"] == 0
-
-
-@pytest.mark.asyncio
-async def test_unload_resets_plugin_owned_state():
-    plugin = make_plugin()
-    plugin._manual_requested = True
-    plugin._compactions = 2
-    plugin._last_reason = "automatic"
-
-    await plugin._dispose()
-
-    assert plugin._manual_requested is False
-    assert plugin.diagnostics()["compactions"] == 0
-    assert plugin.diagnostics()["last_reason"] == ""
-    assert plugin.diagnostics()["last_compaction"] == {}
-
-
-@pytest.mark.asyncio
-async def test_compact_tool_rewrites_and_persists_history(
-    state_store,
-    temp_workspace,
-):
-    plugin = make_plugin({"automatic": False, "keep_recent_turns": 1})
-    setup = SetupContext(plugin)
-
-    registry = ToolRegistry()
-    registry.register(
-        setup.tool,
-        namespace=setup.options.namespace,
-    )
-    state_store.history.replace(history(2))
-    llm = MockLLM(responses=[
-        {
-            "content": "requesting compact",
-            "tool_calls": [{"id": "compact-1", "name": "compact", "args": {}}],
-        },
-        {"content": "Earlier requirements and outcomes."},
-        {"content": "Compaction complete."},
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        {"content": "The user is researching X. Keep decision Y."},
     ])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=registry,
-        plugin_ctx=setup.ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
+    options = dict(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
     )
-    setup.ctx.model.replace(llm)
-    plugin.state = engine.state
-    await engine.start_session()
+    application = await thread_scope(**options)
+    compact_service = application.compact
+    commands = application.commands
+    tools = engine_of(application).tools
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        assert application.commands.get("compact") is not None
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        await application.require(LOOP_STATE).history.record(
+            TransactionStarted(transaction=TransactionRef(
+                kind="compaction", id="orphaned-compaction"
+            )),
+            durable=True,
+        )
 
-    events = [event async for event in engine.run_turn("compact this history")]
-    persisted = state_store.history.load()
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
 
-    assert llm.call_count == 3
-    assert persisted[0].role == "system"
-    assert "Earlier requirements and outcomes." in persisted[0].content
-    assert [message.role for message in persisted[1:]] == [
-        "user",
-        "assistant",
-        "tool",
-        "assistant",
-    ]
-    assert persisted[1].content == "compact this history"
-    tool_event = next(event for event in events if event["type"] == "tool_result")
-    # The compact tool result no longer carries a ``data`` field.
-    assert tool_event["data"]["content"]
-    assert [
-        event["data"]["content"]
-        for event in events
-        if event["type"] == "assistant_message"
-    ] == ["requesting compact", "Compaction complete."]
-
-    resumed = make_engine(
-        llm=MockLLM(responses=[]),
-        tool_registry=ToolRegistry(),
-        plugin_ctx=xcore.Context(),
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(),
-    )
-    resumed.state.resumed = True
-    await resumed.start_session()
-
-    assert resumed.messages == persisted
+        assert result.status == "ok"
+        history = engine_of(application).messages
+        summaries = [item for item in history if isinstance(item, CompactionSummaryMessage)]
+        assert len(summaries) == 1
+        assert "decision Y" in summaries[0].summary
+        assert [item.parts[0].text for item in history if isinstance(item, HumanInputMessage)] == [
+            "Remember decision Y",
+        ]
+        assert provider.call_count == 4
+        assert await _surface(application) == tuple(history)
+        assert await application.require(LOOP_STATE).history.open_transactions("compaction") == frozenset()
+    finally:
+        await application.root.close()
+    assert any(isinstance(event, CompactionCompleted) for event in runtime_events)
+    assert compact_service.diagnostics()["compactions"] == 0
+    assert commands.get("compact") is None
+    assert "compact" not in tools.names()
 
 
 @pytest.mark.asyncio
-async def test_automatic_compaction_rebuilds_context_before_provider_call(
-    state_store,
-    temp_workspace,
+async def test_compact_command_failure_preserves_live_and_persisted_history(
+    temp_data_dir, temp_workspace
 ):
-    plugin = make_plugin({"keep_recent_turns": 1, "trigger_ratio": 0.5})
-    setup = SetupContext(plugin)
-    state_store.history.replace(history(3, content="x" * 5_000))
-    llm = MockLLM(responses=[
-        {"content": (
-            "## Requirements\nPreserve the request.\n\n"
-            "## Decisions\nKeep recent work.\n\n"
-            "## Current State\nOlder work summarized.\n\n"
-            "## Remaining Work\nAnswer the user."
-        )},
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-failure-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
+    )
+    try:
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        assert result.status == "error"
+        assert tuple(engine_of(application).messages) == before
+        assert await _surface(application) == durable_before
+        assert not any(
+            isinstance(item, CompactionSummaryMessage)
+            for item in engine_of(application).messages
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_compact_command_publishes_failure_and_aborts_transaction(
+    temp_data_dir, temp_workspace
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-cancelled-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
+    )
+    runtime_events = []
+    summary_started = asyncio.Event()
+
+    async def blocked_summary(_request):
+        summary_started.set()
+        await asyncio.Event().wait()
+        yield  # Keep this an async iterator; cancellation must reach its await.
+
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        history_before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+        provider.astream = blocked_summary
+
+        command = asyncio.create_task(application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        ))
+        await asyncio.wait_for(summary_started.wait(), timeout=2)
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await command
+
+        assert tuple(engine_of(application).messages) == history_before
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+        trajectory_items = await _trajectory(application)
+        transaction_ends = [
+            item.event
+            for item in trajectory_items
+            if isinstance(item, DurableEventRecorded)
+            and isinstance(item.event, TransactionEnded)
+            and item.event.transaction.kind == "compaction"
+        ]
+        assert transaction_ends
+        assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
+        assert transaction_ends[-1].outcome.reason == "cancelled"
+        assert any(isinstance(event, CompactionFailed) for event in runtime_events)
+        failure = next(
+            event for event in runtime_events if isinstance(event, CompactionFailed)
+        )
+        assert failure.message == "Compaction cancelled."
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_precompact_listener_publishes_failure_and_aborts_transaction(
+    temp_data_dir, temp_workspace
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        {"content": "Summary ready for listener"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-precommit-cancelled-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
+    )
+    runtime_events = []
+    listener_started = asyncio.Event()
+
+    async def wait_before_commit(_event):
+        listener_started.set()
+        await asyncio.Event().wait()
+
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        application.on(PRE_COMPACT, wait_before_commit)
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        live_before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+
+        command = asyncio.create_task(application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        ))
+        await asyncio.wait_for(listener_started.wait(), timeout=2)
+        command.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await command
+
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len(failures) == 1
+        assert failures[0].message == "Compaction cancelled."
+        assert tuple(engine_of(application).messages) == live_before
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+        trajectory_items = await _trajectory(application)
+        transaction_ends = [
+            item.event
+            for item in trajectory_items
+            if isinstance(item, DurableEventRecorded)
+            and isinstance(item.event, TransactionEnded)
+            and item.event.transaction.kind == "compaction"
+        ]
+        assert transaction_ends
+        assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
+        assert transaction_ends[-1].outcome.reason == "cancelled"
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_agent_compact_tool_preserves_history_and_aborts_transaction(
+    temp_data_dir, temp_workspace
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
         {
-            "content": "Done",
-            "usage_metadata": {
-                "input_tokens": 2_000,
-                "output_tokens": 4,
-                "context_tokens": 2_000,
+            "tool_calls": [{
+                "id": "compact-call-before-cancel",
+                "name": "compact",
+                "args": {},
+            }],
+        },
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-tool-cancelled-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
+    )
+    runtime_events = []
+    summary_started = asyncio.Event()
+
+    async def wait_on_summary(request):
+        if not request.tools:
+            summary_started.set()
+            await asyncio.Event().wait()
+        async for event in original_astream(request):
+            yield event
+
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Earlier work " + "x" * 100)
+        original_astream = provider.astream
+        provider.astream = wait_on_summary
+
+        observed_events = []
+
+        async def run_tool_turn():
+            async for event in engine_of(application).run_turn(InboxItem(
+                target=InboxTarget.NEXT_TURN,
+                input=HumanInput(content="Compact this conversation"),
+            )):
+                observed_events.append(event)
+
+        turn = asyncio.create_task(run_tool_turn())
+        await asyncio.wait_for(summary_started.wait(), timeout=2)
+
+        compact_result = next(
+            event for event in observed_events
+            if isinstance(event, ToolCompleted)
+            and event.execution.message.call.name == "compact"
+        )
+        assert isinstance(compact_result.execution.message.outcome, ToolSucceeded)
+        live_before_cancel = tuple(engine_of(application).messages)
+        durable_before_cancel = (
+            await _surface(application)
+        )
+        assert not any(
+            isinstance(message, CompactionSummaryMessage)
+            for message in live_before_cancel
+        )
+
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+        assert tuple(engine_of(application).messages) == live_before_cancel
+        assert (
+            await _surface(application)
+            == durable_before_cancel
+        )
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+        trajectory_items = await _trajectory(application)
+        transaction_ends = [
+            item.event
+            for item in trajectory_items
+            if isinstance(item, DurableEventRecorded)
+            and isinstance(item.event, TransactionEnded)
+            and item.event.transaction.kind == "compaction"
+        ]
+        assert transaction_ends
+        assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
+        assert transaction_ends[-1].outcome.reason == "cancelled"
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len(failures) == 1
+        assert failures[0].message == "Compaction cancelled."
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_automatic_compaction_preserves_history_and_aborts_transaction(
+    temp_data_dir, temp_workspace
+):
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+    ])
+    plugin_overrides = [
+        {
+            "id": "llm",
+            "config": {
+                "default_provider": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "mock",
+                        "default_model": "mock",
+                        "models": [{
+                            "model": "mock",
+                            "max_context_tokens": 512,
+                            "max_output_tokens": 16,
+                        }],
+                    },
+                },
             },
         },
+        {
+            "id": "compact",
+            "config": {
+                "automatic": True,
+                "trigger_ratio": 0.01,
+                "output_reservation": 1,
+                "keep_recent_turns": 1,
+            },
+        },
+    ]
+    application = await thread_scope(
+        paths=paths,
+        session_id="compact-automatic-cancelled-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=plugin_overrides,
+    )
+    runtime_events = []
+    summary_started = asyncio.Event()
+
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+
+        original_astream = provider.astream
+
+        async def wait_on_automatic_summary(request):
+            if not request.tools:
+                summary_started.set()
+                await asyncio.Event().wait()
+            async for event in original_astream(request):
+                yield event
+
+        provider.astream = wait_on_automatic_summary
+        turn = asyncio.create_task(_run_turn(
+            engine_of(application), "Cancel during automatic compaction"
+        ))
+        await asyncio.wait_for(summary_started.wait(), timeout=2)
+        live_before_cancel = tuple(engine_of(application).messages)
+        durable_before_cancel = (
+            await _surface(application)
+        )
+
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+        assert tuple(engine_of(application).messages) == live_before_cancel
+        assert (
+            await _surface(application)
+            == durable_before_cancel
+        )
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+        trajectory_items = await _trajectory(application)
+        transaction_ends = [
+            item.event
+            for item in trajectory_items
+            if isinstance(item, DurableEventRecorded)
+            and isinstance(item.event, TransactionEnded)
+            and item.event.transaction.kind == "compaction"
+        ]
+        assert transaction_ends
+        assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
+        assert transaction_ends[-1].outcome.reason == "cancelled"
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len(failures) == 1
+        assert failures[0].reason == "automatic"
+        assert failures[0].automatic is True
+        assert failures[0].message == "Compaction cancelled."
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_context_overflow_compaction_preserves_history_and_aborts_transaction(
+    temp_data_dir, temp_workspace
+):
+    class OverflowDuringSummaryMock(MockLLM):
+        def __init__(self):
+            super().__init__(responses=[
+                {"content": "A title"},
+                {"content": "First answer"},
+                {"content": "Second answer"},
+            ])
+            self.probe = {
+                "agent_requests": 0,
+                "block_summary": False,
+                "summary_started": asyncio.Event(),
+            }
+
+        async def _astream_once(self, request):
+            if request.tools:
+                self.probe["agent_requests"] += 1
+                if self.probe["agent_requests"] == 3:
+                    yield ModelFailed(error=ProviderError(
+                        code="context_length_exceeded",
+                        message="The request exceeds the model context window.",
+                        retryable=False,
+                        category="context_overflow",
+                    ))
+                    return
+            elif self.probe["block_summary"]:
+                self.probe["summary_started"].set()
+                await asyncio.Event().wait()
+            async for event in super()._astream_once(request):
+                yield event
+
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    provider = OverflowDuringSummaryMock()
+    plugin_overrides = [
+        {
+            "id": "llm",
+            "config": {
+                "default_provider": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "mock",
+                        "default_model": "mock",
+                        "models": [{
+                            "model": "mock",
+                            "max_context_tokens": 65536,
+                            "max_output_tokens": 16,
+                        }],
+                    },
+                },
+            },
+        },
+        {
+            "id": "compact",
+            "config": {
+                "automatic": True,
+                "trigger_ratio": 1.0,
+                "output_reservation": 0,
+                "keep_recent_turns": 1,
+            },
+        },
+    ]
+    application = await thread_scope(
+        paths=paths,
+        session_id="compact-overflow-cancelled-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=plugin_overrides,
+    )
+    runtime_events = []
+
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        provider.probe["block_summary"] = True
+
+        turn = asyncio.create_task(_run_turn(
+            engine_of(application), "Cancel context-overflow recovery"
+        ))
+        await asyncio.wait_for(
+            provider.probe["summary_started"].wait(), timeout=2
+        )
+        live_before_cancel = tuple(engine_of(application).messages)
+        durable_before_cancel = (
+            await _surface(application)
+        )
+
+        turn.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await turn
+
+        assert tuple(engine_of(application).messages) == live_before_cancel
+        assert (
+            await _surface(application)
+            == durable_before_cancel
+        )
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+        trajectory_items = await _trajectory(application)
+        transaction_ends = [
+            item.event
+            for item in trajectory_items
+            if isinstance(item, DurableEventRecorded)
+            and isinstance(item.event, TransactionEnded)
+            and item.event.transaction.kind == "compaction"
+        ]
+        assert transaction_ends
+        assert isinstance(transaction_ends[-1].outcome, TransactionAborted)
+        assert transaction_ends[-1].outcome.reason == "cancelled"
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len(failures) == 1
+        assert failures[0].reason == "context-overflow"
+        assert failures[0].automatic is True
+        assert failures[0].message == "Compaction cancelled."
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_listener_rejection_aborts_before_live_or_durable_commit(
+    temp_data_dir, temp_workspace, tmp_path
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        {"content": "This proposal should be rejected."},
     ])
-    engine = make_engine(
-        llm=llm,
-        tool_registry=ToolRegistry(),
-        plugin_ctx=setup.ctx,
-        state_store=state_store,
-        context_builder=ContextBuilder(),
-        sandbox_policy=SandboxPolicy(
-            enabled=False,
-            workspace_root=str(temp_workspace),
-        ),
-        permission_system=PermissionSystem(default_decision="allow"),
-        config=RuntimeConfig(max_context_tokens=10_000),
+    gate = tmp_path / "compact_gate"
+    gate.mkdir()
+    listener_marker = tmp_path / "compact-listener-called"
+    (gate / "impl").mkdir()
+    (gate / "impl" / "plugin.py").write_text(
+        "from XBotv2.compact.api.events import PRE_COMPACT\n"
+        "from pathlib import Path\n"
+        "\n"
+        "def mount_thread(ctx, config):\n"
+        "    async def reject(_event):\n"
+        f"        Path({str(listener_marker)!r}).write_text('called')\n"
+        "        return 'policy denied compaction'\n"
+        "    ctx.on(PRE_COMPACT, reject)\n"
+        "mount_thread.inject = ()\n"
+        "mount_thread.provide = ()\n"
+        "mount_thread.Config = None\n",
+        encoding="utf-8",
     )
-    setup.ctx.model.replace(llm)
-    plugin.state = engine.state
-    await engine.start_session()
-
-    events = [event async for event in engine.run_turn("continue")]
-
-    assert llm.call_count == 2
-    assert any(event["type"] == "assistant_message" for event in events)
-    assert engine.messages[0].role == "system"
-    root = ET.fromstring(engine.messages[0].content)
-    assert root.tag == "historical_context"
-    assert root.find("conversation_summary") is not None
-    assert (
-        plugin._last_compaction["context_tokens_after_estimate"]
-        < plugin._last_compaction["context_tokens_before"]
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-rejected-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[tmp_path],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }, {"id": "compact_gate", "name": "compact_gate.impl.plugin"}],
     )
+    try:
+        await _run_turn(engine_of(application), "Research X")
+        await _run_turn(engine_of(application), "Remember decision Y")
+        before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        assert result.status == "error"
+        assert listener_marker.read_text(encoding="utf-8") == "called"
+        assert "rejected before commit" in result.message
+        assert tuple(engine_of(application).messages) == before
+        assert await _surface(application) == durable_before
+        assert await application.require(LOOP_STATE).history.open_transactions(
+            "compaction"
+        ) == frozenset()
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_below_threshold_leaves_history_unchanged(
+    temp_data_dir, temp_workspace, monkeypatch
+):
+    from XBotv2.agentloop.impl import engine as engine_module
+    from XBotv2.core.api import tokens
+
+    calls = []
+    original_estimate = tokens.estimate_request_tokens
+
+    def estimate(messages, tools=()):
+        value = original_estimate(messages, tools)
+        calls.append((messages, tools, value))
+        return value
+
+    monkeypatch.setattr(tokens, "estimate_request_tokens", estimate)
+    monkeypatch.setattr(engine_module, "estimate_request_tokens", estimate)
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-below-threshold-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {
+                "automatic": True,
+                "trigger_ratio": 1.0,
+                "output_reservation": 0,
+                "keep_recent_turns": 1,
+            },
+        }],
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "A short request")
+
+        assert not any(
+            isinstance(item, CompactionSummaryMessage)
+            for item in engine_of(application).messages
+        )
+        assert not any(
+            isinstance(event, (CompactionCompleted, CompactionFailed))
+            for event in runtime_events
+        )
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+        assert provider.call_count == 2
+        request = provider.request_history[-1]
+        main_calls = [call for call in calls if call[:2] == (request.messages, request.tools)]
+        assert main_calls == [(request.messages, request.tools, original_estimate(request.messages, request.tools))]
+        assert application.token_manager.diagnostics()["latest_request"]["estimated_context"]["tokens"] == main_calls[0][2]
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_uses_final_request_budget_not_history_only(
+    temp_data_dir,
+    temp_workspace,
+):
+    (Path(temp_workspace) / "AGENTS.md").write_text(
+        "Follow this detailed workspace policy. " * 500,
+        encoding="utf-8",
+    )
+    provider = MockLLM(responses=[
+        {"content": "first answer"},
+        {"content": "summary of the first turn"},
+        {"content": "second answer"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-built-request-budget",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 4096,
+                                "max_output_tokens": 1024,
+                            }],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "caption",
+                "config": {"auto": False, "allow_access": False},
+            },
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": True,
+                    "trigger_ratio": 0.1,
+                    "output_reservation": 64,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    ready_requests: list[ModelRequestReady] = []
+    runtime_events = []
+    try:
+        application.on(
+            Events.MODEL_REQUEST_READY,
+            lambda event: ready_requests.append(event),
+        )
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "old turn " * 100)
+        model = application.loop_state.metadata.value.runtime_selection.model
+        context_limit = context_token_limit(
+            model.context_window,
+            trigger_ratio=0.1,
+            output_reservation=64,
+        )
+        first_request_tokens = estimate_model_request_tokens(
+            ready_requests[-1].request,
+        )
+        assert first_request_tokens > context_limit
+
+        next_input = _human(999, "new turn content")
+        history_tokens = estimate_messages_tokens((
+            *engine_of(application).messages,
+            next_input,
+        ))
+        assert history_tokens < context_limit
+
+        second_events = [event async for event in engine_of(application).run_turn(
+            InboxItem(
+                target=InboxTarget.NEXT_TURN,
+                input=HumanInput(content="new turn content"),
+            ),
+        )]
+
+        assert not [event for event in second_events if isinstance(event, LoopError)]
+        compactions = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        assert provider.call_count == 3
+        assert len(compactions) == 1
+        metrics = compactions[0].metrics
+        assert compactions[0].reason == "automatic"
+        assert metrics.estimate_source == "estimated_request"
+        assert metrics.request_estimate == metrics.context_tokens_before
+        assert metrics.context_tokens_before > context_limit
+        assert metrics.context_tokens_after_estimate < metrics.context_tokens_before
+        assert len(ready_requests) == 3
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_is_triggered_before_request_and_survives_resume(
+    temp_data_dir, temp_workspace
+):
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        {"content": "Keep the key decision: use the typed runtime boundary."},
+        {"content": "Keep the key decision: use the typed runtime boundary."},
+        {"content": "Third answer"},
+    ])
+    plugin_overrides = [
+        {
+            "id": "llm",
+            "config": {
+                "default_provider": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "mock",
+                        "default_model": "mock",
+                        "models": [{
+                            "model": "mock",
+                            "max_context_tokens": 512,
+                            "max_output_tokens": 16,
+                        }],
+                    },
+                },
+            },
+        },
+        {
+            "id": "compact",
+            "config": {
+                "automatic": True,
+                "trigger_ratio": 0.01,
+                "output_reservation": 1,
+                "keep_recent_turns": 1,
+            },
+        },
+    ]
+    application = await thread_scope(
+        paths=paths,
+        session_id="compact-automatic-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=plugin_overrides,
+    )
+    try:
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        await _run_turn(engine_of(application), "Continue with the next request")
+
+        summaries = [
+            item for item in engine_of(application).messages
+            if isinstance(item, CompactionSummaryMessage)
+        ]
+        assert len(summaries) == 1
+        assert "typed runtime boundary" in summaries[0].summary
+        assert provider.call_count == 6
+        assert any(
+            isinstance(part, TextPart)
+            and "typed runtime boundary" in part.text
+            for message in provider.request_history[-1].messages
+            for part in message.parts
+        )
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+    finally:
+        await application.root.close()
+
+    resumed = await thread_scope(
+        paths=paths,
+        mode="resume",
+        session_id="compact-automatic-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=MockLLM(responses=[]),
+        extra_plugins=plugin_overrides,
+    )
+    try:
+        summaries = [
+            item for item in engine_of(resumed).messages
+            if isinstance(item, CompactionSummaryMessage)
+        ]
+        assert len(summaries) == 1
+        assert "typed runtime boundary" in summaries[0].summary
+    finally:
+        await resumed.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_summary_failure_preserves_the_full_live_and_durable_history(
+    temp_data_dir, temp_workspace
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {"content": ""},
+        {"content": "Third answer after summary failure"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-automatic-failure-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 512,
+                                "max_output_tokens": 16,
+                            }],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": True,
+                    "trigger_ratio": 0.01,
+                    "output_reservation": 1,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    try:
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+
+        await _run_turn(engine_of(application), "Continue after summary failure")
+
+        live = tuple(engine_of(application).messages)
+        durable = await _surface(application)
+        assert len(live) == len(before) + 2
+        assert live[:-2] == before
+        assert durable[:-2] == durable_before
+        assert isinstance(live[-2], HumanInputMessage)
+        assert live[-2].parts[0].text == "Continue after summary failure"
+        assert isinstance(live[-1], AssistantMessage)
+        assert any(
+            isinstance(part, TextPart)
+            and part.text == "Third answer after summary failure"
+            for part in live[-1].parts
+        )
+        assert [
+            item for item in live if isinstance(item, CompactionSummaryMessage)
+        ] == [item for item in before if isinstance(item, CompactionSummaryMessage)]
+        assert provider.call_count == 4
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.parametrize("overflow_count", [1, 2])
+@pytest.mark.asyncio
+async def test_provider_context_overflow_recovery_retries_at_most_once(
+    temp_data_dir, temp_workspace, overflow_count
+):
+    class OverflowMock(MockLLM):
+        def __init__(self):
+            super().__init__(responses=[
+                {"content": "A title"},
+                {"content": "First answer"},
+                {"content": "Second answer"},
+                {"content": "Retain the key decision: typed boundaries."},
+                {"content": "Recovered after context overflow"},
+            ])
+            self.probe = {"agent_request_count": 0, "overflow_request": None}
+
+        async def _astream_once(self, request):
+            if request.tools:
+                self.probe["agent_request_count"] += 1
+                if 3 <= self.probe["agent_request_count"] < 3 + overflow_count:
+                    if self.probe["overflow_request"] is None:
+                        self.probe["overflow_request"] = request
+                    yield ModelFailed(error=ProviderError(
+                        code="context_length_exceeded",
+                        message="The request exceeds the model context window.",
+                        retryable=False,
+                        category="context_overflow",
+                    ))
+                    return
+            async for event in super()._astream_once(request):
+                yield event
+
+    paths = RuntimePaths.from_data_dir(temp_data_dir)
+    provider = OverflowMock()
+    plugin_overrides = [
+        {
+            "id": "llm",
+            "config": {
+                "default_provider": "test",
+                "providers": {
+                    "test": {
+                        "protocol": "mock",
+                        "default_model": "mock",
+                        "models": [{
+                            "model": "mock",
+                            "max_context_tokens": 65536,
+                            "max_output_tokens": 16,
+                        }],
+                    },
+                },
+            },
+        },
+        {
+            "id": "compact",
+            "config": {
+                "automatic": True,
+                "trigger_ratio": 1.0,
+                "output_reservation": 0,
+                "keep_recent_turns": 1,
+            },
+        },
+    ]
+    application = await thread_scope(
+        paths=paths,
+        session_id="compact-context-overflow-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=plugin_overrides,
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        if overflow_count == 1:
+            await _run_turn(engine_of(application), "Recover this request after overflow")
+        else:
+            events = [
+                event async for event in engine_of(application).run_turn(InboxItem(
+                    target=InboxTarget.NEXT_TURN,
+                    input=HumanInput(content="Propagate a repeated context overflow"),
+                ))
+            ]
+            failures = [event for event in events if isinstance(event, LoopError)]
+            assert len(failures) == 1
+            assert failures[0].exception_type == "ProviderFailure"
+            assert failures[0].message == (
+                "The request exceeds the model context window."
+            )
+
+        summaries = [
+            item for item in engine_of(application).messages
+            if isinstance(item, CompactionSummaryMessage)
+        ]
+        assert len(summaries) == 1
+        assert provider.probe["overflow_request"] is not None
+        assert provider.probe["agent_request_count"] == 4
+        if overflow_count == 1:
+            assert any(
+                isinstance(part, TextPart)
+                and "typed boundaries" in part.text
+                for message in provider.request_history[-1].messages
+                for part in message.parts
+            )
+            assert any(
+                isinstance(part, TextPart)
+                and part.text == "Recovered after context overflow"
+                for part in engine_of(application).messages[-1].parts
+            )
+        else:
+            assert isinstance(engine_of(application).messages[-1], HumanInputMessage)
+            assert engine_of(application).messages[-1].parts[0].text == (
+                "Propagate a repeated context overflow"
+            )
+        completed = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        assert len(completed) == 1
+        assert completed[0].reason == "context-overflow"
+        assert completed[0].metrics.request_estimate == estimate_model_request_tokens(
+            provider.probe["overflow_request"]
+        )
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_summary_provider_failure_continues_with_original_request(
+    temp_data_dir, temp_workspace
+):
+    class SummaryFailureMock(MockLLM):
+        def __init__(self):
+            super().__init__(responses=[
+                {"content": "A title"},
+                {"content": "First answer"},
+                {"content": "Second answer"},
+                {"content": "Original request continued"},
+                {"content": "Original request continued after failure"},
+            ])
+            self.probe = {"fail_next_summary": False, "summary_failure": None}
+
+        async def _astream_once(self, request):
+            if not request.tools and self.probe["fail_next_summary"]:
+                self.probe["fail_next_summary"] = False
+                self.probe["summary_failure"] = request
+                yield ModelFailed(error=ProviderError(
+                    code="summary_unavailable",
+                    message="The summary provider is unavailable.",
+                    retryable=False,
+                    category="transport",
+                ))
+                return
+            async for event in super()._astream_once(request):
+                yield event
+
+    provider = SummaryFailureMock()
+    runtime_events = []
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-summary-provider-failure-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 512,
+                                "max_output_tokens": 16,
+                            }],
+                        },
+                    },
+                },
+            },
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": True,
+                    "trigger_ratio": 0.01,
+                    "output_reservation": 1,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Old context " + "x" * 150)
+        await _run_turn(engine_of(application), "New context " + "y" * 150)
+        before = tuple(engine_of(application).messages)
+        durable_before = await _surface(application)
+        completed_before = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        provider.probe["fail_next_summary"] = True
+
+        await _run_turn(engine_of(application), "Continue after provider failure")
+
+        live = tuple(engine_of(application).messages)
+        durable = await _surface(application)
+        assert provider.probe["summary_failure"] is not None
+        assert live[:-2] == before
+        assert durable[:-2] == durable_before
+        assert isinstance(live[-2], HumanInputMessage)
+        assert live[-2].parts[0].text == "Continue after provider failure"
+        assert isinstance(live[-1], AssistantMessage)
+        assert any(
+            isinstance(part, TextPart)
+            and part.text == "Original request continued after failure"
+            for part in live[-1].parts
+        )
+        assert [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ] == completed_before
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len(failures) == 1
+        assert failures[0].reason == "automatic"
+        assert await _surface(application) == live
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_agent_compact_tool_runs_through_registry_and_continues_the_turn(
+    temp_data_dir, temp_workspace
+):
+    provider = MockLLM(responses=[
+        {"content": "A title"},
+        {"content": "First answer"},
+        {
+            "tool_calls": [{
+                "id": "compact-call",
+                "name": "compact",
+                "args": {},
+            }],
+        },
+        {"content": "Preserve the decision made earlier."},
+        {"content": "The task continued after compaction."},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-tool-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[{
+            "id": "compact",
+            "config": {"automatic": False, "keep_recent_turns": 1},
+        }],
+    )
+    try:
+        assert "compact" in engine_of(application).tools.names()
+        await _run_turn(engine_of(application), "First task " + "a" * 100)
+        events = [event async for event in engine_of(application).run_turn(
+            InboxItem(
+                target=InboxTarget.NEXT_TURN,
+                input=HumanInput(content="Continue and retain the earlier decision."),
+            ),
+        )]
+
+        completed = next(event for event in events if isinstance(event, ToolCompleted))
+        assert isinstance(completed.execution.message.outcome, ToolSucceeded)
+        assert any(
+            isinstance(item, CompactionSummaryMessage)
+            and "decision made earlier" in item.summary
+            for item in engine_of(application).messages
+        )
+        retained_calls = {
+            str(part.id)
+            for item in engine_of(application).messages
+            if isinstance(item, AssistantMessage)
+            for part in item.parts
+            if isinstance(part, ToolCall)
+        }
+        retained_results = {
+            str(item.call.id)
+            for item in engine_of(application).messages
+            if isinstance(item, ToolMessage)
+        }
+        assert retained_calls & retained_results
+        assert provider.call_count == 5
+        assert any(
+            isinstance(part, TextPart)
+            and "task continued after compaction" in part.text
+            for item in engine_of(application).messages
+            if isinstance(item, AssistantMessage)
+            for part in item.parts
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_compact_command_resolves_externalized_tool_artifacts(
+    temp_data_dir, temp_workspace
+):
+    """A real externalized tool result must not break the summary request."""
+    (Path(temp_workspace) / "notes.txt").write_text(
+        "original tool output " * 20,
+        encoding="utf-8",
+    )
+    provider = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "read-notes",
+                "name": "read",
+                "args": {"path": "notes.txt"},
+            }],
+        },
+        {"content": "First answer"},
+        {"content": "The user inspected notes.txt and chose decision Y."},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-artifact-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "content_cache",
+                "config": {
+                    "threshold_chars": 10,
+                    "preview_chars": 8,
+                    "tail_chars": 3,
+                },
+            },
+            {"id": "compact", "config": {"automatic": False, "keep_recent_turns": 1}},
+        ],
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Read notes.txt")
+
+        externalized = [
+            item
+            for item in engine_of(application).messages
+            if isinstance(item, ToolMessage)
+            and isinstance(item.outcome, ToolSucceeded)
+            and item.outcome.output.artifacts
+        ]
+        assert externalized, "the tool result was not externalized into an artifact"
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        assert result.status == "ok", result.message
+        summaries = [
+            item
+            for item in engine_of(application).messages
+            if isinstance(item, CompactionSummaryMessage)
+        ]
+        assert len(summaries) == 1
+        assert "decision Y" in summaries[0].summary
+        assert any(
+            isinstance(event, CompactionCompleted) for event in runtime_events
+        )
+
+        # The auxiliary summary request resolved the logical ref to a real path.
+        summary_requests = [
+            request
+            for request in provider.request_history
+            if not request.tools
+        ]
+        assert summary_requests
+        tool_parts = [
+            part
+            for request in summary_requests
+            for message in request.messages
+            if isinstance(message, ProviderTool)
+            for part in message.parts
+            if isinstance(part, TextPart)
+        ]
+        assert any(
+            application.artifacts.model_path(ref) in part.text
+            for ref in externalized[0].outcome.output.artifacts
+            for part in tool_parts
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_automatic_compaction_commits_over_artifact_bearing_history(
+    temp_data_dir, temp_workspace
+):
+    """Automatic compaction must not silently skip artifact-bearing history."""
+    (Path(temp_workspace) / "AGENTS.md").write_text(
+        "Follow this detailed workspace policy. " * 500,
+        encoding="utf-8",
+    )
+    (Path(temp_workspace) / "notes.txt").write_text(
+        "original tool output " * 20,
+        encoding="utf-8",
+    )
+    provider = MockLLM(responses=[
+        {
+            "tool_calls": [{
+                "id": "read-notes",
+                "name": "read",
+                "args": {"path": "notes.txt"},
+            }],
+        },
+        {"content": "first answer"},
+        {"content": "summary retaining decision Y"},
+        {"content": "second answer"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-artifact-automatic-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 4096,
+                                "max_output_tokens": 1024,
+                            }],
+                        },
+                    },
+                },
+            },
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "content_cache",
+                "config": {
+                    "threshold_chars": 10,
+                    "preview_chars": 8,
+                    "tail_chars": 3,
+                },
+            },
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": True,
+                    "trigger_ratio": 0.1,
+                    "output_reservation": 64,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    runtime_events = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        await _run_turn(engine_of(application), "Read notes.txt")
+
+        externalized = [
+            item
+            for item in engine_of(application).messages
+            if isinstance(item, ToolMessage)
+            and isinstance(item.outcome, ToolSucceeded)
+            and item.outcome.output.artifacts
+        ]
+        assert externalized, "the tool result was not externalized into an artifact"
+
+        await _run_turn(engine_of(application), "Continue after reading notes")
+
+        completions = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        failures = [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert completions, f"automatic compaction did not commit: {failures}"
+        assert completions[0].reason == "automatic"
+        assert not failures
+        assert any(
+            isinstance(item, CompactionSummaryMessage)
+            and "decision Y" in item.summary
+            for item in engine_of(application).messages
+        )
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.asyncio
+async def test_compaction_summary_keeps_the_model_output_budget(
+    temp_data_dir, temp_workspace
+):
+    """A thinking model must keep its full output budget for the summary.
+
+    The auxiliary request previously narrowed ``max_output_tokens`` to a small
+    compaction cap. A reasoning model then spent that whole budget thinking and
+    returned no text, so compaction failed with an empty summary.
+    """
+    provider = MockLLM(responses=[
+        {"content": "First answer"},
+        {"content": "Second answer"},
+        # A reasoning-only reply: the summary text is empty, which must stay a
+        # real failure rather than being silently accepted.
+        {"reasoning": "thinking only, no summary text"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id="compact-output-budget-e2e",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {"id": "compact", "config": {"automatic": False, "keep_recent_turns": 1}},
+        ],
+    )
+    try:
+        await _run_turn(engine_of(application), "First task " + "a" * 100)
+        await _run_turn(engine_of(application), "Second task")
+
+        result = await application.serial(
+            EXECUTE_COMMAND.name,
+            ExecuteCommand(command="compact", kind="server", raw_args=""),
+        )
+
+        # A reasoning-only reply is still rejected: compaction never accepts an
+        # empty summary.
+        assert result.status == "error"
+        assert "empty summary" in result.message
+
+        # The auxiliary request reuses the runtime output budget unchanged.
+        summary_requests = [r for r in provider.request_history if not r.tools]
+        assert summary_requests
+        runtime_output = (
+            application.loop_state.metadata.value
+            .runtime_selection.model.generation.max_output_tokens
+        )
+        assert all(
+            request.selection.generation.max_output_tokens == runtime_output
+            for request in summary_requests
+        )
+    finally:
+        await application.root.close()
+
+
+@pytest.mark.parametrize("automatic", [False, True])
+@pytest.mark.asyncio
+async def test_compaction_releases_context_and_the_session_continues(
+    temp_data_dir, temp_workspace, automatic
+):
+    """Compaction over the threshold returns the session to low usage.
+
+    Covers both operator paths over the same session shape: a manual /compact,
+    and automatic compaction when the prepared request crosses the threshold.
+    After either one the rebuilt request must be back under the threshold, so
+    the following turns neither overflow nor compact again.
+    """
+    provider = MockLLM(responses=[
+        {"content": "answer one"},
+        {"content": "answer two"},
+        {"content": "summary of the earlier work"},
+        {"content": "answer three"},
+        {"content": "answer four"},
+        {"content": "answer five"},
+        {"content": "answer six"},
+    ])
+    application = await thread_scope(
+        paths=RuntimePaths.from_data_dir(temp_data_dir),
+        session_id=f"compact-release-{'auto' if automatic else 'manual'}",
+        thread_id="main",
+        workspace_root=temp_workspace,
+        plugin_dirs=[],
+        llm_override=provider,
+        extra_plugins=[
+            {
+                "id": "llm",
+                "config": {
+                    "default_provider": "test",
+                    "providers": {
+                        "test": {
+                            "protocol": "mock",
+                            "default_model": "mock",
+                            "models": [{
+                                "model": "mock",
+                                "max_context_tokens": 65_536,
+                                "max_output_tokens": 1024,
+                            }],
+                        },
+                    },
+                },
+            },
+            {"id": "caption", "config": {"auto": False, "allow_access": False}},
+            {
+                "id": "compact",
+                "config": {
+                    "automatic": automatic,
+                    "trigger_ratio": 0.2,
+                    "output_reservation": 64,
+                    "keep_recent_turns": 1,
+                },
+            },
+        ],
+    )
+    runtime_events = []
+    ready_requests: list[ModelRequestReady] = []
+    try:
+        application.on(
+            RUNTIME_EVENT,
+            lambda event: runtime_events.append(event.event),
+        )
+        application.on(
+            Events.MODEL_REQUEST_READY,
+            lambda event: ready_requests.append(event),
+        )
+        model = application.loop_state.metadata.value.runtime_selection.model
+        context_limit = context_token_limit(
+            model.context_window,
+            trigger_ratio=0.2,
+            output_reservation=64,
+        )
+
+        # A large first turn plus a short second one push the request estimate
+        # over the threshold, leaving a compactable prefix behind.
+        await _run_turn(engine_of(application), "big " * 5_000)
+        await _run_turn(engine_of(application), "short follow-up")
+
+        if automatic:
+            # The over-threshold request is compacted before it is sent, and
+            # the engine rebuilds the candidate from the compacted surface.
+            assert any(
+                isinstance(event, CompactionCompleted)
+                for event in runtime_events
+            ), "automatic compaction did not run over the threshold"
+        else:
+            over = estimate_model_request_tokens(ready_requests[-1].request)
+            assert over > context_limit
+            result = await application.serial(
+                EXECUTE_COMMAND.name,
+                ExecuteCommand(command="compact", kind="server", raw_args=""),
+            )
+            assert result.status == "ok", result.message
+
+        completions = [
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]
+        assert len(completions) == 1
+        assert completions[0].reason == ("automatic" if automatic else "manual")
+        assert (
+            completions[0].metrics.context_tokens_after_estimate
+            < completions[0].metrics.context_tokens_before
+        )
+        assert any(
+            isinstance(item, CompactionSummaryMessage)
+            for item in engine_of(application).messages
+        )
+
+        # Continue the session: the rebuilt request is back under the threshold.
+        await _run_turn(engine_of(application), "continue after compaction")
+        after_estimate = estimate_model_request_tokens(ready_requests[-1].request)
+        assert after_estimate < context_limit, (
+            f"request after compaction is {after_estimate}, still over {context_limit}"
+        )
+
+        # Later turns run normally and never compact again.
+        for text in ("question two", "question three", "question four"):
+            events = [
+                event async for event in engine_of(application).run_turn(
+                    InboxItem(target=InboxTarget.NEXT_TURN, input=HumanInput(content=text)),
+                )
+            ]
+            assert not [event for event in events if isinstance(event, LoopError)]
+
+        assert not [
+            event for event in runtime_events
+            if isinstance(event, CompactionFailed)
+        ]
+        assert len([
+            event for event in runtime_events
+            if isinstance(event, CompactionCompleted)
+        ]) == 1, "compaction ran more than once"
+        assert await _surface(application) == tuple(
+            engine_of(application).messages
+        )
+    finally:
+        await application.root.close()

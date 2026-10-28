@@ -1,5 +1,5 @@
-from XBotv2.jobs.contracts import JobsPort
-from XBotv2.jobs.registry import JobRegistry
+from XBotv2.jobs.api.contracts import JobsPort
+from XBotv2.jobs.impl.registry import JobRegistry
 
 
 def test_job_registry_implements_jobs_port():

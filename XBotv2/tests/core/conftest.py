@@ -1,23 +1,21 @@
 """Core test fixtures — no built-in/Phase4 plugins loaded."""
 
 import pytest
-
 import xcore
-from XBotv2.agentloop import EventContext, Events
-from XBotv2.session import SessionInfo
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.permissions.system import PermissionSystem
-from XBotv2.sandbox.policy import SandboxPolicy
-from XBotv2.context_builder.builder import ContextBuilder
-from XBotv2.llm.mock import MockLLM
-from XBotv2.persistence.store import ThreadPersistence
-from XBotv2.core.paths import RuntimePaths
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.permissions.impl.system import PermissionSystem
+from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.sandbox.impl.policy import SandboxPolicy
+from XBotv2.context_builder.impl.builder import ContextBuilder
+from XBotv2.llm.impl.mock import MockLLM
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.persistence.impl.artifacts import ArtifactStore
 
 
 @pytest.fixture
 def plugin_ctx():
     """Empty XCore plugin context."""
-    return xcore.Context()
+    return xcore.api.context.Context()
 
 
 @pytest.fixture
@@ -29,7 +27,7 @@ def tool_registry():
 @pytest.fixture
 def permission_system():
     """Default PermissionSystem (ask on everything)."""
-    return PermissionSystem(default_decision="ask")
+    return PermissionSystem(PermissionPolicy(default_decision="ask"))
 
 
 @pytest.fixture
@@ -55,37 +53,6 @@ def mock_llm():
 
 
 @pytest.fixture
-def state_store(temp_data_dir):
-    """ThreadPersistence in a temporary data directory."""
-    store = ThreadPersistence.create(
-        RuntimePaths.from_data_dir(temp_data_dir).session("test-session"),
-        thread_id="test-thread",
-        workspace_root=str(temp_data_dir),
-        provider="default",
-    )
-    return store
-
-
-@pytest.fixture
-def artifact_store(state_store):
-    return state_store.artifacts
-
-
-@pytest.fixture
-def session_info():
-    """Minimal SessionInfo."""
-    return SessionInfo(
-        session_id="test-session",
-        thread_id="test-thread",
-        workspace_root="/workspace",
-        provider="default",
-    )
-
-
-@pytest.fixture
-def event_context(session_info, tool_registry):
-    """Basic EventContext for loop events."""
-    return EventContext(
-        messages=[],
-        session=session_info,
-    )
+def artifact_store(temp_data_dir):
+    paths = RuntimePaths.from_data_dir(temp_data_dir).session("test-session").thread("test-thread")
+    return ArtifactStore(paths)

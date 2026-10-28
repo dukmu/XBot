@@ -26,7 +26,7 @@ ctx.database                          # 属性访问（__getattr__）
 ## Service 基类
 
 ```python
-from xcore import Service
+from xcore.api.service import Service
 
 class Database(Service):
     name = "database"          # 缺省 = 类名 snake_case（MyDatabase -> my_database）

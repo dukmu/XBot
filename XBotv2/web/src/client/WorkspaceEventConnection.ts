@@ -1,5 +1,5 @@
 import { XBotApiError } from "../api/client";
-import type { ServerEvent } from "../api/types";
+import type { ServerEvent } from "../api/wire";
 
 export interface WorkspaceEventListener {
   onEvent(event: ServerEvent): void;

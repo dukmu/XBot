@@ -1,0 +1,290 @@
+"""SkillsPlugin — discovers SKILL.md files, registers skill tool, injects context."""
+
+from __future__ import annotations
+from XBotv2.commands.api.contracts import COMMANDS
+from XBotv2.sandbox.api.models import SANDBOX
+
+from XBotv2.agentloop.api.contracts import TOOLS, ToolsPort, ToolRegistration, HumanInput
+from pathlib import Path
+from pydantic import JsonValue
+from xcore.api.context import Context
+from XBotv2.agentloop.api.events import THREAD_INITIALIZED
+from XBotv2.agentloop.api.events import ThreadInitialized
+from XBotv2.core.api.paths import RuntimePaths
+from XBotv2.core.api.prompts import prompt_container, prompt_element
+from XBotv2.core.api.tools import Tool, ToolOutcome, succeeded_text, GuardDecision, ToolCall
+from XBotv2.agentloop.api.events import (
+    Events,
+    AcceptInput,
+    BeforeModelRequest,
+    OnTurnInput,
+    RejectInput,
+    ReplaceRequest,
+    TurnEnded,
+)
+from XBotv2.commands.api.contracts import Command
+from .permission_scope import SkillPermissionScope
+from .registry import Skill, SkillRegistry
+from .skill_tool import load_skill
+
+
+class SkillToolHandler:
+    """Load and activate one discovered skill without capturing plugin locals."""
+
+    def __init__(self, runtime: "SkillsPlugin", skill: Skill) -> None:
+        self._runtime = runtime
+        self._skill = skill
+
+    async def invoke(self) -> ToolOutcome:
+        content = await load_skill(
+            self._skill.name,
+            skill_registry=self._runtime._registry,
+            sandbox=self._runtime._sandbox,
+            variables=self._runtime._variables,
+        )
+        self._runtime._activate_skill(self._skill)
+        return succeeded_text(
+            f"{content}\n\nSkill activated: {self._skill.name} "
+            f"({self._skill.scope})",
+        )
+
+
+class SkillsPlugin:
+    inject = [TOOLS, COMMANDS, "variables", SANDBOX, "runtime_paths"]
+    name = "skills"
+
+    def __init__(self) -> None:
+        self._registry = SkillRegistry()
+        self._permission_scope = SkillPermissionScope()
+        self._active_skills: set[str] = set()
+        self._model_skill_names: set[str] = set()
+        self._metadata_budget_chars = 8_000
+        self._initialized = False
+
+    def apply(
+        self,
+        ctx: Context,
+        config: dict[str, JsonValue] | None = None,
+    ) -> None:
+        del config
+        self._owner = ctx
+        self._tools: ToolsPort = ctx.require(TOOLS)
+        self._commands = ctx.require(COMMANDS)
+        self._variables: RuntimeVariables = ctx.variables
+        self._sandbox = ctx.require(SANDBOX)
+        self._runtime_paths: RuntimePaths = ctx.runtime_paths
+        ctx.dispose(self._cleanup_runtime)
+        ctx.on(THREAD_INITIALIZED, self._on_session_init)
+        ctx.on(Events.ON_TURN_INPUT, self._on_before_user_message)
+        ctx.on(Events.BEFORE_MODEL_REQUEST, self._on_before_tool_schema)
+        ctx.on(Events.TURN_END, self._on_turn_end)
+        ctx.require(TOOLS).guard(self._guard_tool_scope)
+
+    def _cleanup_runtime(self) -> None:
+        """Reset plugin state after its registrations are released."""
+        self._registry = SkillRegistry()
+        self._active_skills.clear()
+        self._permission_scope.clear()
+        self._model_skill_names.clear()
+        self._initialized = False
+
+    async def _on_session_init(self, event: ThreadInitialized) -> None:
+        if self._initialized:
+            return
+        ws = event.session.workspace_root or str(Path.cwd())
+        global_dirs = (self._runtime_paths.data_dir / ".agents" / "skills",)
+        self._registry.discover(Path(ws), global_dirs=global_dirs)
+        max_context = int(
+            event.metadata.runtime_selection.model.context_window
+        )
+        if max_context > 0:
+            self._metadata_budget_chars = min(
+                8_000,
+                int(max_context * 0.02 * 4),
+            )
+        registered_tools: list[str] = []
+        registered_commands: list[str] = []
+        try:
+            for skill in self._registry.list_skills():
+                if not skill.disable_model_invocation:
+                    registered_name = self._register_skill_tool(skill)
+                    registered_tools.append(registered_name)
+                    self._model_skill_names.add(skill.name)
+                if skill.user_invocable:
+                    command_name = self._commands.register(
+                        Command(
+                            name=skill.name,
+                            kind="prompt",
+                            description=skill.description,
+                            usage=f"/{skill.name} [instructions]",
+                        ),
+                        owner=self._owner,
+                    )
+                    registered_commands.append(command_name)
+        except Exception:
+            for name in reversed(registered_commands):
+                self._commands.unregister(name)
+            for name in reversed(registered_tools):
+                self._tools.unregister(name)
+            self._cleanup_runtime()
+            raise
+        self._initialized = True
+
+    def _register_skill_tool(self, skill: Skill) -> str:
+        """Register one skill Tool through the public service."""
+        return self._tools.register(
+            self._skill_as_tool(skill),
+            namespace=f"skills:{skill.scope}",
+            owner=self._owner,
+        )
+
+    async def _on_before_tool_schema(self, event: BeforeModelRequest):
+        request = event.request
+        tools = list(request.tools)
+        if not tools or not self._model_skill_names:
+            return None
+        remaining = self._metadata_budget_chars
+        selected = []
+        for tool in tools:
+            name = tool.name
+            if name not in self._model_skill_names:
+                selected.append(tool)
+                continue
+            description = tool.description
+            size = len(name) + len(description)
+            if size <= remaining:
+                selected.append(tool)
+                remaining -= size
+                continue
+            if remaining > len(name):
+                selected.append(
+                    tool.model_copy(
+                        update={
+                            "description": description[: remaining - len(name)]
+                        }
+                    )
+                )
+                remaining = 0
+        selected_tools = tuple(selected)
+        if selected_tools == request.tools:
+            return None
+        return ReplaceRequest(
+            request.model_copy(update={"tools": selected_tools})
+        )
+
+    def _skill_as_tool(self, skill: Skill) -> Tool:
+        handler = SkillToolHandler(self, skill)
+        return Tool(
+            name=skill.name,
+            description=f"Load Skill instructions for this turn. {skill.description}",
+            function=handler.invoke,
+            parameters={"type": "object", "properties": {}},
+        )
+
+    def _activate_skill(self, skill: Skill) -> None:
+        if skill.name in self._active_skills:
+            return
+        if skill.allowed_tools or skill.disallowed_tools:
+            self._permission_scope.add(
+                allowed=skill.allowed_tools,
+                disallowed=skill.disallowed_tools,
+            )
+        self._active_skills.add(skill.name)
+
+
+    async def _on_before_user_message(self, event: OnTurnInput):
+        """Expand /skill-name [instructions] with SKILL.md content."""
+        payload = event.input.input
+        if not isinstance(payload, HumanInput):
+            return None
+        text = payload.content.strip()
+        if not text.startswith("/"):
+            return
+        parts = text.split(None, 1)
+        skill_name = parts[0][1:]  # strip leading /
+        skill = self._registry.load_skill(skill_name)
+        if skill is None:
+            return
+        if not skill.user_invocable:
+            return RejectInput(
+                f"Skill '/{skill_name}' is not user-invocable."
+            )
+        instructions = parts[1] if len(parts) > 1 else ""
+        content = await load_skill(
+            skill_name,
+            arguments=instructions,
+            skill_registry=self._registry,
+            sandbox=self._sandbox,
+        )
+        self._activate_skill(skill)
+        expanded = prompt_container(
+                "skill_invocation",
+                [
+                    prompt_element("skill_instructions", content),
+                    prompt_element("user_arguments", instructions),
+                ],
+                attributes={
+                    "name": skill.name,
+                    "scope": skill.scope,
+                    "source": skill.path,
+                },
+            )
+        return AcceptInput(
+            event.input.model_copy(
+                update={
+                    "input": payload.model_copy(
+                        update={"content": expanded}
+                    )
+                }
+            )
+        )
+
+    async def _on_turn_end(self, ctx: TurnEnded) -> None:
+        self._active_skills.clear()
+        self._permission_scope.clear()
+
+    async def _guard_tool_scope(
+        self,
+        tool_call: ToolCall,
+        entry: ToolRegistration,
+    ) -> GuardDecision | None:
+        if not self._active_skills:
+            return
+        if entry.namespace.startswith("skills:"):
+            # The plugin's own skill-invocation tools stay callable while a
+            # skill's allowlist is in force (they are the door into a skill,
+            # not tools the skill itself exercises).
+            return None
+        tool_name = tool_call.name
+        if not tool_name:
+            return
+        decision = self._permission_scope.check(tool_name, tool_call.args)
+        if decision == "deny":
+            return GuardDecision(
+                "deny",
+                f"Tool '{tool_name}' is denied by the active skill",
+                source="skills",
+            )
+        if decision == "restrict":
+            return GuardDecision(
+                "deny",
+                f"Tool '{tool_name}' is outside the active skill's allowed-tools",
+                source="skills",
+            )
+        return None
+
+    def diagnostics(self) -> dict[str, JsonValue]:
+        return {
+            "status": "ready",
+            "skills": len(self._registry.list_skills()),
+            "active_skills": len(self._active_skills),
+        }
+
+
+def mount_thread(ctx, config):
+    SkillsPlugin().apply(ctx, config)
+
+
+mount_thread.inject = getattr(SkillsPlugin, "inject", ())
+mount_thread.provide = ()
+mount_thread.Config = getattr(SkillsPlugin, "Config", None)

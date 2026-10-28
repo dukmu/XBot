@@ -51,7 +51,7 @@ export function ContextMeter({ usage, contextWindow }: { usage: UsageData; conte
       {open && (
         <div className={css.panel} role="dialog" aria-label="Context usage">
           <div className={css.header}>
-            <span>Context used</span>
+            <span>{usage.context_estimated ? "Context used (estimated)" : "Context used"}</span>
             <span className={css.percent}>{percent}%</span>
             <span className={css.figures}>{formatTokens(usage.context_tokens)} / {formatTokens(contextWindow)}</span>
           </div>

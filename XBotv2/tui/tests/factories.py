@@ -1,0 +1,779 @@
+"""Shared builders for the TUI test suite.
+
+One scripted backend lives here and is used by every transport test through the
+``backend`` fixture. The old suite grew forty private session doubles, each
+modelling a different subset of behaviour, which is why none of them could
+falsify a real defect. This one models what the transport actually depends on:
+sequenced frames, resubscription cursors, a thread listing whose turn status is
+authoritative, and failures that are raised rather than returned.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+from dataclasses import dataclass, field
+from typing import Any, AsyncIterator, Iterable
+
+from XBotv2.commands.api.contracts import CommandDescription, CommandExecution
+from XBotv2.commands.api.protocol import CommandListResponse, CommandResponse
+from XBotv2.core.api.domain import (
+    AgentExecutionLimits,
+    GenerationSettings,
+    ModelRoute,
+    ReasoningGenerationMode,
+    ResolvedModelSelection,
+    ResolvedRuntimeSelection,
+    SessionScope,
+    StandardGenerationMode,
+    UsageSnapshot,
+    CompletedStop,
+    ModelTiming,
+    ToolTiming,
+)
+from XBotv2.core.api.history import HistoryPage
+from XBotv2.core.api.metadata import ThreadMetadata
+from XBotv2.core.api.tools import ToolCallRef, ToolSucceeded, text_output
+from XBotv2.interactions.api.protocol import InteractionResponse
+from XBotv2.jobs.api.protocol import JobListResponse
+from XBotv2.protocol.api.models import ServerEvent, server_event
+from XBotv2.session.api.contracts import OpenedThread, SessionKey, ThreadSummary
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
+
+
+SESSION = "s1"
+THREAD = "agent"
+
+# A real one-pixel PNG: tests that attach an image write these bytes to disk.
+PNG_BYTES = base64.b64decode(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8AAAwAB/AL+2gAAAABJRU5ErkJggg=="
+)
+
+
+def local_command_port(app):
+    """Use the production command registration path for direct app tests."""
+    from XBotv2.commands.impl.plugin import CommandsService
+    from XBotv2.tui.impl.commands import register_client_commands
+
+    commands = CommandsService(ownership="caller")
+    register_client_commands(commands, app)
+    return commands
+
+
+def tui_app(backend, **kwargs):
+    """Construct a directly driven app with the normal local command registry."""
+    from XBotv2.tui.impl.app import TuiApp
+
+    from XBotv2.commands.impl.plugin import CommandsService
+    from XBotv2.tui.impl.commands import register_client_commands
+
+    commands = CommandsService(ownership="caller")
+    app = TuiApp(backend=backend, commands=commands, **kwargs)
+    register_client_commands(commands, app)
+    return app
+
+
+def tui_command_registry():
+    from XBotv2.tui.impl.commands import CommandRegistry
+
+    app = tui_app(backend=object())
+    return app.commands
+
+
+def snapshot(**overrides: Any) -> OpenSessionResponse:
+    session_id = overrides.pop("session_id", SESSION)
+    thread_id = overrides.pop("thread_id", THREAD)
+    workspace_root = overrides.pop("workspace_root", "/w")
+    provider = overrides.pop("provider", "p")
+    model_name = overrides.pop("model", "m")
+    agent_name = overrides.pop("agent_name", "XBotv2")
+    model_mode = overrides.pop("model_mode", "")
+    context_window = overrides.pop("context_window", 4096)
+    history = overrides.pop("history", ())
+    history_cursor = overrides.pop("history_cursor", None)
+    runtime_selection = overrides.pop(
+        "runtime_selection",
+        ResolvedRuntimeSelection(
+            agent_name=agent_name,
+            prompt="",
+            limits=AgentExecutionLimits(),
+            enabled_tools=(),
+            model=ResolvedModelSelection(
+                route=ModelRoute(provider=provider, model=model_name),
+                generation=GenerationSettings(
+                    mode=(
+                        ReasoningGenerationMode(effort=model_mode)
+                        if model_mode
+                        else StandardGenerationMode()
+                    ),
+                    max_output_tokens=context_window,
+                ),
+                context_window=context_window,
+            ),
+        ),
+    )
+    opened = OpenedThread(
+        key=SessionKey(session_id=session_id, thread_id=thread_id),
+        metadata=ThreadMetadata(
+            runtime_selection=runtime_selection,
+            workspace_root=workspace_root,
+        ),
+        history=HistoryPage(items=tuple(history), older_cursor=history_cursor),
+        usage=overrides.pop("usage", UsageSnapshot()),
+        status_slots=overrides.pop("status_slots", {}),
+        event_cursor=overrides.pop("event_cursor", 0),
+        pending_inputs=overrides.pop("pending_inputs", ()),
+        pending_interactions=overrides.pop("pending_interactions", ()),
+        **overrides,
+    )
+    return OpenSessionResponse(data=opened)
+
+
+def thread(**overrides: Any) -> ThreadSummary:
+    base: dict[str, Any] = {
+        "session_id": SESSION,
+        "thread_id": THREAD,
+        "status": "active",
+        "kind": "main",
+        "turn_status": "idle",
+    }
+    return ThreadSummary(**{**base, **overrides})
+
+
+def human_record(message_id: str, content: str) -> HumanInputRecord:
+    return HumanInputRecord(id=message_id, content=content)
+
+
+def assistant_record(message_id: str, content: str, *, reasoning: str = "") -> dict[str, Any]:
+    return AssistantRecord(
+        id=message_id,
+        content=content,
+        reasoning=reasoning,
+        timing=ModelTiming(total_ms=0),
+        stop=CompletedStop(),
+    ).model_dump(mode="json")
+
+
+def tool_record(call_id: str, name: str, content: str) -> dict[str, Any]:
+    return ToolRecord(
+        id=f"tool-{call_id}",
+        call=ToolCallRef(id=call_id, name=name),
+        outcome=ToolSucceeded(output=text_output(content)),
+        timing=ToolTiming(duration_ms=0),
+    ).model_dump(mode="json")
+
+
+def history_page(*items: HumanInputRecord, older_cursor: str | None = None) -> HistoryPage:
+    return HistoryPage(items=items, older_cursor=older_cursor)
+
+
+def command(name: str = "status", **overrides: Any) -> CommandDescription:
+    """One entry of the catalogue a server publishes."""
+    base: dict[str, Any] = {
+        "name": name,
+        "slash": f"/{name}",
+        "kind": "server",
+        "description": f"the {name} command",
+        "usage": f"/{name}",
+        "exclusive": True,
+    }
+    return CommandDescription(**{**base, **overrides})
+
+
+def execution(**overrides: Any) -> CommandExecution:
+    base: dict[str, Any] = {
+        "command": "status",
+        "status": "ok",
+        "message": "session s1 · thread agent · idle",
+    }
+    return CommandExecution(**{**base, **overrides})
+
+
+def model(name: str = "m1", **overrides: Any) -> Any:
+    from XBotv2.llm.api.contracts import ModelDescription
+
+    base: dict[str, Any] = {
+        "model": name,
+        "max_context_tokens": 4096,
+        "effort": ("low", "high"),
+    }
+    return ModelDescription(**{**base, **overrides})
+
+
+def catalog(**overrides: Any) -> Any:
+    """A provider catalogue: one provider with two models, one the default."""
+    from XBotv2.llm.api.contracts import ProviderCatalog, ProviderDescription
+
+    base: dict[str, Any] = {
+        "default": "p1",
+        "providers": (
+            ProviderDescription(
+                name="p1",
+                provider="openai",
+                default_model="m1",
+                models=(model("m1"), model("m2", effort=("low",))),
+            ),
+            ProviderDescription(
+                name="p2",
+                provider="anthropic",
+                default_model="m3",
+                models=(model("m3"),),
+            ),
+        ),
+    }
+    return ProviderCatalog(**{**base, **overrides})
+
+
+def agent_list(**overrides: Any) -> Any:
+    from XBotv2.agents.api.protocol import AgentInfo, AgentListResponse
+    from XBotv2.agents.api.contracts import AgentModelPolicy, AgentToolPolicy
+    from XBotv2.core.api.domain import AgentExecutionLimits
+
+    def info(name: str, description: str) -> AgentInfo:
+        return AgentInfo(
+            name=name,
+            description=description,
+            mode="primary",
+            model_policy=AgentModelPolicy(),
+            limits=AgentExecutionLimits(),
+            tool_policy=AgentToolPolicy(),
+        )
+
+    base: dict[str, Any] = {
+        "active": "default",
+        "agents": [
+            info("default", "the default agent"),
+            info("reviewer", "reviews diffs"),
+        ],
+    }
+    return AgentListResponse(**{**base, **overrides})
+
+
+def selection_response(**overrides: Any) -> Any:
+    from XBotv2.agents.api.protocol import AgentSelectionResponse
+
+    base: dict[str, Any] = {"session_id": SESSION, "thread_id": THREAD, "agent": "default"}
+    return AgentSelectionResponse(**{**base, **overrides})
+
+
+def frame(
+    frame_type: str,
+    data: dict[str, Any] | None = None,
+    *,
+    sequence: int = 1,
+    session_id: str = SESSION,
+    thread_id: str = THREAD,
+) -> ServerEvent:
+    return server_event(
+        kind=frame_type,
+        payload=data or {},
+        sequence=sequence,
+        session_id=session_id,
+        thread_id=thread_id,
+        scope=SessionScope(),
+    )
+
+
+@dataclass
+class StreamScript:
+    """One resubscription: what the server does the next time it is asked.
+
+    ``frames`` are yielded in order; ``fail_with`` is raised instead when set.
+    ``after`` records the cursor the client asked to resume from, so a test can
+    assert that recovery resumed where it claimed.
+    """
+
+    frames: tuple[ServerEvent, ...] = ()
+    fail_with: BaseException | None = None
+    end_after_frames: bool = True
+    after: int | None = None
+    session_id: str = ""
+    """Recorded: the session this subscription was opened for."""
+    thread_id: str = ""
+    hold: bool = False
+    """Keep the subscription open after the frames, as a real server does."""
+
+
+@dataclass
+class ScriptedBackend:
+    """A scripted server: sequenced frames, authoritative thread reads, failures.
+
+    Deliberately blunt -- it replays exactly the scripts it was given, in order,
+    and records what the client asked for.
+    """
+
+    session: OpenSessionResponse = field(default_factory=snapshot)
+    threads: tuple[ThreadSummary, ...] = field(default_factory=lambda: (thread(),))
+    streams: list[StreamScript] = field(default_factory=list)
+    session_catalog: list[Any] = field(default_factory=list)
+    sent: list[dict[str, Any]] = field(default_factory=list)
+    opened: list[dict[str, Any]] = field(default_factory=list)
+    opened_threads: list[dict[str, Any]] = field(default_factory=list)
+    jobs: tuple[Any, ...] = ()
+    jobs_error: BaseException | None = None
+    job_reads: list[tuple[str, str]] = field(default_factory=list)
+    interrupts: int = 0
+    interaction_responses: list[dict[str, Any]] = field(default_factory=list)
+    interrupt_cancelled: bool = True
+    interrupt_error: BaseException | None = None
+    send_error: BaseException | None = None
+    thread_error: BaseException | None = None
+    open_error: BaseException | None = None
+    closed: bool = False
+    stream_opens: int = 0
+    # Every subscription this backend handed out, scripted or implicit, so a
+    # test can assert where a resubscription actually pointed.
+    subscriptions: list[StreamScript] = field(default_factory=list)
+
+    # What ``hello`` answers with. A real server answers with the session it was
+    # asked about, and with nothing when it was asked for no session in
+    # particular -- that is the ``xbot tui`` default (no ``--session``).
+    hello_session_id: str = SESSION
+    hello_thread_id: str = THREAD
+    #: The session ids the client asked a thread listing for, in order.
+    read_threads: list[str] = field(default_factory=list)
+    thread_reads: list[tuple[str, str]] = field(default_factory=list)
+    thread_list_requests: list[dict[str, Any]] = field(default_factory=list)
+
+    # --- lifecycle ----------------------------------------------------
+    async def hello(self, **kwargs: Any) -> Any:
+        return type(
+            "Hello",
+            (),
+            {"session_id": self.hello_session_id, "thread_id": self.hello_thread_id},
+        )()
+
+    async def open_session(self, **kwargs: Any) -> OpenSessionResponse:
+        self.opened.append(kwargs)
+        if self.open_error is not None:
+            raise self.open_error
+        return self.session
+
+    async def open_thread(self, session_id: str, **kwargs: Any) -> OpenSessionResponse:
+        self.opened_threads.append({"session_id": session_id, **kwargs})
+        return await self.open_session(session_id=session_id, **kwargs)
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def list_sessions(self, *, limit: int = 100, cursor: str | None = None, workspace_root: str | None = None) -> Any:
+        start = int(cursor) if cursor is not None else 0
+        items = self.session_catalog[start:start + limit]
+        next_cursor = str(start + limit) if start + limit < len(self.session_catalog) else None
+        previous_cursor = str(max(0, start - limit)) if start else None
+        return type("Sessions", (), {"sessions": list(items), "next_cursor": next_cursor, "previous_cursor": previous_cursor, "event_cursor": 0})()
+
+    # --- provider / agent / effort selection --------------------------
+    providers: Any = None
+    providers_error: BaseException | None = None
+    provider_reads: int = 0
+    agents: Any = None
+    agents_error: BaseException | None = None
+    agent_reads: int = 0
+    policy: Any = None
+    policy_error: BaseException | None = None
+    policy_reads: int = 0
+    plugin_config: Any = None
+    plugin_config_error: BaseException | None = None
+    plugin_config_reads: int = 0
+    plugin_config_scopes: list[str] = field(default_factory=list)
+    plugin_config_updates: list[dict[str, Any]] = field(default_factory=list)
+    plugin_config_update_error: BaseException | None = None
+    plugin_config_update_result: Any = None
+    selections: list[dict[str, Any]] = field(default_factory=list)
+    selection_error: BaseException | None = None
+
+    async def list_providers(self) -> Any:
+        self.provider_reads += 1
+        if self.providers_error is not None:
+            raise self.providers_error
+        return self.providers if self.providers is not None else catalog()
+
+    async def list_agents(self, session_id: str, thread_id: str) -> Any:
+        self.agent_reads += 1
+        if self.agents_error is not None:
+            raise self.agents_error
+        return self.agents if self.agents is not None else agent_list()
+
+    async def get_session_policy(self, session_id: str) -> Any:
+        self.policy_reads += 1
+        if self.policy_error is not None:
+            raise self.policy_error
+        if self.policy is not None:
+            return self.policy
+        from XBotv2.config.api.protocol import SessionPolicyResponse
+
+        return SessionPolicyResponse(session_id=session_id)
+
+    async def list_plugin_config(
+        self, session_id: str, thread_id: str, *, scope: str = "workspace"
+    ) -> Any:
+        self.plugin_config_reads += 1
+        self.plugin_config_scopes.append(scope)
+        if self.plugin_config_error is not None:
+            raise self.plugin_config_error
+        if self.plugin_config is not None:
+            return self.plugin_config
+        from XBotv2.config.api.contracts import PluginConfigCatalog
+
+        return PluginConfigCatalog(
+            scope=scope, workspace_root="/workspace", revision="empty"
+        )
+
+    async def update_plugin_config(
+        self,
+        session_id: str,
+        thread_id: str,
+        plugin_id: str,
+        patch: Any,
+    ) -> Any:
+        self.plugin_config_updates.append(
+            {
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "plugin_id": plugin_id,
+                "patch": patch,
+            }
+        )
+        if self.plugin_config_update_error is not None:
+            raise self.plugin_config_update_error
+        if self.plugin_config_update_result is not None:
+            return self.plugin_config_update_result
+        return await self.list_plugin_config(
+            session_id, thread_id, scope=patch.scope
+        )
+
+    def _record_selection(self, **fields: Any) -> None:
+        self.selections.append(fields)
+        if self.selection_error is not None:
+            raise self.selection_error
+
+    async def select_provider(
+        self, session_id: str, thread_id: str, name: str, model: str | None = None
+    ) -> Any:
+        self._record_selection(kind="provider", name=name, model=model)
+        return selection_response()
+
+    async def select_effort(self, session_id: str, thread_id: str, effort: str) -> Any:
+        self._record_selection(kind="effort", effort=effort)
+        return selection_response()
+
+    async def select_agent(self, session_id: str, thread_id: str, name: str) -> Any:
+        self._record_selection(kind="agent", name=name)
+        return selection_response()
+
+    # --- the command plane --------------------------------------------
+    commands: tuple[CommandDescription, ...] = ()
+    commands_error: BaseException | None = None
+    command_result: CommandExecution | None = None
+    command_error: BaseException | None = None
+    #: ``(session_id, thread_id)`` reads, in order.
+    command_reads: list[tuple[str, str]] = field(default_factory=list)
+    command_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    async def list_commands(self, session_id: str, thread_id: str) -> CommandListResponse:
+        self.command_reads.append((session_id, thread_id))
+        if self.commands_error is not None:
+            raise self.commands_error
+        return CommandListResponse(commands=list(self.commands))
+
+    async def run_command(
+        self, session_id: str, thread_id: str, *, raw: str
+    ) -> CommandResponse:
+        self.command_calls.append(
+            {"session_id": session_id, "thread_id": thread_id, "raw": raw}
+        )
+        if self.command_error is not None:
+            raise self.command_error
+        result = self.command_result or execution()
+        return CommandResponse(data=result)
+
+    # --- older history pages ------------------------------------------
+    #: Pages handed out in order, one per read; the last one repeats when a test
+    #: reads more times than it scripted.
+    pages: list[Any] = field(default_factory=list)
+    page_error: BaseException | None = None
+    #: ``{session_id, thread_id, cursor, limit}`` for every read, in order.
+    page_reads: list[dict[str, Any]] = field(default_factory=list)
+
+    async def list_messages(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        cursor: str | None = None,
+        limit: int | None = None,
+        before_id: str | None = None,
+        after_id: str | None = None,
+    ) -> Any:
+        self.page_reads.append({
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "cursor": cursor,
+            "limit": limit,
+            "before_id": before_id,
+            "after_id": after_id,
+        })
+        if self.page_error is not None:
+            raise self.page_error
+        if len(self.pages) > 1:
+            return self.pages.pop(0)
+        if self.pages:
+            return self.pages[0]
+        return HistoryPage(items=(), older_cursor=None)
+
+    async def list_display_messages(self, session_id: str, thread_id: str, *, cursor=None, limit=50, before_id=None, after_id=None):
+        from XBotv2.session.api.records import DisplayBody, DisplayRecord, AssistantRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord, CompactionSummaryRecord
+        import json
+        if cursor is not None or before_id is not None or after_id is not None:
+            page = await self.list_messages(session_id, thread_id, cursor=cursor, limit=limit, before_id=before_id, after_id=after_id)
+        else:
+            page = self.session.data.history
+        records = []
+        for item in page.items:
+            def preview(text):
+                return DisplayBody(preview=text[:512], length=len(text))
+            if isinstance(item, HumanInputRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content)}, media=item.media, artifacts=item.artifacts))
+            elif isinstance(item, AssistantRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content), "reasoning": preview(item.reasoning)}))
+            elif isinstance(item, RuntimeNoticeRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"content": preview(item.content)}, source=item.source, event=item.event, media=item.media, artifacts=item.artifacts))
+            elif isinstance(item, CompactionSummaryRecord):
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"summary": preview(item.summary)}))
+            elif isinstance(item, ToolRecord):
+                outcome = item.outcome
+                text = "".join(part.text for part in outcome.output.parts if hasattr(part, "text")) if hasattr(outcome, "output") else ""
+                records.append(DisplayRecord(kind=item.kind, id=item.id, fields={"args": preview(json.dumps({})), "result": preview(text)}, tool_name=item.call.name, call_id=item.call.id, outcome=outcome.kind, artifacts=outcome.output.artifacts if hasattr(outcome, "output") else ()))
+        return HistoryPage(tuple(records), page.older_cursor, page.newer_cursor)
+
+    # --- reads --------------------------------------------------------
+    async def list_threads(self, session_id: str, *, limit: int = 100, cursor: str | None = None, parent_thread_id: str | None = None, kind: str | None = None) -> Any:
+        self.thread_list_requests.append({"session_id": session_id, "limit": limit, "cursor": cursor, "parent_thread_id": parent_thread_id, "kind": kind})
+        if self.thread_error is not None:
+            raise self.thread_error
+        items = [item for item in self.threads if (kind is None or item.kind == kind) and (parent_thread_id is None or item.parent_thread_id == parent_thread_id)]
+        start = int(cursor) if cursor is not None else 0
+        next_cursor = str(start + limit) if start + limit < len(items) else None
+        previous_cursor = str(max(0, start - limit)) if start else None
+        return type("Threads", (), {"session_id": session_id, "threads": items[start:start + limit], "next_cursor": next_cursor, "previous_cursor": previous_cursor})()
+
+    async def get_thread(self, session_id: str, thread_id: str) -> ThreadSummary:
+        self.read_threads.append(session_id)
+        self.thread_reads.append((session_id, thread_id))
+        if self.thread_error is not None:
+            raise self.thread_error
+        for item in self.threads:
+            if item.thread_id == thread_id:
+                return item
+        raise ValueError(f"thread {thread_id!r} not found")
+
+    async def list_jobs(self, session_id: str, thread_id: str) -> Any:
+        self.job_reads.append((session_id, thread_id))
+        if self.jobs_error is not None:
+            raise self.jobs_error
+        return JobListResponse(session_id=session_id, thread_id=thread_id, jobs=list(self.jobs))
+
+    # --- writes -------------------------------------------------------
+    async def send_message(
+        self,
+        session_id: str,
+        thread_id: str,
+        content: str,
+        **kwargs: Any,
+    ) -> None:
+        self.sent.append(
+            {
+                "session_id": session_id,
+                "thread_id": thread_id,
+                "content": content,
+                **kwargs,
+            }
+        )
+        if self.send_error is not None:
+            raise self.send_error
+
+    async def interrupt(self, session_id: str, thread_id: str) -> Any:
+        self.interrupts += 1
+        if self.interrupt_error is not None:
+            raise self.interrupt_error
+        return type(
+            "Interrupt",
+            (),
+            {"session_id": session_id, "thread_id": thread_id,
+             "status": "interrupting", "cancelled": self.interrupt_cancelled},
+        )()
+
+    async def respond_permission(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        decision: str,
+        scope: str = "once",
+    ) -> InteractionResponse:
+        self.interaction_responses.append({
+            "kind": "permission",
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "request_id": request_id,
+            "decision": decision,
+            "scope": scope,
+        })
+        return InteractionResponse(request_id=request_id)
+
+    async def respond_user_input(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        request_id: str,
+        answer: str,
+    ) -> InteractionResponse:
+        self.interaction_responses.append({
+            "kind": "user_input",
+            "session_id": session_id,
+            "thread_id": thread_id,
+            "request_id": request_id,
+            "answer": answer,
+        })
+        return InteractionResponse(request_id=request_id)
+
+    # --- stream -------------------------------------------------------
+    def stream_events(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[ServerEvent]:
+        script = self.script_for(after, session_id=session_id, thread_id=thread_id)
+        return self._replay(script)
+
+    def script_for(
+        self,
+        after: int | None,
+        *,
+        session_id: str = "",
+        thread_id: str = "",
+    ) -> StreamScript:
+        index = self.stream_opens
+        self.stream_opens += 1
+        if index < len(self.streams):
+            script = self.streams[index]
+        else:
+            # A real event subscription stays open; an unscripted one must too,
+            # or every test would be measuring a server that hung up.
+            script = StreamScript(hold=True)
+        script.after = after
+        script.session_id = session_id
+        script.thread_id = thread_id
+        self.subscriptions.append(script)
+        return script
+
+    async def _replay(self, script: StreamScript) -> AsyncIterator[ServerEvent]:
+        if script.fail_with is not None:
+            raise script.fail_with
+        for event in script.frames:
+            yield event
+        if script.hold:
+            await asyncio.Event().wait()
+
+
+def stream(*frames: ServerEvent, **kwargs: Any) -> StreamScript:
+    return StreamScript(frames=tuple(frames), **kwargs)
+
+
+def streams(*scripts: StreamScript) -> list[StreamScript]:
+    return list(scripts)
+
+
+def frames(*pairs: tuple[str, dict[str, Any]]) -> tuple[ServerEvent, ...]:
+    """Sequenced frames from ``(type, data)`` pairs, numbered from 1."""
+    return tuple(
+        frame(frame_type, data, sequence=index)
+        for index, (frame_type, data) in enumerate(pairs, start=1)
+    )
+
+
+def iter_frames(events: Iterable[ServerEvent]) -> list[ServerEvent]:
+    return list(events)
+
+
+@dataclass
+class RecordingView:
+    """The one view double: records what the controller asks it to render.
+
+    It is a port with a handful of methods, not a second implementation of the
+    client, so the controller can be checked without a terminal while the real
+    adapter is checked against a live Textual app elsewhere.
+    """
+
+    transcripts: list[Any] = field(default_factory=list)
+    statuses: list[Any] = field(default_factory=list)
+    job_lists: list[Any] = field(default_factory=list)
+    queues: list[Any] = field(default_factory=list)
+    composers: list[Any] = field(default_factory=list)
+    interactions: list[Any] = field(default_factory=list)
+    thinking_activity: list[bool] = field(default_factory=list)
+    pages: list[str] = field(default_factory=list)
+    tail_calls: int = 0
+    #: Whether the reader is following the tail; tests flip it to stand in for a
+    #: reader who scrolled back.
+    at_end: bool = True
+    #: Whether moving the window is possible; False means the window is already
+    #: at the oldest entry the client holds.
+    can_move_older: bool = True
+    can_move_newer: bool = True
+
+    @property
+    def reader_at_end(self) -> bool:
+        return self.at_end
+
+    async def render_transcript(self, state: Any, *, thinking: bool) -> bool:
+        self.transcripts.append(state)
+        self.thinking_activity.append(thinking)
+        return True
+
+    def render_status(self, model: Any) -> None:
+        self.statuses.append(model)
+
+    def render_jobs(self, jobs: Any) -> None:
+        self.job_lists.append(tuple(jobs))
+
+    def render_queue(self, items: Any) -> None:
+        self.queues.append(tuple(items))
+
+    def render_composer(self, model: Any) -> None:
+        self.composers.append(model)
+
+    async def render_interaction(self, request: Any) -> None:
+        self.interactions.append(request)
+
+    async def page_older(self, state: Any) -> bool:
+        self.pages.append("older")
+        return self.can_move_older
+
+    async def page_newer(self, state: Any) -> bool:
+        self.pages.append("newer")
+        return self.can_move_newer
+
+    def reveal_loaded_older(self, state: Any, boundary_id: str) -> None:
+        self.pages.append("loaded-older")
+
+    async def go_to_tail(self, state: Any) -> None:
+        self.pages.append("tail")
+
+    @property
+    def renders(self) -> int:
+        return len(self.transcripts)
+
+    @property
+    def last_status(self) -> Any:
+        return self.statuses[-1] if self.statuses else None
+
+    @property
+    def last_composer(self) -> Any:
+        return self.composers[-1] if self.composers else None

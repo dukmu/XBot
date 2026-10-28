@@ -28,17 +28,25 @@ import inspect
 import logging
 import time
 from dataclasses import dataclass
+from contextvars import ContextVar
 from typing import Any, Callable
+
+from xcore.api.events import Disposer, EventKey
 
 
 
 logger = logging.getLogger("xcore.events")
 
-#: A disposer is a plain callable that undoes a registration.  Returns
-#: ``True`` when the registration was still live (Cordis parity).
-Disposer = Callable[[], bool]
-
 _UNSET = object()
+
+
+@dataclass
+class _ReadyDispatch:
+    scope: Any
+    active: bool = True
+
+
+_ready_dispatch: ContextVar[_ReadyDispatch | None] = ContextVar("xcore_ready_dispatch", default=None)
 
 
 def is_bailed(value: Any) -> bool:
@@ -69,17 +77,19 @@ def _log_task_failure(task: asyncio.Task) -> None:
 class Hook:
     """One registered listener record."""
 
-    event: str
+    event: EventKey | str
     callback: Callable[..., Any]
     seq: int
     filters: tuple[Callable[[Any], bool], ...]
     owner: Any  # the Context that registered this hook
     global_: bool = False
+    descendants: bool = False
     once: bool = False
     disposed: bool = False
+    on_remove: Callable[[], Any] | None = None
 
 
-def _match_event(event: str, pattern: tuple[str, ...]) -> bool:
+def _match_event(event: EventKey | str, pattern: tuple[str, ...]) -> bool:
     if pattern == ("*",):
         return True
     segments = event.split("/")
@@ -91,16 +101,17 @@ def _match_event(event: str, pattern: tuple[str, ...]) -> bool:
 class EventBus:
     """Root-owned event bus shared by every context."""
 
-    def __init__(self) -> None:
-        self._exact: dict[str, list[Hook]] = {}
-        self._wildcards: list[tuple[tuple[str, ...], list[Hook]]] = []
+    def __init__(self, *, scope: Any = None) -> None:
+        self._scope = scope
+        self._exact: dict[tuple[object, EventKey | str], list[Hook]] = {}
+        self._wildcards: dict[object, dict[tuple[str, ...], list[Hook]]] = {}
         self._seq = 0
 
     # -- registration -------------------------------------------------------
 
     def register(
         self,
-        event: str,
+        event: EventKey | str,
         callback: Callable[..., Any],
         *,
         owner: Any,
@@ -108,39 +119,38 @@ class EventBus:
         global_: bool = False,
         once: bool = False,
         prepend: bool = False,
+        descendants: bool = False,
+        on_remove: Callable[[], Any] | None = None,
     ) -> Disposer:
         """Register a listener and return a disposer (idempotent)."""
-        if not isinstance(event, str) or not event:
+        if not isinstance(event, (str, EventKey)) or not str(event):
             raise ValueError("event name must be a non-empty string")
-        segments = event.split("/")
+        segments = event.split("/") if isinstance(event, str) else []
         if any("*" in segment and segment != "*" for segment in segments):
             raise ValueError(
                 "wildcard '*' is only allowed as a full event segment "
                 f"(got {event!r})"
             )
-        if prepend:
-            self._seq -= 1
-        else:
-            self._seq += 1
+        self._seq += 1
         hook = Hook(
             event=event,
             callback=callback,
-            seq=self._seq,
+            seq=-self._seq if prepend else self._seq,
             filters=filters,
             owner=owner,
             global_=global_,
+            descendants=descendants,
             once=once,
+            on_remove=on_remove,
         )
-        if "*" in event:
+        scope = owner._scope
+        if self._scope is None:
+            self._scope = owner.root
+        if isinstance(event, str) and "*" in event:
             pattern = tuple(event.split("/"))
-            for entry in self._wildcards:
-                if entry[0] == pattern:
-                    entry[1].append(hook)
-                    break
-            else:
-                self._wildcards.append((pattern, [hook]))
+            self._wildcards.setdefault(scope, {}).setdefault(pattern, []).append(hook)
         else:
-            self._exact.setdefault(event, []).append(hook)
+            self._exact.setdefault((scope, event), []).append(hook)
         logger.debug(
             "listener.registered event=%s owner=%s callback=%s once=%s global=%s",
             event,
@@ -151,53 +161,100 @@ class EventBus:
         )
 
         def disposer() -> bool:
-            return self.unregister(event, callback)
+            return self._remove_hook(hook)
 
         return disposer
 
-    def unregister(self, event: str, callback: Callable[..., Any]) -> bool:
+    def unregister(self, event: EventKey | str, callback: Callable[..., Any], *, owner: Any = None) -> bool:
         """Remove one listener by callback identity; returns whether removed."""
-        for hooks in self._collect_hook_lists(event):
-            for index, hook in enumerate(hooks):
-                if hook.callback is callback and not hook.disposed:
-                    hook.disposed = True
-                    del hooks[index]
-                    logger.debug(
-                        "listener.unregistered event=%s owner=%s callback=%s",
-                        event,
-                        hook.owner.fiber.name,
-                        _callback_name(callback),
-                    )
-                    return True
+        for hooks in self._collect_hook_lists(event, scope=owner._scope if owner is not None else None):
+            for hook in hooks:
+                if hook.callback is callback and not hook.disposed and (owner is None or hook.owner is owner):
+                    return self._remove_hook(hook)
         return False
 
-    def _collect_hook_lists(self, event: str) -> list[list[Hook]]:
-        lists: list[list[Hook]] = []
-        if event in self._exact:
-            lists.append(self._exact[event])
-        if "*" in event:
+    def _remove_hook(self, hook: Hook) -> bool:
+        if hook.disposed:
+            return False
+        hook.disposed = True
+        scope = hook.owner._scope
+        if isinstance(hook.event, str) and "*" in hook.event:
+            pattern = tuple(hook.event.split("/"))
+            patterns = self._wildcards[scope]
+            hooks = patterns[pattern]
+            hooks.remove(hook)
+            if not hooks:
+                del patterns[pattern]
+            if not patterns:
+                del self._wildcards[scope]
+        else:
+            key = (scope, hook.event)
+            hooks = self._exact[key]
+            hooks.remove(hook)
+            if not hooks:
+                del self._exact[key]
+        logger.debug(
+            "listener.unregistered event=%s owner=%s callback=%s",
+            hook.event, hook.owner.fiber.name, _callback_name(hook.callback),
+        )
+        if hook.on_remove is not None:
+            callback, hook.on_remove = hook.on_remove, None
+            callback()
+        return True
+
+    def _collect_hook_lists(
+        self, event: EventKey | str, *, scope: Any = None
+    ) -> list[list[Hook]]:
+        """Exact registration buckets, used for off and diagnostics."""
+        if scope is not None:
+            exact = self._exact.get((scope, event))
+            lists = [exact] if exact is not None else []
+            scopes = (scope,)
+        else:
+            lists = [hooks for (_, identity), hooks in self._exact.items() if identity == event]
+            scopes = tuple(self._wildcards)
+        if isinstance(event, str) and "*" in event:
             pattern = tuple(event.split("/"))
-            for entry in self._wildcards:
-                if entry[0] == pattern:
-                    lists.append(entry[1])
+            for owner_scope in scopes:
+                hooks = self._wildcards.get(owner_scope, {}).get(pattern)
+                if hooks is not None:
+                    lists.append(hooks)
         return lists
+
+    def _matching_hooks(self, event: EventKey | str, scope: Any) -> list[Hook]:
+        hooks = list(self._exact.get((scope, event), ()))
+        if isinstance(event, str):
+            for pattern, wildcard_hooks in self._wildcards.get(scope, {}).items():
+                if _match_event(event, pattern):
+                    hooks.extend(wildcard_hooks)
+        return hooks
 
     # -- matching -----------------------------------------------------------
 
-    def _match(self, event: str, args: tuple[Any, ...]) -> list[Hook]:
+    def _match(self, event: EventKey | str, args: tuple[Any, ...], scope: Any = None, *, local_only: bool = False) -> list[Hook]:
         """Collect live hooks for a dispatch, in registration order.
 
         Marks ``once`` hooks as consumed *synchronously* (no awaits here), so a
         concurrent dispatch cannot double-fire them.
         """
+        scope = self._scope if scope is None else scope
+        internal = isinstance(event, str) and event.startswith("internal/")
+        if internal:
+            scope = self._scope
         session = args[0] if args else None
         hooks: list[Hook] = []
-        exact = self._exact.get(event)
-        if exact:
-            hooks.extend(exact)
-        for pattern, wildcard_hooks in self._wildcards:
-            if _match_event(event, pattern):
-                hooks.extend(wildcard_hooks)
+        hooks.extend(self._matching_hooks(event, scope))
+        ancestor = scope.parent if scope is not None else None
+        seen = {scope}
+        while ancestor is not None and not internal:
+            ancestor_scope = ancestor._scope
+            if ancestor_scope not in seen:
+                hooks.extend(
+                    hook for hook in self._matching_hooks(event, ancestor_scope)
+                    if hook.descendants
+                )
+                seen.add(ancestor_scope)
+            ancestor = ancestor.parent
         hooks.sort(key=lambda hook: hook.seq)
         result: list[Hook] = []
         for hook in hooks:
@@ -206,18 +263,16 @@ class EventBus:
             if not hook.global_ and session is not None:
                 if not all(predicate(session) for predicate in hook.filters):
                     continue
+            if local_only and hook.owner._scope is not scope:
+                continue
             if hook.once:
-                hook.disposed = True
+                self._remove_hook(hook)
             result.append(hook)
         return result
 
-    def _candidate_count(self, event: str) -> int:
-        """Count live matching hooks without evaluating user filters."""
-        hooks = list(self._exact.get(event, ()))
-        for pattern, wildcard_hooks in self._wildcards:
-            if _match_event(event, pattern):
-                hooks.extend(wildcard_hooks)
-        return sum(not hook.disposed for hook in hooks)
+    def _candidate_count(self, event: EventKey | str) -> int:
+        """Count root diagnostics candidates without evaluating user filters."""
+        return sum(not hook.disposed for hook in self._matching_hooks(event, self._scope))
 
     @staticmethod
     async def _invoke(hook: Hook, args: tuple[Any, ...]) -> Any:
@@ -252,6 +307,11 @@ class EventBus:
                 type(exc).__name__,
                 exc_info=exc,
             )
+            boundary = _ready_dispatch.get()
+            fail = getattr(hook.owner.fiber, "_fail_ready", None)
+            if boundary is not None and boundary.active and hook.owner._scope is boundary.scope and fail is not None:
+                await fail(exc)
+                return None
             raise
         finally:
             logger.debug(
@@ -264,9 +324,9 @@ class EventBus:
 
     # -- public (async) dispatch -------------------------------------------
 
-    def _announce(self, mode: str, event: str, args: tuple[Any, ...]) -> None:
+    def _announce(self, mode: str, event: EventKey | str, args: tuple[Any, ...]) -> None:
         """Emit ``internal/dispatch`` diagnostics for non-internal events."""
-        if not event.startswith("internal/"):
+        if not (isinstance(event, str) and event.startswith("internal/")):
             logger.debug(
                 "event.dispatch mode=%s event=%s candidates=%d args=%d",
                 mode,
@@ -276,16 +336,16 @@ class EventBus:
             )
             self._emit_sync("internal/dispatch", mode, event, args)
 
-    async def emit(self, event: str, *args: Any) -> None:
+    async def emit(self, event: EventKey | str, *args: Any, scope: Any = None) -> None:
         """Serial dispatch; awaits every listener; propagates errors."""
         self._announce("emit", event, args)
-        for hook in self._match(event, args):
+        for hook in self._match(event, args, scope):
             await self._invoke(hook, args)
 
-    async def parallel(self, event: str, *args: Any) -> None:
+    async def parallel(self, event: EventKey | str, *args: Any, scope: Any = None) -> None:
         """Concurrent dispatch; aggregates failures into an ExceptionGroup."""
         self._announce("parallel", event, args)
-        hooks = self._match(event, args)
+        hooks = self._match(event, args, scope)
         results = await asyncio.gather(
             *(self._invoke(hook, args) for hook in hooks),
             return_exceptions=True,
@@ -297,27 +357,27 @@ class EventBus:
         if errors:
             raise ExceptionGroup(f"event {event!r} failed", errors)
 
-    async def serial(self, event: str, *args: Any) -> Any:
+    async def serial(self, event: EventKey | str, *args: Any, scope: Any = None) -> Any:
         """Serial dispatch; stops and returns at the first bail value."""
         self._announce("serial", event, args)
-        for hook in self._match(event, args):
+        for hook in self._match(event, args, scope):
             result = await self._invoke(hook, args)
             if is_bailed(result):
                 return result
         return None
 
-    async def bail(self, event: str, *args: Any) -> Any:
+    async def bail(self, event: EventKey | str, *args: Any, scope: Any = None) -> Any:
         """Alias of :meth:`serial` (Python awaits both; design §14.2)."""
-        return await self.serial(event, *args)
+        return await self.serial(event, *args, scope=scope)
 
-    async def chain(self, event: str, value: Any, *args: Any) -> Any:
+    async def chain(self, event: EventKey | str, value: Any, *args: Any, scope: Any = None) -> Any:
         """Value pipeline: each listener receives the previous listener's result."""
         self._announce("chain", event, args)
-        for hook in self._match(event, (value, *args)):
+        for hook in self._match(event, (value, *args), scope):
             value = await self._invoke(hook, (value, *args))
         return value
 
-    async def waterfall(self, event: str, *args: Any, next: Any = _UNSET) -> Any:
+    async def waterfall(self, event: EventKey | str, *args: Any, next: Any = _UNSET, scope: Any = None) -> Any:
         """Around-middleware dispatch; ``next`` is the innermost continuation.
 
         Each listener receives ``(*args, next_fn)``.  Calling ``await
@@ -332,7 +392,7 @@ class EventBus:
         if not callable(next):
             raise TypeError("waterfall() next= must be callable")
         self._announce("waterfall", event, args)
-        hooks = self._match(event, args)
+        hooks = self._match(event, args, scope)
         iterator = iter(hooks)
 
         async def run_next() -> Any:
@@ -348,7 +408,7 @@ class EventBus:
 
     # -- internal (synchronous) dispatch ------------------------------------
 
-    def _emit_sync(self, event: str, *args: Any) -> None:
+    def _emit_sync(self, event: EventKey | str, *args: Any) -> None:
         """Fire-and-forget synchronous dispatch for ``internal/*`` events.
 
         Listener failures are logged; they must never break framework cleanup
@@ -368,7 +428,7 @@ class EventBus:
                     exc_info=True,
                 )
 
-    def _bail_sync(self, event: str, *args: Any) -> Any:
+    def _bail_sync(self, event: EventKey | str, *args: Any) -> Any:
         """Synchronous bail for ``internal/*`` interception (e.g. listener registration)."""
         for hook in self._match(event, args):
             try:
@@ -386,7 +446,7 @@ class EventBus:
         return None
 
     # -- inspection ---------------------------------------------------------
-    def listener_count(self, event: str) -> int:
+    def listener_count(self, event: EventKey | str) -> int:
         """Number of live listeners for an event (diagnostics)."""
         count = 0
         for hooks in self._collect_hook_lists(event):

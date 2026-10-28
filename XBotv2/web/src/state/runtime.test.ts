@@ -1,11 +1,21 @@
 import { describe, expect, it } from "vitest";
-import { EMPTY_SESSION_STATS, EMPTY_USAGE, type OpenSessionResponse, type ServerEvent, type ThreadSummary } from "../api/types";
-import { initialRuntimeState, runtimeReducer } from "./runtime";
+import { EMPTY_SESSION_STATS, EMPTY_USAGE, type SessionView, type ViewEvent, type ThreadSummary } from "../api/types";
+import {
+  MAX_TIMELINE_ENTRIES,
+  MAX_TRAJECTORY_WINDOW,
+  applyViewEvent,
+  historyEntries,
+  initialRuntimeState,
+  runtimeReducer,
+  type TimelineEntry,
+} from "./runtime";
 
-const opened: OpenSessionResponse = {
+const opened: SessionView = {
   session_id: "session-1",
   thread_id: "agent",
+  title: "session-1",
   status: "ready",
+  turn_status: "idle",
   agent_name: "default",
   workspace_root: "/workspace",
   provider: "minimax",
@@ -18,9 +28,10 @@ const opened: OpenSessionResponse = {
   event_cursor: 0,
   status_slots: {},
   pending_inputs: [],
+  pending_interactions: [],
 };
 
-function event(type: string, data: Record<string, unknown>): ServerEvent {
+function event(type: string, data: Record<string, unknown>): ViewEvent {
   return {
     protocol_version: "xbotv2.v3",
     session_id: "session-1",
@@ -100,19 +111,6 @@ describe("runtimeReducer", () => {
     ]);
   });
 
-  it("keeps rejected input visible in the activity timeline", () => {
-    const state = runtimeReducer(
-      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
-      { type: "event", event: event("input_rejected", { reason: "turn is busy" }) },
-    );
-
-    expect(state.entries.at(-1)).toMatchObject({
-      kind: "notice",
-      level: "error",
-      content: "turn is busy",
-    });
-  });
-
   it("keeps a newer live usage projection ahead of a stale thread refresh", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
@@ -120,8 +118,9 @@ describe("runtimeReducer", () => {
       type: "event",
       event: event("usage", { input_tokens: 20, output_tokens: 5, total_tokens: 25, context_tokens: 700 }),
     });
-    state = runtimeReducer(state, { type: "threads", threads: [{
+    state = runtimeReducer(state, { type: "thread_page", cursor: null, page: { session_id: opened.session_id, previous_cursor: null, next_cursor: null, threads: [{
       session_id: opened.session_id,
+      title: opened.title,
       thread_id: opened.thread_id,
       status: "active",
       kind: "main",
@@ -133,19 +132,22 @@ describe("runtimeReducer", () => {
       model_mode: opened.model_mode,
       context_window: opened.context_window,
       message_count: 0,
-      usage: { ...EMPTY_USAGE, input_tokens: 10, total_tokens: 10, context_tokens: 400 },
+      usage: wireUsage(10, 0, 400),
       session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: {},
-    }] });
+    }] } });
 
+    expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
+    state = runtimeReducer(state, { type: "thread_observed", thread: { ...state.threads[0], turn_status: "idle" } });
+    expect(state.turnRunning).toBe(true);
     expect(state.usage).toMatchObject({ input_tokens: 30, total_tokens: 35, context_tokens: 700 });
   });
 
   it("renders injected model context with provenance and content, not as a user", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      items: [{ position: 1, kind: "message", message_id: "context-1", message: {
         role: "user",
         content: "job finished with result 42",
         tool_calls: [],
@@ -154,16 +156,16 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
-        runtime: { source: "task-1", event: "notification" },
-      }],
+        media: [],
+        runtime: { source: "job-1", event: "notification" },
+      } }],
       nextCursor: null,
     });
 
     expect(state.entries).toHaveLength(1);
     expect(state.entries[0]).toMatchObject({
       kind: "runtime",
-      source: "task-1",
+      source: "job-1",
       event: "notification",
       content: "job finished with result 42",
     });
@@ -191,8 +193,8 @@ describe("runtimeReducer", () => {
 
   it("restores persisted assistant reasoning with its visible response", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      items: [{ position: 1, kind: "message", message_id: "answer-1", message: {
         role: "assistant",
         content: "final answer",
         reasoning: "inspect the state",
@@ -202,8 +204,8 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
-      }],
+        media: [],
+      } }],
       nextCursor: null,
     });
 
@@ -263,67 +265,135 @@ describe("runtimeReducer", () => {
     expect(state.entries).toEqual([]);
   });
 
-  it("prepends one server page and advances its cursor", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened,
-      history_cursor: "20",
-      history: [{
+  it("prepends one trajectory page and advances its cursor", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "trajectory", nextCursor: "20", items: [
+      { position: 20, kind: "message", message_id: "new", message: {
         role: "assistant", content: "new", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
-      }],
-    } });
+        data: null, error: null, artifacts: [], media: [],
+      } },
+    ] });
     state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
+      type: "trajectory_prepend",
+      items: [{ position: 10, kind: "message", message_id: "old", message: {
         role: "user", content: "old", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
-      }],
+        data: null, error: null, artifacts: [], media: [],
+      } }],
       nextCursor: null,
-      expectedCursor: "20",
+      expectedAnchor: 20,
     });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
     expect(state.historyCursor).toBeNull();
     expect(state.current).not.toHaveProperty("history");
   });
 
-  it("keeps live entries when an older persisted page is prepended", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened, history_cursor: "10",
-    } });
+  it("counts live output while an older trajectory page is displayed", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "trajectory", items: [], nextCursor: "10" });
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: [{ position: 1, kind: "message", message_id: "old", message: {
+        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], media: [],
+      } }],
+      nextCursor: null,
+      expectedAnchor: null,
+    });
     state = runtimeReducer(state, {
       type: "event",
       event: event("assistant_message", { content: "live answer", tool_calls: [] }),
     });
-    state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
-        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
-      }],
-      nextCursor: null,
-      expectedCursor: "10",
-    });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual([
-      "old question", "live answer",
+      "old question",
     ]);
+    expect(state.pendingNewer).toBe(1);
   });
 
-  it("projects Todo state from its authoritative client event", () => {
+  it("projects task state from its authoritative client event", () => {
     const state = runtimeReducer(initialRuntimeState, {
       type: "event",
       event: event("todo_updated", {
-        kind: "todo_snapshot",
-        schema_version: 1,
-        items: [
-          { content: "implement", status: "in_progress" },
-          { content: "verify", status: "pending" },
+        edges: [{ prerequisite: "1", dependent: "2" }],
+        next_id: 3,
+        tasks: [
+          { id: "1", subject: "implement", status: "in_progress", activeForm: "Implementing", owner: "default", blocks: ["2"], blockedBy: [] },
+          { id: "2", subject: "verify", status: "pending", blocks: [], blockedBy: ["1"] },
         ],
       }),
     });
     expect(state.todos).toEqual([
-      { content: "implement", status: "in_progress" },
-      { content: "verify", status: "pending" },
+      {
+        id: "1",
+        subject: "implement",
+        status: "in_progress",
+        activeForm: "Implementing",
+        owner: "default",
+        blocks: ["2"],
+        blockedBy: [],
+      },
+      { id: "2", subject: "verify", status: "pending", blocks: [], blockedBy: ["1"] },
     ]);
+  });
+
+  it("announces terminal Goal consumption and ignores active transitions", () => {
+    const active = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("goal_updated", {
+        objective: "ship the API",
+        kind: "active",
+        stats: { rounds_started: 1, tool_calls: 0, input_tokens: 10, output_tokens: 0 },
+      }),
+    });
+    expect(active.entries).toEqual(initialRuntimeState.entries);
+
+    const complete = runtimeReducer(active, {
+      type: "event",
+      event: event("goal_updated", {
+        objective: "ship the API",
+        kind: "complete",
+        stats: { rounds_started: 3, tool_calls: 4, input_tokens: 1000, output_tokens: 200 },
+      }),
+    });
+    expect(complete.entries.at(-1)).toMatchObject({
+      kind: "notice",
+      level: "info",
+      content: "Goal complete · ship the API · 3 turns, 4 tool calls, 1200 tokens",
+    });
+  });
+
+  it("keeps a settled job in the background list", () => {
+    // The ported list shows settled rows beside live ones, so the snapshot must
+    // not be the path that silently drops them.
+    const settled = {
+      id: "job-1", kind: "shell", label: "sleep 45", state: "cancelled_running" as const,
+      elapsed_ms: 45_000, summary: null,
+    };
+    const state = runtimeReducer(initialRuntimeState, { type: "jobs", jobs: [settled] });
+    expect(state.jobs["job-1"]?.state).toBe("cancelled_running");
+  });
+
+  it("shows a slash-invoked skill as an injected context row, live and replayed", () => {
+    // The skills plugin replaces the accepted input with its prompt container,
+    // so the skill's name only exists inside the content.
+    const content = [
+      '<skill_invocation name="user-invoke-demo" scope="workspace" source="/skills/user-invoke-demo/SKILL.md">',
+      "<skill_instructions>Follow the demo.</skill_instructions>",
+      "<user_arguments></user_arguments>",
+      "</skill_invocation>",
+    ].join("\n");
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "event",
+      event: event("message", { id: "u-1", role: "user", content }),
+    });
+    const [entry] = state.entries;
+    expect(entry).toMatchObject({
+      kind: "runtime",
+      source: "user-invoke-demo",
+      event: "skill_invocation",
+    });
+    expect(entry.id).toBe("runtime:u-1");
+
+    const history = historyEntries([{ id: "u-1", role: "user", content } as never]);
+    expect(history[0]).toMatchObject({ kind: "runtime", source: "user-invoke-demo" });
   });
 
   it("keeps pending input authoritative across queue events and turn failure", () => {
@@ -334,7 +404,7 @@ describe("runtimeReducer", () => {
         content: "continue later",
         target: "next-turn",
         source: "user",
-        image_count: 0,
+        media_count: 0,
         artifact_count: 0,
       }] }),
     });
@@ -350,14 +420,23 @@ describe("runtimeReducer", () => {
   it("projects accepted, claimed, and consumed delivery phases", () => {
     const item = {
       message_id: "queued-1", content: "continue later", target: "next-turn" as const,
-      source: "user", image_count: 0, artifact_count: 0,
+      media_count: 0, artifact_count: 0,
     };
-    let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [item] });
-    expect(state.deliveryStates["queued-1"]).toBe("accepted");
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "user_message",
+      id: "queued-1",
+      content: "continue later",
+      images: [],
+    });
+    const phase = (): string | undefined => state.entries
+      .filter((entry) => entry.id === "queued-1")
+      .map((entry) => entry.kind === "message" ? entry.deliveryState : undefined)[0];
+    expect(phase()).toBe("accepted");
+    state = runtimeReducer(state, { type: "pending_inputs", items: [item] });
     state = runtimeReducer(state, { type: "event", event: event("input_claimed", { message_ids: ["queued-1"] }) });
-    expect(state.deliveryStates["queued-1"]).toBe("claimed");
+    expect(phase()).toBe("claimed");
     state = runtimeReducer(state, { type: "event", event: event("input_consumed", { message_ids: ["queued-1"] }) });
-    expect(state.deliveryStates["queued-1"]).toBe("consumed");
+    expect(phase()).toBe("consumed");
     expect(state.pendingInputs).toEqual([]);
   });
 
@@ -365,10 +444,10 @@ describe("runtimeReducer", () => {
     const state = runtimeReducer(
       runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
         message_id: "queued-1", content: "continue later", target: "next-turn",
-        source: "user", image_count: 0, artifact_count: 0,
+        media_count: 0, artifact_count: 0,
       }, {
         message_id: "queued-2", content: "keep this", target: "next-turn",
-        source: "user", image_count: 0, artifact_count: 0,
+        media_count: 0, artifact_count: 0,
       }] }),
       { type: "pending_input_failed", messageId: "queued-1" },
     );
@@ -378,7 +457,7 @@ describe("runtimeReducer", () => {
   it("removes a steered input when its delivery message reaches the transcript", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "pending_inputs", items: [{
       message_id: "steer-1", content: "interrupt with this", target: "next-step",
-      source: "user", image_count: 0, artifact_count: 0,
+      media_count: 0, artifact_count: 0,
     }] });
     state = runtimeReducer(state, {
       type: "event",
@@ -410,6 +489,7 @@ describe("runtimeReducer", () => {
   it("synchronizes thread metadata without replacing the attached workspace", () => {
     const thread: ThreadSummary = {
       session_id: "session-1",
+      title: "Session title",
       thread_id: "agent",
       status: "active",
       kind: "main",
@@ -421,7 +501,7 @@ describe("runtimeReducer", () => {
       model_mode: "high",
       context_window: 2000,
       message_count: 4,
-      usage: { ...EMPTY_USAGE, total_tokens: 25, context_tokens: 20 },
+      usage: wireUsage(25, 0, 20),
       session_stats: { ...EMPTY_SESSION_STATS },
       pending_interactions: [],
       status_slots: { goal: "active" },
@@ -441,25 +521,102 @@ describe("runtimeReducer", () => {
   it("adopts the running state of a session selected mid-turn", () => {
     const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const thread = {
-      session_id: "session-1", thread_id: "agent", status: "active" as const,
+      session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
       kind: "main" as const, turn_status: "running" as const, parent_thread_id: "",
       agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
-      context_window: 1000, message_count: 2, usage: opened.usage,
+      context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
       session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
     };
 
     expect(runtimeReducer(current, { type: "thread_synced", thread }).turnRunning).toBe(true);
   });
 
-  it("assembles streaming reasoning and assistant content once", () => {
+  it("keeps the active thread and running state when its directory page changes", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("turn_started", { turn: 1 }) });
+    state = runtimeReducer(state, { type: "thread_page", cursor: "later", page: {
+      session_id: opened.session_id, previous_cursor: "previous", next_cursor: null, threads: [{
+        session_id: opened.session_id, thread_id: "later-thread", title: "Later", status: "inactive", kind: "subagent", turn_status: "idle", parent_thread_id: opened.thread_id,
+        agent: "worker", provider: "default", model: "test", model_mode: "", context_window: 1000, message_count: 0, usage: wireUsage(0, 0, 0), session_stats: { ...EMPTY_SESSION_STATS }, pending_interactions: [], status_slots: {},
+      }],
+    } });
+    expect(state.current?.thread_id).toBe(opened.thread_id);
+    expect(state.turnRunning).toBe(true);
+    expect(state.threads.map((thread) => thread.thread_id)).toEqual(["later-thread"]);
+    expect(state.threadPreviousCursor).toBe("previous");
+  });
+
+  it("marks a subagent thread view as read-only", () => {
+    const current = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    const subagent = {
+      session_id: "session-1", title: "Reviewer", thread_id: "agent-reviewer-1", status: "active" as const,
+      kind: "subagent" as const, turn_status: "idle" as const, parent_thread_id: "agent",
+      agent: "reviewer", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+      context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
+      session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+    };
+    expect(runtimeReducer(current, { type: "thread_synced", thread: subagent })).toBe(current);
+    const subagentOpened = { ...opened, thread_id: subagent.thread_id };
+    const active = runtimeReducer(initialRuntimeState, { type: "opened", session: subagentOpened });
+    const state = runtimeReducer(active, { type: "thread_synced", thread: subagent });
+    expect(state.viewingSubagent).toBe(true);
+
+    const main = { ...subagent, thread_id: "agent", kind: "main" as const, parent_thread_id: "" };
+    const mainState = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    expect(runtimeReducer(mainState, { type: "thread_synced", thread: main }).viewingSubagent).toBe(false);
+    expect(runtimeReducer(initialRuntimeState, { type: "opened", session: opened }).viewingSubagent).toBe(false);
+  });
+
+  it("projects a viewed thread's live frames without touching the main entries", () => {
+    const rolling = { reasoning: "", content: "" };
+    let entries: TimelineEntry[] = [];
+    entries = applyViewEvent(entries, event("assistant_message_delta", { content: "partial" }), rolling);
+    expect(entries).toHaveLength(0);
+    // The accumulated delta flushes at the turn boundary.
+    entries = applyViewEvent(entries, event("turn_finished", { turn: 1 }), rolling);
+    expect(entries).toHaveLength(2);
+    expect(entries[0]).toMatchObject({ kind: "message", content: "partial", reasoning: "" });
+    expect(entries[1]).toMatchObject({ kind: "runtime", content: "Turn 1 finished" });
+    // A discrete assistant message appends its own entry.
+    entries = applyViewEvent(entries, event("assistant_message", { content: "final answer" }), rolling);
+    expect(entries).toHaveLength(3);
+    expect(entries[2]).toMatchObject({ kind: "message", content: "final answer" });
+
+    entries = applyViewEvent(entries, event("tool_result", { name: "shell", status: "success", content: "ok" }), rolling);
+    expect(entries[3]).toMatchObject({ kind: "runtime" });
+    expect((entries[3] as { content: string }).content).toContain("shell");
+  });
+
+  it("does not duplicate a replayed accepted input in a viewed thread", () => {
+    const rolling = { reasoning: "", content: "" };
+    let entries: TimelineEntry[] = [];
+    entries = applyViewEvent(
+      entries,
+      event("message", { id: "sub-turn-1", role: "user", content: "worker task" }),
+      rolling,
+    );
+    expect(entries).toHaveLength(1);
+
+    // The observer replays the full thread event stream over the same
+    // trajectory, so the same accepted input must not appear twice.
+    entries = applyViewEvent(
+      entries,
+      event("message", { id: "sub-turn-1", role: "user", content: "worker task" }),
+      rolling,
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0]).toMatchObject({ kind: "message", messageId: "sub-turn-1" });
+  });
+
+  it("streams reasoning and assistant content into one entry", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     const committedEntries = state.entries;
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { reasoning: "inspect " }) });
-    expect(state.entries).toBe(committedEntries);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ role: "assistant", reasoning: "inspect ", streaming: true });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "hello" }) });
-    expect(state.entries).toBe(committedEntries);
-    expect(state.entries).toEqual([]);
-    expect(state.assistantDraft).toMatchObject({ content: "hello", reasoning: "inspect " });
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "hello", reasoning: "inspect ", streaming: true });
     state = runtimeReducer(state, { type: "event", event: event("assistant_message", { content: "hello", tool_calls: [] }) });
 
     expect(state.entries).toHaveLength(1);
@@ -470,7 +627,7 @@ describe("runtimeReducer", () => {
       reasoning: "inspect ",
       streaming: false,
     });
-    expect(state.assistantDraft).toBeNull();
+    expect(committedEntries).toEqual([]);
   });
 
   it("applies a streaming batch in wire order", () => {
@@ -499,7 +656,6 @@ describe("runtimeReducer", () => {
         input_tokens: 40,
         output_tokens: 5,
         total_tokens: 45,
-        requests: 1,
         context_tokens: 250,
         cache_read_input_tokens: 30,
         cache_creation_input_tokens: 10,
@@ -511,7 +667,6 @@ describe("runtimeReducer", () => {
       input_tokens: 50,
       output_tokens: 5,
       total_tokens: 55,
-      requests: 1,
       context_tokens: 250,
       cache_read_input_tokens: 30,
       cache_creation_input_tokens: 10,
@@ -524,7 +679,6 @@ describe("runtimeReducer", () => {
         input_tokens: 0,
         output_tokens: 1,
         total_tokens: 1,
-        requests: 1,
         context_tokens: 0,
       }),
     });
@@ -584,6 +738,49 @@ describe("runtimeReducer", () => {
     expect(state.entries[0]).toMatchObject({ kind: "tool", status: "success", result: "/workspace" });
   });
 
+  it.each([
+    ["turn_finished", "error"],
+    ["turn_cancelled", "cancelled"],
+  ] as const)("finalizes unanswered tools on %s and preserves terminal tools", (terminalType, expectedStatus) => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("tool_calls_started", {
+          tool_calls: [
+            { id: "pending", name: "shell", args: {} },
+            { id: "running", name: "shell", args: {} },
+          ],
+        }),
+        event("permission_request", {
+          request_id: "approval-1",
+          tool_call: { id: "approval", name: "shell", args: {} },
+        }),
+        event("tool_result", {
+          tool_call_id: "completed", name: "shell", content: "ok", status: "success",
+        }),
+        event("tool_result", {
+          tool_call_id: "cancelled", name: "shell", content: "", status: "cancelled",
+        }),
+        event(terminalType, { turn: 1, reason: terminalType === "turn_cancelled" ? "client_interrupt" : undefined }),
+      ],
+    });
+
+    const tools = Object.fromEntries(
+      state.entries
+        .filter((entry): entry is Extract<TimelineEntry, { kind: "tool" }> => entry.kind === "tool")
+        .map((entry) => [entry.toolCallId, entry]),
+    );
+    expect(Object.fromEntries(["pending", "running", "approval"].map((id) => [id, tools[id].status]))).toEqual({
+      pending: expectedStatus,
+      running: expectedStatus,
+      approval: expectedStatus,
+    });
+    expect(tools.completed.status).toBe("success");
+    expect(tools.cancelled.status).toBe("cancelled");
+  });
+
   it("projects permission decisions onto the pending tool call", () => {
     let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
     state = runtimeReducer(state, {
@@ -636,7 +833,7 @@ describe("runtimeReducer", () => {
       role: "user" as const,
       content: "Injected instructions",
       tool_calls: [], tool_call_id: "", status: "", data: null,
-      error: null, artifacts: [], images: [],
+      error: null, artifacts: [], media: [],
       runtime: { source: "skills", event: "inject" },
     };
     const state = runtimeReducer(initialRuntimeState, {
@@ -646,7 +843,7 @@ describe("runtimeReducer", () => {
         { position: 1, kind: "message", message_id: "context-1", message },
         { position: 2, kind: "event", event: "compaction/start", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:00Z" },
         { position: 3, kind: "event", event: "compaction/summary", data: { compaction_id: "c1", summary: "summary" }, timestamp: "2026-01-01T00:00:01Z" },
-        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [] },
+        { position: 4, kind: "surface_replace", operation: "compact:c1", transcript: "preserve", source_node_ids: ["1"], messages: [], summary: "Compacted summary" },
         { position: 5, kind: "event", event: "compaction/end", data: { compaction_id: "c1" }, timestamp: "2026-01-01T00:00:02Z" },
       ],
     });
@@ -656,6 +853,34 @@ describe("runtimeReducer", () => {
     expect(state.entries[1]).toMatchObject({ kind: "runtime", source: "compact", event: "compaction/end" });
   });
 
+  it("replays the durable compaction summary instead of a placeholder", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [
+        { position: 1, kind: "event", event: "compaction/start", data: { compaction_id: "c9" }, timestamp: "2026-01-01T00:00:00Z" },
+        {
+          position: 2,
+          kind: "surface_replace",
+          operation: "compact:c9",
+          transcript: "preserve",
+          source_node_ids: ["0"],
+          messages: [],
+          summary: "What the session kept: billing migration decisions.",
+        },
+        { position: 3, kind: "event", event: "compaction/end", data: { compaction_id: "c9" }, timestamp: "2026-01-01T00:00:02Z" },
+      ],
+    });
+
+    const compactEntries = state.entries.filter(
+      (entry) => entry.kind === "runtime" && entry.source === "compact",
+    );
+    expect(compactEntries).toHaveLength(1);
+    expect(compactEntries[0]).toMatchObject({
+      content: "What the session kept: billing migration decisions.",
+    });
+  });
+
   it("reconciles assistant tool calls with results stored in later trajectory records", () => {
     const assistant = {
       id: "assistant-1",
@@ -663,13 +888,13 @@ describe("runtimeReducer", () => {
       content: "",
       reasoning: "",
       tool_calls: [{ id: "call-1", name: "shell", args: { command: "printf hello" } }],
-      tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [],
+      tool_call_id: "", status: "", data: null, error: null, artifacts: [], media: [],
     };
     const result = {
       role: "tool" as const,
       content: "hello",
       tool_calls: [], tool_call_id: "call-1", status: "success", data: null,
-      error: null, artifacts: [], images: [],
+      error: null, artifacts: [], media: [],
     };
     const state = runtimeReducer(initialRuntimeState, {
       type: "trajectory",
@@ -703,8 +928,9 @@ describe("runtimeReducer", () => {
           id: "assistant-1",
           role: "assistant",
           content: "finished while reconnecting",
+          reasoning: "checked the reconnect path",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -717,7 +943,10 @@ describe("runtimeReducer", () => {
       }),
     });
 
-    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+    const messages = state.entries.filter((entry) => entry.kind === "message");
+    expect(messages).toHaveLength(1);
+    // The live event carries no reasoning; the durable one is preserved.
+    expect(messages[0]).toMatchObject({ reasoning: "checked the reconnect path" });
   });
 
   it("keeps live entries while a newer trajectory baseline is applied", () => {
@@ -731,7 +960,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -751,7 +980,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -777,7 +1006,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "same input",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
     });
@@ -802,7 +1031,7 @@ describe("runtimeReducer", () => {
         message: {
           id: "user-1", role: "user", content: "first",
           tool_calls: [], tool_call_id: "", status: "", data: null,
-          error: null, artifacts: [], images: [],
+          error: null, artifacts: [], media: [],
         },
       }],
       bufferedEvents: [event("assistant_message", {
@@ -814,6 +1043,18 @@ describe("runtimeReducer", () => {
       (entry.kind === "message" || entry.kind === "runtime" || entry.kind === "notice")
       && entry.content === "arrived during baseline"
     ))).toBe(true);
+  });
+
+  it("removes live entries replaced by an undo before the trajectory refresh", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "trajectory", items: [], nextCursor: null });
+    state = runtimeReducer(state, { type: "user_message", id: "removed", content: "second", images: [] });
+    state = runtimeReducer(state, { type: "event", event: event("history_updated", {
+      operation: "undo", history: [{ id: "kept", role: "user", content: "first", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], media: [] }],
+    }) });
+    expect(state.entries.filter((entry) => entry.kind === "message").map((entry) => entry.content)).toEqual(["first"]);
+    state = runtimeReducer(state, { type: "trajectory", items: [], nextCursor: null });
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "second")).toBe(false);
   });
 
   it("reprojects a compact marker when history is replaced", () => {
@@ -835,24 +1076,27 @@ describe("runtimeReducer", () => {
     }]);
   });
 
-  it("ignores an older page response after the history cursor advanced", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened, history_cursor: "10",
-    } });
-    state = runtimeReducer(state, {
-      type: "event",
-      event: event("history_updated", { history: [], history_cursor: "20" }),
+  it("ignores an older page response after the trajectory window moves", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory", items: [], nextCursor: "10",
     });
+    state = runtimeReducer(state, { type: "trajectory", items: [{
+      position: 20, kind: "message", message_id: "current", message: {
+        role: "user", content: "current", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], media: [],
+      },
+    }], nextCursor: "20" });
     state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
+      type: "trajectory_prepend",
+      items: [{ position: 1, kind: "message", message_id: "stale", message: {
         role: "user", content: "stale", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], images: [],
-      }],
+        data: null, error: null, artifacts: [], media: [],
+      } }],
       nextCursor: null,
-      expectedCursor: "10",
+      expectedAnchor: null,
     });
-    expect(state.entries).toEqual([]);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "current" });
     expect(state.historyCursor).toBe("20");
   });
 
@@ -919,8 +1163,9 @@ describe("runtimeReducer", () => {
 
   it("renders a persisted tool result even when its call is outside display history", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      nextCursor: null,
+      items: [{ position: 1, kind: "message", message_id: "orphan", message: {
         role: "tool",
         content: "cached output",
         tool_calls: [],
@@ -929,8 +1174,8 @@ describe("runtimeReducer", () => {
         data: null,
         error: null,
         artifacts: [],
-        images: [],
-      }],
+        media: [],
+      } }],
     });
 
     expect(state.entries[0]).toMatchObject({
@@ -939,4 +1184,391 @@ describe("runtimeReducer", () => {
       result: "cached output",
     });
   });
+
+  it("keeps streamed assistant text when a history page replaces the timeline", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "events", events: [
+      event("turn_started", { turn: 1 }),
+      event("assistant_message_delta", { content: "FINAL ANSWER" }),
+      event("history_updated", { operation: "compact:automatic", turns: 1, history: [] }),
+    ] });
+
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "FINAL ANSWER")).toBe(true);
+  });
+
+  it("keeps streamed assistant text when a durable trajectory is already loaded", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "question",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], media: [],
+        },
+      }],
+    });
+    state = runtimeReducer(state, { type: "events", events: [
+      event("assistant_message_delta", { content: "X" }),
+      event("history_updated", { operation: "compact:automatic", turns: 1, history: [] }),
+    ] });
+
+    expect(state.entries.some((entry) => entry.kind === "message" && entry.content === "X")).toBe(true);
+  });
+
+  it("keeps both bodies when two server messages reuse one id", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 7 }),
+        event("assistant_message_delta", { content: "step answer " }),
+        event("assistant_message", {
+          id: "assistant-7-200",
+          content: "step answer",
+          tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+        }),
+        event("tool_calls_started", { tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }] }),
+        event("tool_result", { tool_call_id: "call-1", name: "shell", content: "ok", status: "success" }),
+        event("assistant_message_delta", { content: "# Final Answer\n\nAll done." }),
+        event("assistant_message", { id: "assistant-7-200", content: "# Final Answer\n\nAll done.", tool_calls: [] }),
+        event("turn_finished", { turn: 7 }),
+      ],
+    });
+
+    const texts = state.entries
+      .filter((entry) => entry.kind === "message" && entry.role === "assistant")
+      .map((entry) => (entry.kind === "message" ? entry.content : ""));
+    expect(texts).toContain("step answer");
+    expect(texts).toContain("# Final Answer\n\nAll done.");
+  });
+
+  it("renders one entry for an idempotent replay of one assistant message", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("assistant_message", { id: "assistant-1-1-abcd", content: "same", tool_calls: [] }),
+        event("assistant_message", { id: "assistant-1-1-abcd", content: "same", tool_calls: [] }),
+      ],
+    });
+
+    expect(state.entries.filter((entry) => entry.kind === "message")).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "same" });
+  });
+
+  it("keeps in-flight streamed text when a trajectory baseline arrives", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "half a sen" }) });
+    state = runtimeReducer(state, {
+      type: "trajectory",
+      nextCursor: null,
+      items: [{
+        position: 1,
+        kind: "message",
+        message_id: "user-1",
+        message: {
+          id: "user-1", role: "user", content: "question",
+          tool_calls: [], tool_call_id: "", status: "", data: null,
+          error: null, artifacts: [], media: [],
+        },
+      }],
+      bufferedEvents: [event("assistant_message_delta", { content: "tence." })],
+    });
+
+    expect(state.entries.some((entry) => (
+      entry.kind === "message" && entry.content === "half a sentence."
+    ))).toBe(true);
+  });
+
+  it("restores unanswered interactions from an open response", () => {
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "opened",
+      session: {
+        ...opened,
+        pending_interactions: [
+          {
+            type: "permission_request",
+            data: {
+              request_id: "permission-1",
+              source: "permission_system",
+              reason: "write file",
+              tool_call: { id: "call-1", name: "filesystem_write", args: { path: "a.txt" } },
+              resume_supported: true,
+            },
+          },
+          {
+            type: "user_input_required",
+            data: {
+              request_id: "input-1",
+              source: "ask_user",
+              tool_call_id: "call-2",
+              question: "Choose one",
+              options: [
+                { label: "A", description: "First" },
+                { label: "B", description: "Second" },
+              ],
+            },
+          },
+          { type: "unrelated_event", data: { request_id: "ignored" } },
+        ],
+      },
+    });
+
+    expect(state.interactions.map((item) => item.request_id)).toEqual(["permission-1", "input-1"]);
+    expect(state.interactions[0]).toMatchObject({ kind: "permission", tool_call: { id: "call-1" } });
+  });
+
+  it("projects live streaming and durable history in the same order", () => {
+    const historyItem = (role: "user" | "assistant" | "tool", extra: Record<string, unknown> = {}) => ({
+      role,
+      content: "",
+      tool_calls: [],
+      tool_call_id: "",
+      status: "",
+      data: null,
+      error: null,
+      artifacts: [],
+      media: [],
+      ...extra,
+    });
+    const history = [
+      historyItem("user", { id: "user-1", content: "question" }),
+      historyItem("assistant", {
+        id: "assistant-1-1-abcd",
+        content: "step answer",
+        tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+      }),
+      historyItem("tool", { tool_call_id: "call-1", content: "ok", status: "success" }),
+      historyItem("assistant", { id: "assistant-1-2-efgh", content: "final answer" }),
+    ];
+    const state = runtimeReducer(initialRuntimeState, {
+      type: "events",
+      events: [
+        event("turn_started", { turn: 1 }),
+        event("message", { id: "user-1", role: "user", content: "question" }),
+        event("assistant_message_delta", { reasoning: "thinking " }),
+        event("assistant_message_delta", { content: "step answer" }),
+        event("tool_call_delta", { tool_calls: [{ tool_call_id: "call-1", name: "shell", args_delta: '{"command":"pwd"}' }] }),
+        event("assistant_message", {
+          id: "assistant-1-1-abcd",
+          content: "step answer",
+          tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }],
+        }),
+        event("tool_calls_started", { tool_calls: [{ id: "call-1", name: "shell", args: { command: "pwd" } }] }),
+        event("tool_result", { tool_call_id: "call-1", name: "shell", content: "ok", status: "success" }),
+        event("assistant_message_delta", { content: "final answer" }),
+        event("assistant_message", { id: "assistant-1-2-efgh", content: "final answer", tool_calls: [] }),
+        event("turn_finished", { turn: 1 }),
+      ],
+    });
+
+    expect(visibleProjection(state.entries)).toEqual(visibleProjection(historyEntries(history)));
+  });
 });
+
+function visibleProjection(entries: ReturnType<typeof historyEntries>): string[] {
+  return entries
+    .filter((entry) => entry.kind === "message" || entry.kind === "tool")
+    .map((entry) => (entry.kind === "message"
+      ? `message:${entry.role}:${entry.content}`
+      : `tool:${entry.toolCallId}`));
+}
+
+describe("transcript window", () => {
+  const messageItem = (position: number) => ({
+    position,
+    kind: "message" as const,
+    message_id: `message-${position}`,
+    message: {
+      role: "user" as const,
+      content: `message ${position}`,
+      tool_calls: [], tool_call_id: "", status: "", data: null,
+      error: null, artifacts: [], media: [],
+    },
+  });
+  const page = (from: number, to: number) => (
+    Array.from({ length: to - from + 1 }, (_, index) => messageItem(from + index))
+  );
+  const displayedPositions = (entries: TimelineEntry[]) => entries
+    .map((entry) => entry.position)
+    .filter((position): position is number => position !== undefined);
+  const windowed = (from: number, count: number, nextCursor: string | null = null) => (
+    runtimeReducer(initialRuntimeState, {
+      type: "trajectory",
+      items: page(from, from + count - 1),
+      nextCursor,
+    })
+  );
+  const anchored = (count: number, nextCursor: string | null = null) => windowed(1, count, nextCursor);
+
+  it("keeps the retained window bounded however long the session streams", () => {
+    let state = anchored(160);
+    for (let index = 0; index < 4000; index += 1) {
+      state = runtimeReducer(state, {
+        type: "user_message",
+        id: `live-${index}`,
+        content: `live ${index}`,
+        images: [],
+      });
+    }
+
+    expect(state.entries.length).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    // The window follows the tail: the newest output is always retained.
+    expect(state.entries.at(-1)).toMatchObject({ content: "live 3999" });
+    expect(state.atTail).toBe(true);
+    // The retained front is live output with no durable position yet, so the
+    // client reports that it cannot page back from it rather than guessing.
+    expect(state.windowAnchor).toBeNull();
+  });
+
+  it("drops the oldest records once the reader pages back", () => {
+    let state = windowed(801, 160, "cursor-960");
+    for (let index = 0; index < 8; index += 1) {
+      const anchor = state.windowAnchor as number;
+      state = runtimeReducer(state, {
+        type: "trajectory_prepend",
+        items: page(anchor - 80, anchor - 1),
+        nextCursor: `cursor-${anchor - 80}`,
+        expectedAnchor: anchor,
+      });
+    }
+
+    expect(state.trajectory.length).toBeLessThanOrEqual(MAX_TRAJECTORY_WINDOW);
+    expect(state.entries.length).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    expect(state.atTail).toBe(false);
+    // The retained records stay contiguous: paging back never leaves a hole
+    // that the reader could not reach again.
+    const positions = displayedPositions(state.entries);
+    expect(positions.length).toBeGreaterThan(0);
+    for (let index = 1; index < positions.length; index += 1) {
+      expect(positions[index] - positions[index - 1]).toBe(1);
+    }
+  });
+
+  it("counts newer output instead of evicting what the reader is reading", () => {
+    let state = windowed(801, 40, "cursor-840");
+    const anchor = state.windowAnchor as number;
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, anchor - 1),
+      nextCursor: null,
+      expectedAnchor: anchor,
+    });
+    const reading = state.entries;
+
+    state = runtimeReducer(state, { type: "user_message", id: "live", content: "while away", images: [] });
+    state = runtimeReducer(state, { type: "event", event: event("assistant_message_delta", { content: "tick" }) });
+    expect(state.entries).toBe(reading);
+    expect(state.pendingNewer).toBe(2);
+
+    // Non-transcript state still applies while the transcript is frozen.
+    state = runtimeReducer(state, {
+      type: "event",
+      event: event("usage", { input_tokens: 5, output_tokens: 2, total_tokens: 7 }),
+    });
+    expect(state.usage.total_tokens).toBe(7);
+    expect(state.pendingNewer).toBe(2);
+  });
+
+  it("returns to the tail by replacing the window with the newest page", () => {
+    let state = windowed(801, 40, "cursor-840");
+    const anchor = state.windowAnchor as number;
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, anchor - 1),
+      nextCursor: null,
+      expectedAnchor: anchor,
+    });
+    state = runtimeReducer(state, { type: "user_message", id: "live", content: "missed", images: [] });
+
+    state = runtimeReducer(state, { type: "trajectory", items: page(900, 960), nextCursor: null });
+    expect(state.atTail).toBe(true);
+    expect(state.pendingNewer).toBe(0);
+    expect(state.windowAnchor).toBe(900);
+    expect(state.entries.map((entry) => entry.position)).toEqual(page(900, 960).map((item) => item.position));
+  });
+
+  it("drops a page that was requested for a window that has moved", () => {
+    const state = anchored(160, "cursor-160");
+    const next = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: page(1, 80),
+      nextCursor: "stale",
+      expectedAnchor: 999,
+    });
+    expect(next).toMatchObject({ entries: state.entries, historyLoading: false });
+  });
+
+  it("holds per-event work flat as the session grows", () => {
+    const batch = (from: number, count: number) => {
+      let state = anchored(160);
+      const started = performance.now();
+      for (let index = from; index < from + count; index += 1) {
+        state = runtimeReducer(state, {
+          type: "user_message",
+          id: `live-${index}`,
+          content: `live ${index}`,
+          images: [],
+        });
+      }
+      return { elapsed: performance.now() - started, size: state.entries.length };
+    };
+
+    // A cold first batch measures JIT, not the window.
+    batch(0, 1000);
+    // The fastest of three runs is the least noise-contaminated estimator: one
+    // scheduler or GC stall inflates a single run, and a parallel suite run can
+    // stall any one of them.
+    const measure = (from: number) => {
+      let elapsed = Number.POSITIVE_INFINITY;
+      let size = 0;
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        const run = batch(from, 1000);
+        elapsed = Math.min(elapsed, run.elapsed);
+        size = run.size;
+      }
+      return { elapsed, size };
+    };
+    const first = measure(0);
+    const last = measure(20_000);
+    expect(last.size).toBe(first.size);
+    expect(last.size).toBeLessThanOrEqual(MAX_TIMELINE_ENTRIES);
+    // The window makes the thousandth event cost what the first one did; a
+    // generous factor keeps the assertion about growth, not about the machine.
+    expect(last.elapsed).toBeLessThan(Math.max(first.elapsed, 1) * 5);
+  });
+});
+
+describe("turn status reconciliation", () => {
+  const thread = (turn_status: "running" | "idle") => ({
+    session_id: "session-1", title: "Session title", thread_id: "agent", status: "active" as const,
+    kind: "main" as const, turn_status, parent_thread_id: "",
+    agent: "default", provider: "minimax", model: "MiniMax-M2", model_mode: "",
+    context_window: 1000, message_count: 2, usage: wireUsage(10, 0, 0),
+    session_stats: opened.session_stats, pending_interactions: [], status_slots: {},
+  });
+
+  it("clears the running turn when a thread sync reports it finished", () => {
+    // The spinner used to stay up when the terminal frame was lost while the
+    // event stream reconnected; the turn watchdog adopts the server's answer
+    // through this action, so it has to clear the flag.
+    let state = runtimeReducer(
+      runtimeReducer(initialRuntimeState, { type: "opened", session: opened }),
+      { type: "event", event: event("turn_started", { turn: 1 }) },
+    );
+    expect(state.turnRunning).toBe(true);
+
+    state = runtimeReducer(state, { type: "thread_synced", thread: thread("idle") });
+    expect(state.turnRunning).toBe(false);
+
+    // And a thread that really is running keeps the spinner up.
+    state = runtimeReducer(state, { type: "thread_synced", thread: thread("running") });
+    expect(state.turnRunning).toBe(true);
+  });
+});
+
+function wireUsage(input: number, output: number, context: number): import("../api/wire").UsageSnapshot {
+  return { total_counters: { input, output, cache_read: 0, cache_create: 0, prompt_cache_write: 0 }, latest_turn_observation: { estimated_input_tokens: 0, observed_context: { kind: "provider_measured", tokens: context } } };
+}

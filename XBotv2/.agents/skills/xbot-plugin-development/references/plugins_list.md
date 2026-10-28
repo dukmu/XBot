@@ -1,91 +1,57 @@
-# XBot Built-in Plugin Quick Reference
+# Built-in owner quick reference
 
-This is the first page to read when deciding whether a plugin already provides
-the capability you need. It describes the bundled `XBotv2/xcore.yaml` tree as
-of the installed XBot version. `id` is the tree identity used by overlays;
-`name` is the import specifier. They are deliberately different in several
-entries.
+The bundled `XBotv2/xcore.yaml` is the declaration source. Each entry identifies
+an implementation module; actual scope functions determine what is created.
+Configuration order is bundled, global, workspace, session, explicit override.
+Equal IDs merge config and preserve omitted fields; `optional`, `disabled`,
+`profiles`, `name` and isolation declarations are explicit entry facts.
 
-## Tree and process profiles
+`loader/api/tree.py` constructs process/profile trees; `config/api/tree.py`
+constructs fully expanded thread trees. The loader imports and mounts facets.
+`no_plugins` removes optional entries. It does not name business capabilities.
+The process profile selects a carrier while retaining shared process resources;
+thread scopes use the Agent tree and their workspace/session overlays.
 
-The Agent profile starts with the bundled entries, adds external entries from
-the Python `plugin_dirs` argument, then applies (in order) the configured data
-directory `plugins.yaml` overlay, the workspace `.xbot/plugins.yaml` overlay,
-the session `config.yaml` overlay, and in-memory launch overrides. The server
-and ACP carrier profiles apply the bundled tree and the data-directory
-overlay; they do not read the Agent workspace/session overlays. Later
-overlays preserve omitted fields. `config` is recursively merged; `name`,
-`profiles`, `disabled`, and `isolate` replace the previous value.
+| Owner | Process / session resource | Thread capability |
+|---|---|---|
+| config | default files and HTTP config routes | SETTINGS |
+| persistence | PERSISTENCE readers and session writer claim | THREAD_PERSISTENCE, artifacts |
+| session | SESSIONS, SESSION_INFO owner | THREAD_INFO, THREAD_EVENTS, paths/variables |
+| llm | provider directories and connections by config | LLM directory, independent MODEL |
+| agents | definition infrastructure | AGENT_CATALOG and AGENT_RUNTIME selection |
+| agentloop | business HTTP routes | AGENT_LOOP, LOOP_STATE, INBOX, TOOLS; internal Engine |
+| commands | carrier command registry/routes | private COMMANDS registry |
+| jobs | one registry for the process | authorized JOBS binding for this thread lifetime |
+| subagents | session collaboration coordinator | delegation tools and owned children |
+| interactions | — | CLIENT_EVENTS, INTERACTIONS, user input |
+| permissions / sandbox | — | permission guard/approval and sandbox policy |
+| coretools | — | standard filesystem and Shell tools |
+| context_builder / prompts | — | context compilation and fragments |
+| usage | — | usage snapshot and events |
+| content_cache | — | lossless content externalization |
+| skills / MCP / browser | — | optional standard tools/resources |
+| compact / goal / todolist | business routes where declared | optional history/objective/checklist capabilities |
+| workspace_instructions / token_manager / caption | — | optional instruction/observation/title features |
+| workspaces | workspace catalog/events/routes | — |
+| server | FastAPI and HTTP_LISTENER | — |
+| acp_plugin | ACP_SERVER | — |
+| client_transport / tui | CLIENT_API / TERMINAL_CLIENT | — |
 
-| Tree id | Import name | Profile | Dependency-gated integrations | Provides / primary role |
-|---|---|---|---|---|
-| `config` | `config` | agent, server | Agent: runtime paths and launch; server: `server`, `sessions` | Agent `settings`; policy/config HTTP routes |
-| `persistence` | `persistence` | agent, server, acp | Agent: loop state and thread persistence | process reader factory; Agent history/metadata hydration |
-| `usage` | `usage` | agent | `state`, `loop_state`, `runtime_log` | `usage` snapshot and usage events |
-| `agents` | `agents` | agent, server | Agent: runtime variables/catalog and loop dependencies; server: `server`, `sessions` | `agent_catalog`, `agent_runtime`, `engine`; Agent HTTP routes |
-| `session` | `session` | agent, server, acp | Agent: launch, commands, artifacts; carrier: persistence/application factories; server: route dependencies | thread runtime, process `sessions`, Session HTTP routes |
-| `jobs` | `jobs` | agent, server | Agent: `commands`, `engine`; server: `server`, `sessions` | `jobs`; task HTTP routes |
-| `commands` | `commands` | agent, server | server route integration waits for `server`, `sessions` | human command registry; command HTTP routes |
-| `llm` | `llm` | agent, server | runtime log; Agent commands wait for Agent runtime; HTTP waits for sessions | `llm`, `model`; provider catalog, commands, HTTP routes |
-| `agentloop` | `agentloop` | agent, server | Agent launch/runtime log; server routes wait for sessions | Tool registry/executor and Agent loop factory; Tool HTTP routes |
-| `context_builder` | `context_builder` | agent | `runtime_log` | `context_builder`; context assembly |
-| `prompts` | `prompts` | agent | `context_builder` | `prompts`; prompt fragment registry |
-| `sandbox` | `sandbox` | agent | thread paths, session, tools, data/workspace roots, variables, commands, settings | `sandbox`; sandbox guard and context facts |
-| `permissions` | `permissions` | agent | session/launch, parent permissions, tools, client_events, interactions, variables, commands, settings, state | `permissions`, `approval`; guard, approval waiter, persistent grants and policy commands |
-| `coretools` | `coretools` | agent | tools, session, artifacts, sandbox, jobs, workspace root | filesystem/Shell Tools and result-cache hook |
-| `subagents` | `subagents` | agent | session, catalog, child applications, permissions, jobs, tools, prompts, persistence | subagent Tools and prompt catalog |
-| `goal` | `goal` | agent | tools, commands, engine, state | `goal`; objective Tools, `/goal`, status slot |
-| `todolist` | `todolist` | agent, server | Agent: tools/state; server: sessions | Todo Tool/state and HTTP routes |
-| `skills` | `skills` | agent | tools, commands, sandbox, runtime paths | discovered skill Tools and prompt commands |
-| `mcp_plugin` | `mcp_plugin` | agent | tools, model, interactions, session | configured MCP Tools/resources/prompts; public id in `mcp_plugin/contracts.py` |
-| `content_cache` | `content_cache` | agent | artifacts | current oversized-user-input provider projection |
-| `compact` | `compact` | agent | tools, commands, model, loop state, usage | compaction Tool/command and history events |
-| `browser` | `browser` | agent | tools, session, sandbox, artifacts | Web research and isolated browser Tools |
-| `token_manager` | `token_manager` | agent | session | request/context observation diagnostics |
-| `workspace_instructions` | `workspace_instructions` | agent | variables, workspace root | `AGENTS.md` context contribution |
-| `interactions` | `interactions` | agent | tools, client events, session launch | `interactions`; `ask_user` and message delivery |
-| `workspaces` | `workspaces` | server, acp | runtime log, sessions, state, workspace root; HTTP additionally waits for server | `workspaces`, events, directory browser, HTTP routes |
-| `acp` | `acp_plugin` | acp | `sessions`, `acp_launch`, `runtime_log` | ACP carrier (`acp_agent`) |
-| `server` | `server` | server | `runtime_log` | FastAPI carrier and its own health/core routes |
+`TerminalClient` and `TERMINAL_CLIENT` belong only to `tui/api/service.py`.
+Packages keep declarations in `api/`, implementation in `impl/`, owner docs in
+`doc/` and focused tests in `tests/`. Package roots export no facades. Consult
+[the architecture](xbot-architecture.md) and each [owner page](plugins/README.md).
 
-For the exact surface of one row, read the matching page under
-[`plugins/`](plugins/README.md). A service listed here is a composition
-capability, not a license to import that plugin's implementation module.
+CLI supplies process paths/logging and the public loader constructor. The
+session manager supplies only identity, explicit Agent choice facts and generic
+scope configuration facts. Business facets initialize their own resources.
+`SESSIONS.open` / `open_thread` return actual Contexts. Consumers locate the
+thread then require its business API; there is no application service bag or
+session method forwarding another owner's operations.
 
-The row is intentionally a navigation aid, not a complete API contract. The
-detail pages identify the package-root contracts and the owning source file;
-the installed version's exports and tests remain authoritative.
-
-## Application-injected services
-
-These values are supplied by an application composition root before XCore
-starts. They do not come from another plugin and are the usual answer when a
-minimal integration test reports `FiberState.PENDING`:
-
-| Service | Agent application value | Server carrier value | ACP carrier value |
-|---|---|---|---|
-| `runtime_log` | boot's `RuntimeLog` | same | same |
-| `runtime_paths` | `RuntimePaths` for the selected `data_dir` | process `RuntimePaths` | process `RuntimePaths` |
-| `workspace_root` | selected workspace `Path` | server workspace `Path` | data root `Path` (carrier default) |
-| `session_launch` | `SessionLaunch` for one session/thread | not provided | not provided |
-| `agent_options` | typed Agent launch facts | not provided | not provided |
-| `thread_persistence` | `ThreadPersistence` when persistence is enabled | not provided | not provided |
-| `thread_metadata` | in-memory metadata only when persistence is disabled | not provided | not provided |
-| `artifacts` | thread `ArtifactStore` | not provided | not provided |
-| `client_events` | `ClientEventRouter` | not provided | not provided |
-| `child_applications` | child Agent application owner | not provided | not provided |
-| `parent_permissions` | parent permission intersection | not provided | not provided |
-| `plugin_overrides` | in-memory launch overlay list | not provided | not provided |
-| `plugin_dirs` | external plugin import roots | not provided | not provided |
-| `server_options` | not provided | `ServerOptions` | not provided |
-| `agent_application_factory` | not provided | `create_agent_application` | `create_agent_application` |
-| `acp_launch` | not provided | not provided | `ACPLaunch` |
-
-Use the contracts in `XBotv2.application` and constructors in the owning
-application modules, together with
-`XBotv2.core.paths` in a test harness. `Context(data_dir=...)` supplies the
-XCore `state` service; the Agent test harness must still provide every other
-declared dependency explicitly.
+Scopes isolate even disabled facets' declared services. Required failures or
+cycles prevent opening; optional failures dispose their facet. Close blocks
+admissions and awaits owned work before removing effects and releasing locks.
 
 ## Operations and event families
 
@@ -97,21 +63,21 @@ declared result type:
 |---|---|
 | Tools | `agentloop` Tool registry, `LIST_TOOLS`, `before/tool-call`, `after/tool-call` |
 | Commands | `commands/list`, `commands/execute`; `Command(kind="prompt")` is client prompt expansion |
-| Context | `context/build`, `after/context-components-build`, `after/context-build` |
-| Model | `model/request-ready`, `after/model-response`, `before/model-request` |
+| Context | `context/build` (`ContextBuildRequest`), `after/context-components-build` (`BuiltContext`) |
+| Model | `before/model-request`, `model/request-ready`, `after/model-response`, `model/response-observed`, `model/request-error` |
 | Session | `session/start`, `session/resume`, `session/close`, `session/history-changed` |
-| Turn | `turn/start`, `turn/end`, `stop`, `stop/failure` |
-| Tools/runtime | `before/tools`, `after/tools`, `tool/calls-parsed`, `tool/batch-done`, `agent/inbox/spliced` |
-| Client | `client/event`, application `runtime/event` |
-| Compaction | `before/compact`, `after/compact` |
-| Application | `session/init` (`ApplicationInitialized`), `application/status-slots/collect` |
-| Workspace/session host | `session/resource-changed`, `session/resource-removed`, workspace catalog events |
+| Turn/input | `input/received`, `input/accepted`, `turn/start`, `turn/end`, `error`, `stop`, `stop/failure` |
+| Tools/runtime | `agent/inbox/changed`, `tool/calls-observed`, `tool/batch-observed`, `tool/message-observed`, `state/changed` |
+| Client events | `ClientEventsPort` belongs to interactions; `runtime/event` belongs to agentloop |
+| Compaction | `before/compact`, `after/compact` (compact-owned events) |
+| Initialization/status | `THREAD_INITIALIZED` belongs to agentloop; status slots belong to interactions |
+| Workspace/session | `session/resource-changed`, `session/resource-removed`, workspace catalog events |
 
 Agent-loop hook events in the `SHORT_CIRCUIT_EVENTS` set use `ctx.serial` and
 have a documented return contract; observers use `ctx.emit` and return
-`None`. See [xcore-api.md](xcore-api.md) for the complete event names and
-`EventContext` fields. Do not invent an `EventContext` payload for a new
-cross-plugin fact: define a typed contract in the owning package.
+`None`. Event payload types belong to their producer packages and differ by
+stage; consult those definitions instead of assuming a universal event
+context. Define new cross-plugin facts in the owning package.
 
 ## State and file ownership
 
@@ -120,7 +86,7 @@ cross-plugin fact: define a typed contract in the owning package.
 | conversation surface and append-only trajectory | `ThreadPersistence.history` / `ConversationHistory` | never copy messages into plugin state |
 | pending user inputs | `ThreadPersistence.inbox` / Agent inbox | use the inbox API; do not create a second queue |
 | artifacts | `ArtifactStore` via `ctx.artifacts` | use typed artifact references, not hand-built paths |
-| usage | `ctx.state.namespace("usage")` through `UsageService` | record deltas; do not recalculate from duplicated history |
+| usage | `ctx.state.namespace("usage")` through `UsageService` | persist cumulative counters; derive only the latest turn observation from canonical assistant messages |
 | Todo/Goal/plugin data | the owning plugin's `ctx.state.namespace(name)` | one typed snapshot per related state |
 | runtime waiters/clients/jobs | owning live service | never persist handles or Context objects |
 

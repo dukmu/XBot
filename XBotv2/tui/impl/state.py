@@ -1,0 +1,997 @@
+"""The session reducer: the only writer of conversation and status state.
+
+``reduce(state, event)`` is the single entry point. It performs no IO, imports no
+Textual, and is the only place any status fact is assigned -- the old client wrote
+its status string from nineteen call sites, which is how a running turn ended up
+displayed as Ready.
+
+Validated domain events reach the reducer directly; client-owned events carry
+only the additional state needed by the UI.
+
+Invariants this module is responsible for:
+
+* a streamed assistant entry is always the *suffix* of the timeline, and a user
+  interjection commits that suffix before landing, so streamed text can never be
+  appended into an entry that sits above the user's message;
+* entries are only ever addressed by their stable id, so nothing is rewritten
+  because a list position moved;
+* nothing the server sends is dropped without a visible trace: unknown events
+  raise, and a rejected frame is a rejection rather than a skip.
+"""
+
+from __future__ import annotations
+
+import time
+import json
+from dataclasses import dataclass, field, replace
+from enum import Enum
+from typing import Mapping
+from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
+from XBotv2.agentloop.api.outputs import (
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopTurnStarted,
+    ToolCallsStarted,
+    TurnCancelled as CancelledOutcome,
+)
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.todolist.api.events import TaskChanged
+from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse, JobUpdatedEvent
+from XBotv2.usage.api.events import UsageUpdated
+from XBotv2.session.api.events import (
+    AgentConfiguredEvent,
+    HistoryUpdatedEvent,
+    InputConsumedEvent,
+    QueueReplacedEvent,
+)
+from XBotv2.interactions.api.models import ClientNotice, UserInputRecorded, UserInputRequest
+from XBotv2.core.api.domain import (
+    Cursor,
+    ReasoningGenerationMode,
+    ResolvedRuntimeSelection,
+    UsageSnapshot,
+)
+from XBotv2.goal.api.models import NoGoal
+from XBotv2.jobs.api.contracts import JobView
+from XBotv2.permissions.api.models import NamedPermission, PermissionRequest, ToolPermission
+from XBotv2.permissions.api.protocol import PermissionResponseRecorded
+from XBotv2.agentloop.api.models import PendingInputData
+from XBotv2.session.api.records import (
+    AssistantRecord,
+    DisplayBody,
+    CompactionSummaryRecord,
+    ConversationRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
+from XBotv2.core.api.parts import MediaPart, TextPart
+from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.session.api.contracts import ThreadSummary
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.tui.impl.events import (
+    DisplayHistoryLoaded,
+    ConnectionChanged,
+    InteractionOpened,
+    InteractionRequest,
+    InteractionResolved,
+    InterruptAsked,
+    InterruptSettled,
+    LocalNotice,
+    TranscriptCleared,
+    StreamGapDetected,
+    TurnCancelled,
+    TurnFinished,
+    UiEvent,
+    UserInputFailed,
+    UserInputSubmitted,
+    UserInputAccepted,
+)
+from XBotv2.tui.impl.status import Interaction, Interrupt, ServerTurn, StatusFacts
+from XBotv2.tui.impl.timeline import (
+    AssistantEntry,
+    Delivery,
+    Entry,
+    ErrorEntry,
+    NoticeEntry,
+    Timeline,
+    ToolEntry,
+    ToolStatus,
+    UserEntry,
+)
+
+# A tool is unfinished until a result arrives; these are the two client-side
+# states, the other four are the server's own result statuses.
+_UNFINISHED_TOOL_STATUSES: frozenset[str] = frozenset({"pending", "running"})
+_RUNNING_JOB_STATUSES: frozenset[str] = frozenset({"queued", "running"})
+
+
+# ``ThreadSummary.kind`` is the authority for these two words
+# (``tests/tui/test_reuse.py`` pins them to the wire's Literal).
+MAIN_THREAD_KIND = "main"
+SUBAGENT_THREAD_KIND = "subagent"
+
+@dataclass(frozen=True)
+class HistoryComplete:
+    """The client holds the beginning of the conversation."""
+
+
+@dataclass(frozen=True)
+class HistoryKnown:
+    """The server cursor for the page before the current window."""
+
+    cursor: Cursor
+
+
+@dataclass(frozen=True)
+class HistoryAvailable(HistoryKnown):
+    """Older messages exist and can be loaded."""
+
+
+#: The archive page before the current window, if one exists.
+OlderHistory = HistoryComplete | HistoryAvailable
+
+
+@dataclass
+class SessionState:
+    """Everything the UI needs to render one attached thread.
+
+    Mutable on purpose: the timeline is a long-lived ordered map, and copying it
+    per event would reintroduce the per-update cost this rewrite removes.
+    ``reduce`` still returns the same object so callers cannot forget to rebind.
+    """
+
+    facts: StatusFacts = field(default_factory=StatusFacts)
+    timeline: Timeline = field(default_factory=Timeline)
+    turn: int = 0
+    # When the open turn started, so a renderer can show its duration without
+    # keeping a clock of its own.
+    turn_started_at: float = 0.0
+    stream_entry_id: str | None = None
+    queue: tuple[PendingInputData, ...] = ()
+    jobs: dict[str, JobView] = field(default_factory=dict)
+    # Unanswered prompts by request id. ``facts.interaction`` is derived from
+    # this, so several concurrent prompts cannot lose one another.
+    pending_interactions: dict[str, InteractionRequest] = field(default_factory=dict)
+    status_slots: dict[str, str] = field(default_factory=dict)
+    runtime_selection: ResolvedRuntimeSelection | None = None
+    usage: UsageSnapshot = field(default_factory=UsageSnapshot)
+    # The client has handed input to the server and is waiting for the message
+    # frame that confirms it. It is not a belief about the turn: a queued input
+    # stays in flight while the thread is idle.
+    pending_submissions: set[str] = field(default_factory=set)
+    session_id: str = ""
+    thread_id: str = ""
+    # The server's own model for the attached thread, as last read. Kept whole
+    # rather than field by field: the status report and the read-only rule are
+    # both questions about it, and a hand-copied subset would drift.
+    thread: ThreadSummary | None = None
+    title: str = ""
+    # Everything the client knows about the part of the conversation it does not
+    # hold, as one value: whether it holds the beginning, where the page before
+    # its oldest entry starts, whether one is in flight, and why the last one
+    # failed. There is no cursor field to fall back to and none to contradict it.
+    older: OlderHistory = field(default_factory=HistoryComplete)
+    viewing_history: bool = False
+    _local_counter: int = 0
+
+
+    @property
+    def submission_in_flight(self) -> bool:
+        return bool(self.pending_submissions)
+
+    @property
+    def thread_kind(self) -> str:
+        """The wire's word for the attached thread's kind."""
+        return self.thread.kind if self.thread is not None else MAIN_THREAD_KIND
+
+    @property
+    def agent_name(self) -> str:
+        return self.runtime_selection.agent_name if self.runtime_selection else ""
+
+    @property
+    def provider(self) -> str:
+        return self.runtime_selection.model.route.provider if self.runtime_selection else ""
+
+    @property
+    def model(self) -> str:
+        return self.runtime_selection.model.route.model if self.runtime_selection else ""
+
+    @property
+    def model_mode(self) -> str:
+        if self.runtime_selection is None:
+            return ""
+        mode = self.runtime_selection.model.generation.mode
+        return mode.effort if isinstance(mode, ReasoningGenerationMode) else ""
+
+    @property
+    def context_window(self) -> int:
+        return self.runtime_selection.model.context_window if self.runtime_selection else 0
+
+    @property
+    def read_only(self) -> bool:
+        """Whether the attached thread accepts typed input.
+
+        A subagent thread is driven by its parent, not by the user, so the
+        composer is read-only while one is on screen. The answer comes from the
+        server's thread read, never from a local flag that could drift.
+        """
+        return self.thread_kind == SUBAGENT_THREAD_KIND
+
+    def next_local_id(self, prefix: str) -> str:
+        self._local_counter += 1
+        return f"local:{prefix}:{self._local_counter}"
+
+    def window(self, *, size: int, end: str | None = None):
+        return self.timeline.window(size=size, end=end)
+
+
+def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> SessionState:
+    """Apply one UI event in place and return the same state."""
+    clock = time.monotonic() if now is None else now
+
+    if isinstance(event, ConnectionChanged):
+        state.facts = replace(state.facts, connection=event.connection)
+
+    elif isinstance(event, OpenSessionResponse):
+        _adopt_snapshot(state, event)
+
+    elif isinstance(event, DisplayHistoryLoaded):
+        _rebuild_display_items(state, event.payload.items)
+        state.older = _older_from_cursor(event.payload.older_cursor)
+
+    elif isinstance(event, AgentConfiguredEvent):
+        state.runtime_selection = event.runtime_selection
+
+    elif isinstance(event, ThreadSummary):
+        turn_status = ServerTurn(event.turn_status)
+        state.thread = event
+        state.title = event.title
+        if event.status_slots:
+            state.status_slots = dict(event.status_slots)
+        # A fresh client has not seen the historical turn frames.  The thread
+        # read already carries the count derived from the canonical persisted
+        # conversation, so it is also the authority for the displayed turn
+        # number after attach, resume, undo, or compaction.
+        state.turn = event.session_stats.turns
+        state.facts = replace(
+            state.facts,
+            server_turn=turn_status,
+            turn_open=turn_status is ServerTurn.RUNNING,
+        )
+        if turn_status is not ServerTurn.RUNNING:
+            # The server says this thread is not running, so anything still open
+            # belongs to a turn that ended -- most likely a terminal frame that
+            # was lost. Leaving it running would show a tool that never finishes.
+            _close_stream(state)
+            _finalize_open_tools(state, "cancelled", clock)
+
+    elif isinstance(event, UsageUpdated):
+        state.usage = event.snapshot
+
+    elif isinstance(event, (CompactionStarted, CompactionCompleted, CompactionFailed)):
+        _apply_compaction(state, event)
+
+    elif isinstance(event, QueueReplacedEvent):
+        state.queue = tuple(event.items)
+        for item in state.queue:
+            state.pending_submissions.discard(item.message_id)
+            entry = state.timeline.get(item.message_id)
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+                state.timeline.remove(item.message_id)
+
+    elif isinstance(event, ClientNotice):
+        _append(state, NoticeEntry(
+            id=state.next_local_id("client_message"),
+            notice_kind="client_message",
+            text=event.message,
+            level=event.level,
+        ))
+
+    elif isinstance(event, TranscriptCleared):
+        state.timeline = Timeline()
+        state.stream_entry_id = None
+
+    elif isinstance(event, LocalNotice):
+        _append(state, NoticeEntry(
+            id=state.next_local_id(f"local:{event.notice_kind}"),
+            notice_kind=event.notice_kind,
+            text=event.text,
+            level=event.level,
+        ))
+
+    elif isinstance(event, JobCompletedEvent):
+        payload = event
+        text = f"{payload.view.id}: {payload.view.state}"
+        if payload.view.label:
+            text = f"{text} — {payload.view.label}"
+        _append(state, NoticeEntry(
+            id=state.next_local_id("completion_notice"),
+            notice_kind="completion_notice",
+            text=text,
+        ))
+
+    elif isinstance(event, GoalChanged):
+        snapshot = event.snapshot
+        state_value = snapshot.state
+        if isinstance(state_value, NoGoal):
+            text = "Goal cleared"
+            detail = ""
+        else:
+            status = state_value.kind
+            if status == "active" and snapshot.activation == "disarmed":
+                # An armed goal the runtime is not driving: say so, because
+                # "active" would otherwise imply progress is happening.
+                status = "paused"
+            text = f"Goal {status} · {state_value.objective}"
+            # A finished or paused goal's reason explains *why* it stopped,
+            # which is part of the status. A running goal's counters are not.
+            # ``ActiveGoal`` has no reason field, so it reads as empty here.
+            detail = getattr(state_value, "reason", "")
+        _append(state, NoticeEntry(
+            id="goal:active",
+            notice_kind="goal",
+            text=text,
+            detail=detail,
+        ))
+
+    elif isinstance(event, TaskChanged):
+        tasks = event.snapshot.tasks
+        completed = event.snapshot.completed_count
+        _append(state, NoticeEntry(
+            id="tasks:active",
+            notice_kind="tasks",
+            text=f"Tasks {completed}/{completed + len(tasks)} completed",
+        ))
+
+    elif isinstance(event, InteractionOpened):
+        state.pending_interactions[_request_id(event.request)] = event.request
+        _append(state, NoticeEntry(
+            id=_interaction_entry_id(event.request),
+            notice_kind=f"interaction:{_interaction_kind(event.request)}",
+            text=_interaction_text(event.request),
+        ))
+        _refresh_interaction_facts(state)
+
+    elif isinstance(event, InteractionResolved):
+        opened = state.pending_interactions.pop(event.payload.interaction_id, None)
+        if opened is not None:
+            entry_id = _interaction_entry_id(opened)
+            existing = state.timeline.get(entry_id)
+            _append(state, NoticeEntry(
+                id=entry_id,
+                notice_kind=f"interaction:{_interaction_kind(opened)}",
+                text=_interaction_text(opened, resolution=event),
+            ))
+        _refresh_interaction_facts(state)
+
+    elif isinstance(event, StreamGapDetected):
+        _append(state, NoticeEntry(
+            id=state.next_local_id("gap"),
+            notice_kind="stream_gap",
+            text=(
+                f"Missed {event.received - event.expected} event(s) "
+                f"(expected {event.expected}, received {event.received}); "
+                "the transcript may be incomplete until it is reloaded."
+            ),
+        ))
+
+    elif isinstance(event, LoopTurnStarted):
+        state.turn = event.turn
+        state.turn_started_at = clock
+        state.facts = replace(
+            state.facts,
+            server_turn=ServerTurn.RUNNING,
+            turn_open=True,
+            interrupt=Interrupt.NONE,
+            last_error=None,
+        )
+
+    elif isinstance(event, TurnFinished):
+        state.turn = event.payload.turn
+        _close_stream(state)
+        _finalize_open_tools(state, "cancelled", clock)
+        state.facts = replace(
+            state.facts,
+            server_turn=ServerTurn.IDLE,
+            turn_open=False,
+            interrupt=Interrupt.NONE,
+            compaction=False,
+        )
+
+    elif isinstance(event, TurnCancelled):
+        state.turn = event.payload.turn
+        _close_stream(state)
+        _finalize_open_tools(state, "cancelled", clock)
+        state.facts = replace(
+            state.facts,
+            server_turn=ServerTurn.IDLE,
+            turn_open=False,
+            interrupt=Interrupt.NONE,
+            compaction=False,
+        )
+        _append(state, NoticeEntry(
+            id=state.next_local_id("cancelled"),
+            notice_kind="turn_cancelled",
+            text=(
+                "Turn interrupted "
+                f"({event.payload.outcome.reason})."
+                if isinstance(event.payload.outcome, CancelledOutcome)
+                else "Turn interrupted."
+            ),
+        ))
+
+    elif isinstance(event, InterruptAsked):
+        state.facts = replace(state.facts, interrupt=Interrupt.REQUESTED)
+
+    elif isinstance(event, InterruptSettled):
+        if event.cancelled:
+            _close_stream(state)
+            _finalize_open_tools(state, "cancelled", clock)
+            state.facts = replace(
+                state.facts,
+                interrupt=Interrupt.NONE,
+                server_turn=ServerTurn.IDLE,
+                turn_open=False,
+            )
+        else:
+            # The server answered "idle": nothing was running, so the local turn
+            # flag is stale. Confirming it instead of adopting the answer kept
+            # the status on "Running" (derive() trusts turn_open) and left the
+            # turn's tools running for good -- ported from the runtime-compat
+            # work on fix-runtime-stream-context-compat.
+            _close_stream(state)
+            _finalize_open_tools(state, "cancelled", clock)
+            state.facts = replace(
+                state.facts,
+                interrupt=Interrupt.NONE,
+                server_turn=ServerTurn.IDLE,
+                turn_open=False,
+            )
+
+    elif isinstance(event, (AssistantTextDelta, AssistantReasoningDelta)):
+        if isinstance(event, AssistantReasoningDelta):
+            _append_delta(state, "", event.text)
+        else:
+            _append_delta(state, event.text, "")
+
+    elif isinstance(event, AssistantRecord):
+        _complete_assistant(state, event)
+
+    elif isinstance(event, HistoryUpdatedEvent):
+        mutation = event.mutation
+        _rebuild_from_items(state, mutation.history.items)
+        state.older = _older_from_cursor(mutation.history.older_cursor)
+        state.turn = mutation.stats.turns
+
+    elif isinstance(event, ToolCallsStarted):
+        _start_tool_calls(
+            state,
+            tuple(item.call for item in event.calls),
+            clock,
+        )
+
+    elif isinstance(event, ToolRecord):
+        _finish_tool_call(state, event, clock)
+
+    elif isinstance(event, LoopError):
+        message = event.message or event.code
+        state.facts = replace(state.facts, last_error=message)
+        _finalize_open_tools(state, "error", clock)
+        _append(state, ErrorEntry(
+            id=state.next_local_id("error"),
+            message=message,
+        ))
+
+    elif isinstance(event, UserInputSubmitted):
+        existing = state.timeline.get(event.input_id)
+        if not (isinstance(existing, UserEntry) and existing.delivery is Delivery.ACCEPTED):
+            # A message the server has already confirmed must not be pushed back
+            # to "sending": the echo can arrive before the local bookkeeping.
+            _append(state, UserEntry(
+                id=event.input_id,
+                content=event.content[:512],
+                delivery=Delivery.PENDING,
+                media_labels=event.media_labels,
+            ))
+            state.pending_submissions.add(event.input_id)
+
+    elif isinstance(event, UserInputAccepted):
+        state.pending_submissions.discard(event.input_id)
+        entry = state.timeline.get(event.input_id)
+        if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+            state.timeline.remove(event.input_id)
+
+    elif isinstance(event, InputConsumedEvent):
+        for input_id in event.message_ids:
+            entry = state.timeline.get(input_id)
+            if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
+                state.timeline.remove(input_id)
+            state.pending_submissions.discard(input_id)
+
+    elif isinstance(event, UserInputFailed):
+        if event.input_id not in state.pending_submissions:
+            return state
+        state.pending_submissions.discard(event.input_id)
+        existing = state.timeline.get(event.input_id)
+        if isinstance(existing, UserEntry):
+            _append(state, replace(existing, delivery=Delivery.FAILED))
+        state.facts = replace(state.facts, last_error=event.error)
+        _append(state, ErrorEntry(
+            id=state.next_local_id("submit_error"),
+            message=f"Message not delivered: {event.error}",
+        ))
+
+    elif isinstance(event, HumanInputRecord):
+        _publish_user_message(state, event)
+
+    elif isinstance(event, RuntimeNoticeRecord):
+        _append(state, _context_notice(event))
+
+    elif isinstance(event, JobUpdatedEvent):
+        state.jobs[event.view.id] = event.view
+        state.facts = replace(
+            state.facts,
+            jobs_running=sum(
+                1
+                for job in state.jobs.values()
+                if job.state in _RUNNING_JOB_STATUSES
+            ),
+        )
+
+    elif isinstance(event, JobListResponse):
+        state.jobs = {job.id: job for job in event.jobs}
+        state.facts = replace(
+            state.facts,
+            jobs_running=sum(
+                1
+                for job in event.jobs
+                if job.state in _RUNNING_JOB_STATUSES
+            ),
+        )
+
+    else:  # pragma: no cover - the union is closed
+        raise TypeError(f"Unsupported UI event: {event!r}")
+
+    return state
+
+
+# --- usage and compaction -------------------------------------------------
+
+
+def _apply_compaction(state: SessionState, payload: CompactionStarted | CompactionCompleted | CompactionFailed) -> None:
+    if isinstance(payload, CompactionStarted):
+        state.facts = replace(state.facts, compaction=True)
+        return
+    state.facts = replace(state.facts, compaction=False)
+    if isinstance(payload, CompactionFailed):
+        _append(state, NoticeEntry(
+            id=state.next_local_id("compaction_failed"),
+            notice_kind="compaction",
+            text=f"Compaction failed: {payload.message}",
+        ))
+        return
+    if not isinstance(payload, CompactionCompleted):  # pragma: no cover - union
+        raise TypeError(f"Unsupported compaction payload: {payload!r}")
+    _append(state, NoticeEntry(
+        id=state.next_local_id("compaction"),
+        notice_kind="compaction",
+        text="Conversation compacted",
+        detail=payload.summary.summary,
+    ))
+
+
+# --- timeline mutation ----------------------------------------------------
+
+
+def _append(state: SessionState, entry: Entry) -> None:
+    state.timeline.upsert(entry)
+
+
+def _append_delta(state: SessionState, content: str, reasoning: str) -> None:
+    if not content and not reasoning:
+        return
+    entry_id = state.stream_entry_id
+    existing = state.timeline.get(entry_id) if entry_id is not None else None
+    if not isinstance(existing, AssistantEntry):
+        entry_id = state.next_local_id("assistant")
+        state.stream_entry_id = entry_id
+        existing = AssistantEntry(id=entry_id)
+    _append(state, replace(
+        existing,
+        content=(existing.content + content[:512])[:512],
+        reasoning=(existing.reasoning + reasoning[:512])[:512],
+        streaming=True,
+        stream_truncated=existing.stream_truncated or len(existing.content) + len(content) > 512 or len(existing.reasoning) + len(reasoning) > 512,
+    ))
+
+
+def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
+    stream_id = state.stream_entry_id
+    streamed = state.timeline.get(stream_id) if stream_id is not None else None
+    if isinstance(streamed, AssistantEntry):
+        # Delta entries use a local identity; the completed record owns the
+        # durable identity. Replace the streaming placeholder rather than
+        # retaining both as separate transcript entries.
+        completed = replace(
+            streamed,
+            id=record.id,
+            content=record.content[:512],
+            reasoning=record.reasoning[:512],
+            body_ref=DisplayBody(preview=record.content[:512], length=len(record.content)),
+            reasoning_ref=DisplayBody(preview=record.reasoning[:512], length=len(record.reasoning)),
+            streaming=False,
+            stream_truncated=False,
+        )
+        if stream_id != record.id:
+            if record.id in state.timeline:
+                state.timeline.remove(stream_id)
+                _append(state, completed)
+            else:
+                state.timeline.replace_identity(stream_id, completed)
+        else:
+            _append(state, completed)
+        state.stream_entry_id = None
+        return
+    _append(state, AssistantEntry(
+        id=record.id,
+        content=record.content[:512],
+        reasoning=record.reasoning[:512],
+        body_ref=DisplayBody(preview=record.content[:512], length=len(record.content)),
+        reasoning_ref=DisplayBody(preview=record.reasoning[:512], length=len(record.reasoning)),
+    ))
+
+
+def _close_stream(state: SessionState) -> None:
+    """Commit the streaming suffix without moving it."""
+    stream_id = state.stream_entry_id
+    if stream_id is None:
+        return
+    streamed = state.timeline.get(stream_id)
+    if isinstance(streamed, AssistantEntry) and streamed.streaming:
+        _append(state, replace(streamed, streaming=False))
+    state.stream_entry_id = None
+
+
+def _finalize_open_tools(state: SessionState, status: ToolStatus, now: float) -> None:
+    for entry in list(state.timeline):
+        if isinstance(entry, ToolEntry) and entry.status in _UNFINISHED_TOOL_STATUSES:
+            _append(state, replace(entry, status=status, finished_at=now))
+
+
+def _start_tool_calls(state: SessionState, calls, now: float) -> None:
+    for call in calls:
+        args_text = json.dumps(call.args, ensure_ascii=False, indent=2)
+        args_ref = DisplayBody(preview=args_text[:512], length=len(args_text))
+        existing = state.timeline.get(call.id)
+        if isinstance(existing, ToolEntry):
+            _append(state, replace(
+                existing,
+                name=call.name or existing.name,
+                call_id=str(call.id),
+                args=dict(call.args) if len(args_text) <= 512 else {},
+                args_ref=args_ref,
+            ))
+            continue
+        _append(state, ToolEntry(
+            id=call.id,
+            name=call.name,
+            call_id=str(call.id),
+            args=dict(call.args) if len(args_text) <= 512 else {},
+            args_ref=args_ref,
+            status="running",
+            started_at=now,
+        ))
+
+
+def _finish_tool_call(state: SessionState, record: ToolRecord, now: float) -> None:
+    call_id = str(record.call.id)
+    existing = state.timeline.get(call_id)
+    known = isinstance(existing, ToolEntry)
+    outcome = record.outcome
+    if isinstance(outcome, ToolSucceeded):
+        status: ToolStatus = "success"
+        body = _tool_output_text(outcome.output.parts)
+    elif isinstance(outcome, ToolFailed):
+        status = "error"
+        body = _tool_output_text(outcome.output.parts) or outcome.error.message
+    elif isinstance(outcome, ToolDenied):
+        status = "denied"
+        body = outcome.reason
+    elif isinstance(outcome, ToolCancelled):
+        status = "cancelled"
+        body = outcome.reason
+    else:  # pragma: no cover - ToolOutcome is closed
+        raise TypeError(f"Unsupported tool outcome: {type(outcome).__name__}")
+    completed = ToolEntry(
+        id=record.id,
+        name=record.call.name,
+        call_id=call_id,
+        args=existing.args if known else {},
+        args_ref=existing.args_ref if known else DisplayBody(preview="", length=1),
+        status=status,
+        result=body[:512],
+        result_ref=DisplayBody(preview=body[:512], length=len(body)),
+        artifacts=outcome.output.artifacts if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
+        media=tuple(part.artifact for part in outcome.output.parts if isinstance(part, MediaPart)) if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
+        started_at=existing.started_at if known else now,
+        finished_at=now,
+    )
+    if known and call_id != record.id:
+        if record.id in state.timeline:
+            state.timeline.remove(call_id)
+            _append(state, completed)
+        else:
+            state.timeline.replace_identity(call_id, completed)
+    else:
+        _append(state, completed)
+
+
+def _tool_output_text(parts: tuple[object, ...]) -> str:
+    return "".join(part.text for part in parts if isinstance(part, TextPart))
+
+
+def _publish_user_message(state: SessionState, event: HumanInputRecord) -> None:
+    # I6: the streaming suffix is committed before the interjection lands, so a
+    # later delta opens a new entry below the user's message instead of growing
+    # the entry above it.
+    _close_stream(state)
+    message_id = event.id
+    existing = state.timeline.get(message_id)
+    if isinstance(existing, UserEntry):
+        _append(state, replace(
+            existing, content=event.content[:512], delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=event.content[:512], length=len(event.content)),
+            media=event.media, artifacts=event.artifacts, media_labels=(),
+        ))
+    else:
+        _append(state, UserEntry(
+            id=message_id,
+            content=event.content[:512],
+            delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=event.content[:512], length=len(event.content)),
+            media=event.media, artifacts=event.artifacts,
+        ))
+    state.pending_submissions.discard(message_id)
+
+
+# --- baseline adoption ----------------------------------------------------
+
+
+def _adopt_snapshot(state: SessionState, snapshot: OpenSessionResponse) -> None:
+    """Adopt a session descriptor as the new baseline.
+
+    The descriptor carries no turn answer, so this deliberately leaves
+    ``server_turn``/``turn_open`` alone: an answerless snapshot is not evidence
+    that nothing is running.
+    """
+    opened = snapshot.data
+    metadata = opened.metadata
+    state.session_id = opened.key.session_id
+    state.thread_id = opened.key.thread_id
+    state.thread = None
+    state.title = metadata.title
+    state.runtime_selection = metadata.runtime_selection
+    state.status_slots = dict(opened.status_slots)
+    state.usage = opened.usage
+    state.queue = tuple(opened.pending_inputs)
+    # Unanswered prompts arrive as ``pending_interactions``; the transport
+    # replays each one as an ``InteractionOpened`` event so a reconnecting
+    # client rebuilds the dialog through the same path as a live one.
+    state.pending_submissions.clear()
+    _rebuild_from_items(state, opened.history.items)
+    state.older = _older_from_cursor(opened.history.older_cursor)
+
+
+def _rebuild_from_items(
+    state: SessionState,
+    items: tuple[ConversationRecord, ...],
+) -> None:
+    """Replace the timeline with a server-authored baseline.
+
+    A snapshot or an explicit history rewrite is a fresh start, not a window
+    move: entries the client had are superseded, and any open stream target is
+    dropped so a later delta cannot be appended into a stale entry.
+    """
+    state.timeline = Timeline()
+    state.stream_entry_id = None
+    tool_args = _tool_args_in(items)
+    for item in items:
+        entry = _entry_from_history_item(state, item, tool_args=tool_args)
+        if entry is not None:
+            state.timeline.upsert(entry)
+
+
+def _rebuild_display_items(state: SessionState, items) -> None:
+    state.timeline = Timeline()
+    state.stream_entry_id = None
+    for item in items:
+        fields = item.fields
+        if item.kind == "human_input":
+            body = fields["content"]
+            entry = UserEntry(id=item.id, content=body.preview, delivery=Delivery.ACCEPTED, body_ref=body, media=item.media, artifacts=item.artifacts)
+        elif item.kind == "assistant":
+            body, reasoning = fields["content"], fields["reasoning"]
+            entry = AssistantEntry(id=item.id, content=body.preview, reasoning=reasoning.preview, body_ref=body, reasoning_ref=reasoning)
+        elif item.kind == "tool":
+            args, result = fields["args"], fields["result"]
+            entry = ToolEntry(id=item.id, name=item.tool_name, call_id=item.call_id, status={"succeeded": "success", "failed": "error"}.get(item.outcome, item.outcome), result=result.preview, args_ref=args, result_ref=result, artifacts=item.artifacts, media=item.media, finished_at=item.duration_ms / 1000)
+        elif item.kind == "runtime_notice":
+            entry = NoticeEntry(id=item.id, notice_kind="context", text=f"Context · {item.source} · {item.event}", detail=fields["content"].preview, body_ref=fields["content"], media=item.media, artifacts=item.artifacts)
+        else:
+            entry = NoticeEntry(id=item.id, notice_kind="compaction", text=fields["summary"].preview, body_ref=fields["summary"], body_field="summary")
+        state.timeline.upsert(entry)
+
+
+def _older_from_cursor(cursor: Cursor | None) -> OlderHistory:
+    """What a server cursor means about the conversation before the window.
+
+    A cursor names the page before the oldest entry held; the server sends none
+    exactly when that entry is the beginning of the conversation.
+    """
+    if cursor is None:
+        return HistoryComplete()
+    return HistoryAvailable(cursor=cursor)
+
+
+def _context_notice(item: RuntimeNoticeRecord) -> NoticeEntry:
+    return NoticeEntry(
+        id=item.id,
+        notice_kind="context",
+        text=f"Context · {item.source} · {item.event}",
+        detail=item.content[:512],
+        body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+        media=item.media, artifacts=item.artifacts,
+    )
+
+
+def _entry_from_history_item(
+    state: SessionState,
+    item: ConversationRecord,
+    *,
+    tool_args: Mapping[str, Mapping[str, object]] | None = None,
+) -> Entry | None:
+    """One replayed item as the entry it names.
+
+    ``item.id`` is the identity of the transcript node the record sits on, so a
+    page the client loads later names the same message the same way and upserts
+    the entry it already holds.
+    """
+    entry_id = item.id
+    if isinstance(item, RuntimeNoticeRecord):
+        return _context_notice(item)
+    if isinstance(item, HumanInputRecord):
+        return UserEntry(
+            id=entry_id,
+            content=item.content[:512],
+            delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+            media=item.media, artifacts=item.artifacts,
+        )
+    if isinstance(item, AssistantRecord):
+        return AssistantEntry(
+            id=entry_id,
+            content=item.content[:512],
+            reasoning=item.reasoning[:512],
+            body_ref=DisplayBody(preview=item.content[:512], length=len(item.content)),
+            reasoning_ref=DisplayBody(preview=item.reasoning[:512], length=len(item.reasoning)),
+        )
+    if isinstance(item, CompactionSummaryRecord):
+        return NoticeEntry(
+            id=entry_id,
+            notice_kind="compaction",
+            text=item.summary[:512],
+            body_ref=DisplayBody(preview=item.summary[:512], length=len(item.summary)),
+            body_field="summary",
+        )
+    if isinstance(item, ToolRecord):
+        outcome = item.outcome
+        result = ""
+        if isinstance(outcome, (ToolSucceeded, ToolFailed)):
+            result = "".join(
+                part.text for part in outcome.output.parts
+                if isinstance(part, TextPart)
+            )
+        args = (tool_args or {}).get(str(item.call.id))
+        args_ref = _args_preview(args)
+        return ToolEntry(
+            id=entry_id,
+            name=item.call.name,
+            call_id=str(item.call.id),
+            args=dict(args) if args is not None and args_ref.length <= 512 else {},
+            args_ref=args_ref,
+            artifacts=outcome.output.artifacts if isinstance(outcome, (ToolSucceeded, ToolFailed)) else (),
+            result_ref=DisplayBody(preview=result[:512], length=len(result)),
+            status={"succeeded": "success", "failed": "error"}.get(
+                outcome.kind, outcome.kind
+            ),
+            result=result[:512],
+        )
+    raise TypeError(f"Unsupported conversation record: {type(item).__name__}")
+
+
+def _args_preview(args):
+    if args is None:
+        return DisplayBody(preview="", length=1)
+    text = json.dumps(args, ensure_ascii=False, indent=2)
+    return DisplayBody(preview=text[:512], length=len(text))
+
+
+def _tool_args_in(
+    items: tuple[ConversationRecord, ...],
+) -> dict[str, Mapping[str, object]]:
+    """Index canonical assistant tool calls for the ToolRecord refs in a page."""
+    return {
+        str(call.id): call.args
+        for item in items
+        if isinstance(item, AssistantRecord)
+        for call in item.tool_calls
+    }
+
+
+# --- interactions ---------------------------------------------------------
+
+
+def _request_id(request: InteractionRequest) -> str:
+    return str(request.interaction_id)
+
+
+def _interaction_entry_id(request: InteractionRequest) -> str:
+    return f"interaction:{request.interaction_id}"
+
+
+def _interaction_kind(request: InteractionRequest) -> str:
+    if isinstance(request, PermissionRequest):
+        return "permission"
+    if isinstance(request, UserInputRequest):
+        return "user_input"
+    raise TypeError(f"Unsupported interaction request: {request!r}")
+
+
+def _interaction_text(
+    request: InteractionRequest,
+    resolution: InteractionResolved | None = None,
+) -> str:
+    lines = [f"ID: {request.interaction_id}"]
+    if isinstance(request, PermissionRequest):
+        if isinstance(request.subject, ToolPermission):
+            subject = request.subject.tool_call.name
+        elif isinstance(request.subject, NamedPermission):
+            subject = request.subject.tool
+        else:  # pragma: no cover - PermissionSubject is closed
+            raise TypeError(f"Unsupported permission subject: {request.subject!r}")
+        lines.append(f"{subject}: {request.reason}")
+    elif isinstance(request, UserInputRequest):
+        lines.append(request.question)
+        lines.extend(
+            f"{index}. {option.label} — {option.description}"
+            for index, option in enumerate(request.options, start=1)
+        )
+    else:
+        raise TypeError(f"Unsupported interaction request: {request!r}")
+    if resolution is not None:
+        payload = resolution.payload
+        if isinstance(payload, PermissionResponseRecorded):
+            result_kind = payload.approval.kind
+        elif isinstance(payload, UserInputRecorded):
+            result_kind = payload.resolution.kind
+        else:  # pragma: no cover - InteractionResolved is closed
+            raise TypeError(f"Unsupported interaction resolution: {payload!r}")
+        lines.append(f"→ {result_kind}")
+    return "\n".join(lines)
+
+
+def _refresh_interaction_facts(state: SessionState) -> None:
+    """Derive the blocking-prompt fact from the prompts still unanswered."""
+    kinds = {_interaction_kind(request) for request in state.pending_interactions.values()}
+    if "permission" in kinds:
+        interaction = Interaction.PERMISSION
+    elif "user_input" in kinds:
+        interaction = Interaction.USER_INPUT
+    else:
+        interaction = Interaction.NONE
+    state.facts = replace(state.facts, interaction=interaction)
+
+
+__all__ = ["SessionState", "reduce"]

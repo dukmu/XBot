@@ -1,2 +1,1 @@
-"""Terminal UI clients."""
-
+"""Terminal UI plugin."""

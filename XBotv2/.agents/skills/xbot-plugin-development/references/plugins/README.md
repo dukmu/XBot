@@ -12,8 +12,12 @@ Each page describes one XBot built-in plugin using a consistent format:
 - **cross-references** — depends-on / depended-by;
 - **pitfalls** — real-world mistakes observed in development.
 
-These are quick references, not a replacement for the package's public
-`__init__.py`, protocol models, or tests.
+These are navigation references. Migrated plugins own their documentation in
+`doc/` and public contracts in `api/`; their package roots have no exports.
+Follow each plugin's README for its current source and focused tests.
+
+For Textual/client behavior, dynamic commands, streaming, and typed client
+interactions, see the [client/runtime reference](../client-runtime.md).
 
 ## Plugin packages
 
@@ -43,7 +47,18 @@ These are quick references, not a replacement for the package's public
 | `browser` | [browser.md](browser.md) |
 | `token_manager` (name `token_manager`) | [token-manager.md](token-manager.md) |
 | `workspace_instructions` (name `workspace_instructions`) | [workspace-instructions.md](workspace-instructions.md) |
+| `caption` | [caption.md](caption.md) |
 | `interactions` | [interactions.md](interactions.md) |
+
+## Client-profile plugin packages
+
+These entries belong to the `client` carrier profile (`load_client_tree`), the
+local client-plugin composition. They are not Agent, server, or ACP plugins.
+
+| Plugin | Page |
+|---|---|
+| `client_transport` | [client-transport.md](client-transport.md) |
+| `tui` (Textual terminal client) | [client-runtime.md](../client-runtime.md) |
 
 ## Carrier-only plugin packages
 

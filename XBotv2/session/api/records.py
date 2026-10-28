@@ -1,0 +1,169 @@
+"""Transport-neutral projections of canonical conversation messages.
+
+The application/session boundary exposes these records to history readers and
+live event producers.  They are projections only: mutation and model-context
+construction continue to use :mod:`XBotv2.core.messages`.
+"""
+
+from __future__ import annotations
+
+from typing import Literal, TypeAlias
+from pydantic import BaseModel, ConfigDict, RootModel
+from XBotv2.core.api.artifacts import ArtifactRef
+from XBotv2.core.api.messages import (
+    AssistantMessage,
+    CompactionSummaryMessage,
+    ConversationMessage,
+    HumanInputMessage,
+    RuntimeNoticeMessage,
+    ToolMessage,
+)
+from XBotv2.core.api.domain import ModelStop, ModelTiming, ToolTiming
+from XBotv2.core.api.parts import MediaPart, ReasoningPart, TextPart
+from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolOutcome
+
+
+class HumanInputRecord(BaseModel):
+    kind: Literal["human_input"] = "human_input"
+    id: str
+    content: str
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class RuntimeNoticeRecord(BaseModel):
+    kind: Literal["runtime_notice"] = "runtime_notice"
+    id: str
+    source: str
+    event: str
+    content: str
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class AssistantRecord(BaseModel):
+    kind: Literal["assistant"] = "assistant"
+    id: str
+    content: str
+    reasoning: str = ""
+    tool_calls: tuple[ToolCall, ...] = ()
+    timing: ModelTiming
+    stop: ModelStop
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolRecord(BaseModel):
+    kind: Literal["tool"] = "tool"
+    id: str
+    call: ToolCallRef
+    outcome: ToolOutcome
+    timing: ToolTiming
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CompactionSummaryRecord(BaseModel):
+    kind: Literal["compaction_summary"] = "compaction_summary"
+    id: str
+    summary: str
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ConversationRecord: TypeAlias = (
+    HumanInputRecord
+    | RuntimeNoticeRecord
+    | AssistantRecord
+    | ToolRecord
+    | CompactionSummaryRecord
+)
+
+
+class InputRecordPayload(RootModel[HumanInputRecord | RuntimeNoticeRecord]):
+    """Wire envelope for the two canonical input-record variants."""
+
+
+
+def _text(parts: tuple[object, ...]) -> str:
+    return "".join(part.text for part in parts if isinstance(part, TextPart))
+
+
+def project_human_input(message: HumanInputMessage) -> HumanInputRecord:
+    """Project the canonical human input used by history and live events."""
+    media = tuple(part.artifact for part in message.parts if isinstance(part, MediaPart))
+    return HumanInputRecord(
+        id=str(message.id),
+        content=_text(message.parts),
+        media=media,
+        artifacts=message.artifacts,
+    )
+
+
+def project_message(message: ConversationMessage) -> ConversationRecord:
+    """Project one canonical message without creating a second message model."""
+    if isinstance(message, HumanInputMessage):
+        return project_human_input(message)
+    if isinstance(message, RuntimeNoticeMessage):
+        media = tuple(part.artifact for part in message.parts if isinstance(part, MediaPart))
+        return RuntimeNoticeRecord(
+            id=str(message.id), source=message.source, event=message.event,
+            content=_text(message.parts), media=media, artifacts=message.artifacts,
+        )
+    if isinstance(message, AssistantMessage):
+        return AssistantRecord(
+            id=str(message.id),
+            content=_text(message.parts),
+            reasoning="".join(part.text for part in message.parts if isinstance(part, ReasoningPart)),
+            tool_calls=tuple(part for part in message.parts if isinstance(part, ToolCall)),
+            timing=message.exchange.timing,
+            stop=message.exchange.stop,
+        )
+    if isinstance(message, ToolMessage):
+        return ToolRecord(
+            id=str(message.id), call=message.call, outcome=message.outcome,
+            timing=message.timing,
+        )
+    if isinstance(message, CompactionSummaryMessage):
+        return CompactionSummaryRecord(id=str(message.id), summary=message.summary)
+    raise TypeError(f"Unsupported conversation message: {type(message).__name__}")
+
+
+
+def conversation_replay(messages):
+    return tuple(project_message(message) for message in messages)
+
+
+
+class DisplayBody(BaseModel):
+    """A bounded preview of one field, backed by its canonical message."""
+
+    preview: str
+    length: int
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class DisplayRecord(BaseModel):
+    """Presentation metadata and previews; not a complete ConversationRecord."""
+
+    kind: Literal["human_input", "runtime_notice", "assistant", "tool", "compaction_summary"]
+    id: str
+    fields: dict[str, DisplayBody]
+    source: str = ""
+    event: str = ""
+    media: tuple[ArtifactRef, ...] = ()
+    artifacts: tuple[ArtifactRef, ...] = ()
+    tool_name: str = ""
+    call_id: str = ""
+    outcome: str = ""
+    duration_ms: float = 0
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class DisplayBodyPage(BaseModel):
+    """One character range of a canonical display field."""
+
+    content: str
+    offset: int
+    total: int
+    next_offset: int | None
+    model_config = ConfigDict(extra="forbid", frozen=True)

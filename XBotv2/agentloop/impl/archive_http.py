@@ -1,0 +1,113 @@
+"""HTTP history and referenced artifacts owned by Agentloop."""
+
+from __future__ import annotations
+from XBotv2.session.api.records import conversation_replay
+from urllib.parse import quote
+from fastapi import APIRouter, Query
+from fastapi.responses import Response, StreamingResponse
+from contextlib import aclosing
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.history import HistoryPage, TrajectoryRead
+from XBotv2.session.api.records import ConversationRecord, DisplayBodyPage, DisplayRecord
+
+
+class ArtifactResponse(StreamingResponse):
+    async def stream_response(self, send):
+        # Starlette does not close arbitrary async iterators when send fails.
+        # Release the persistence lifetime even when cancellation occurs while
+        # a slow client is receiving the last yielded chunk.
+        async with aclosing(self.body_iterator):
+            await super().stream_response(send)
+
+
+def build_router(*, sessions, archive):
+    router = APIRouter()
+
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/messages",
+        operation_id="list_messages",
+    )
+    async def list_messages_endpoint(
+        session_id: str,
+        thread_id: str,
+        cursor: str | None = None,
+        limit: int | None = Query(default=None, ge=1, le=500),
+        before_id: str | None = None,
+        after_id: str | None = None,
+    ) -> HistoryPage[ConversationRecord]:
+        await sessions.thread_summary(session_id, thread_id)
+        page = await archive.message_page(
+            session_id,
+            thread_id,
+            cursor=Cursor(cursor) if cursor is not None else None,
+            limit=limit,
+            before_id=before_id,
+            after_id=after_id,
+        )
+        return HistoryPage(
+            items=conversation_replay(page.items),
+            older_cursor=page.older_cursor,
+            newer_cursor=page.newer_cursor,
+        )
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/display-messages")
+    async def display_messages_endpoint(
+        session_id: str, thread_id: str, cursor: str | None = None,
+        limit: int = Query(default=50, ge=1, le=500),
+        before_id: str | None = None, after_id: str | None = None,
+    ) -> HistoryPage[DisplayRecord]:
+        await sessions.thread_summary(session_id, thread_id)
+        return await archive.display_page(session_id, thread_id, cursor=cursor, limit=limit, before_id=before_id, after_id=after_id)
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/display-messages/{message_id}/body")
+    async def display_body_endpoint(
+        session_id: str, thread_id: str, message_id: str, field: str,
+        offset: int = Query(default=0, ge=0), limit: int = Query(default=4096, ge=1, le=16384),
+    ) -> DisplayBodyPage:
+        await sessions.thread_summary(session_id, thread_id)
+        return await archive.display_body(session_id, thread_id, message_id, field=field, offset=offset, limit=limit)
+
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/trajectory",
+        operation_id="list_trajectory",
+    )
+    async def list_trajectory_endpoint(
+        session_id: str,
+        thread_id: str,
+        cursor: str | None = None,
+        before: int | None = Query(default=None, ge=1),
+        limit: int = Query(default=160, ge=1, le=500),
+    ) -> TrajectoryRead:
+        await sessions.thread_summary(session_id, thread_id)
+        page = await archive.trajectory_page(
+            session_id,
+            thread_id,
+            cursor=Cursor(cursor) if cursor is not None else None,
+            limit=limit,
+            before=before,
+        )
+        return page
+
+    @router.get(
+        "/sessions/{session_id}/threads/{thread_id}/artifacts/{artifact_id:path}",
+        operation_id="get_artifact",
+    )
+    async def get_artifact_endpoint(
+        session_id: str,
+        thread_id: str,
+        artifact_id: str,
+    ) -> Response:
+        await sessions.thread_summary(session_id, thread_id)
+        artifact = await archive.artifact(session_id, thread_id, artifact_id)
+        headers = {"Content-Length": str(artifact.size)}
+        if artifact.name:
+            headers["Content-Disposition"] = (
+                "inline; filename*=UTF-8''" + quote(artifact.name)
+            )
+        return ArtifactResponse(
+            content=artifact.content,
+            media_type=artifact.media_type,
+            headers=headers,
+        )
+
+    return router

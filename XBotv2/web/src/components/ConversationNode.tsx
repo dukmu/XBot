@@ -10,12 +10,19 @@ export function ConversationNode({
   turnRunning,
   onRegenerate,
   onBranch,
+  selectedToolId,
+  onSelectTool,
+  skillTools,
 }: {
   entry: TimelineEntry;
   latestAssistantId: string;
   turnRunning: boolean;
   onRegenerate: () => Promise<void>;
   onBranch: () => Promise<void>;
+  selectedToolId?: string;
+  onSelectTool?: (tool: TimelineEntry) => void;
+  /** Skill tool names from the catalog: those rows use the ported skill view. */
+  skillTools?: readonly string[];
 }) {
   if (entry.kind === "message") {
     const assistant = entry.role === "assistant";
@@ -30,7 +37,16 @@ export function ConversationNode({
       />
     );
   }
-  if (entry.kind === "tool") return <ToolCall tool={entry} />;
+  if (entry.kind === "tool") {
+    return (
+      <ToolCall
+        tool={entry}
+        selected={selectedToolId === entry.toolCallId}
+        onSelect={(tool) => onSelectTool?.(tool)}
+        skill={skillTools?.includes(entry.name) ?? false}
+      />
+    );
+  }
   if (entry.kind === "runtime") return <ContextInjectionRow entry={entry} />;
   return (
     <div className={`notice-row ${entry.level}`} role="status">

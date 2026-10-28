@@ -1,0 +1,268 @@
+"""Picking one thing from a list: sessions, threads, or a command.
+
+The list state is pure, so navigation and filtering are tested without a screen.
+The screen only renders it and reports the chosen value.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, replace
+from typing import Callable, Sequence
+
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.containers import VerticalScroll
+from textual.events import Key, Resize
+from textual.widget import Widget
+from textual.widgets import Input, Static
+
+MAX_ROWS = 12
+
+SELECTION_CSS = """
+SelectionPanel {
+    width: 100%;
+    height: auto;
+    max-height: 100%;
+}
+#selection {
+    width: 100%;
+    height: auto;
+    max-height: 100%;
+    padding: 0 1;
+}
+#selection-title {
+    height: 1;
+    text-style: bold;
+}
+#selection-description {
+    height: auto;
+    color: $text-muted;
+    margin-bottom: 1;
+}
+#selection-list {
+    height: auto;
+    max-height: 12;
+}
+.selection-row {
+    height: 1;
+    width: 1fr;
+}
+.selection-row.selected {
+    color: $accent;
+    text-style: bold;
+}
+#selection-hint {
+    height: 1;
+    color: $text-muted;
+    margin-top: 1;
+}
+"""
+
+
+@dataclass(frozen=True)
+class Option:
+    """One choosable thing."""
+
+    value: str
+    label: str
+    detail: str = ""
+
+
+@dataclass(frozen=True)
+class SelectionModel:
+    """Which option is highlighted."""
+
+    options: tuple[Option, ...] = ()
+    index: int = 0
+
+    @property
+    def current(self) -> Option | None:
+        if not self.options:
+            return None
+        return self.options[self.index]
+
+    @property
+    def rows(self) -> tuple[str, ...]:
+        return tuple(
+            ("▸ " if position == self.index else "  ")
+            + (f"{option.label}  {option.detail}" if option.detail else option.label)
+            for position, option in enumerate(self.options)
+        )
+
+    def move(self, delta: int) -> "SelectionModel":
+        """Move the highlight, wrapping at either end."""
+        if not self.options:
+            return self
+        return replace(self, index=(self.index + delta) % len(self.options))
+
+    def with_options(self, options: Sequence[Option]) -> "SelectionModel":
+        """Replace the list, highlighting its best row.
+
+        ``options`` arrives ranked best-first -- the registry puts a name prefix
+        above a mere mention -- so a new query highlights the best match, which
+        is what a palette is expected to do.
+
+        It used to hold the previous highlight while that value survived
+        *anywhere* in the list and otherwise keep its row index. Typing "sta"
+        therefore kept ``/help`` highlighted (its description contains an "s"),
+        and when it no longer survived the same index clamped onto ``/model``,
+        which Enter then chose: a command the user had never looked at.
+        """
+        replacements = tuple(options)
+        if not replacements:
+            return SelectionModel(options=(), index=0)
+        return SelectionModel(options=replacements, index=0)
+
+
+class SelectionPanel(Widget):
+    """An inline list reporting a choice to its owner."""
+
+    can_focus = True
+
+    DEFAULT_CSS = SELECTION_CSS
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    def __init__(
+        self,
+        title: str,
+        options: Sequence[Option],
+        *,
+        search: Callable[[str], Sequence[Option]] | None = None,
+        placeholder: str = "",
+        description: str = "",
+        hint: str = "",
+        compact: bool = False,
+        cancel_value: str | None = None,
+        initial_value: str | None = None,
+    ) -> None:
+        super().__init__()
+        self.on_result: Callable[[str | None], None] | None = None
+        self.title_text = title
+        choices = tuple(options)
+        initial_index = next(
+            (
+                index
+                for index, option in enumerate(choices)
+                if option.value == initial_value
+            ),
+            0,
+        )
+        self.model = SelectionModel(options=choices, index=initial_index)
+        self.search = search
+        self.placeholder = placeholder
+        self.description_text = description
+        self.hint_text = hint
+        self.compact = compact
+        self.cancel_value = cancel_value
+        self._rows: list[Static] = []
+        self._window_start = 0
+        self._query = ""
+
+    def compose(self) -> ComposeResult:
+        with VerticalScroll(id="selection", classes="compact" if self.compact else ""):
+            yield Static(self.title_text, id="selection-title")
+            if self.description_text:
+                yield Static(self.description_text, id="selection-description")
+            if self.search is not None:
+                yield Input(
+                    placeholder=self.placeholder or "type to filter",
+                    id="selection-input",
+                )
+            with VerticalScroll(id="selection-list"):
+                for _ in range(min(len(self.model.options), MAX_ROWS)):
+                    yield Static("", classes="selection-row")
+            if self.hint_text:
+                yield Static(self.hint_text, id="selection-hint")
+
+    def on_mount(self) -> None:
+        self._rows = [node for node in self.query(".selection-row")]
+        self._render_options()
+        if self.search is not None:
+            self.query_one("#selection-input", Input).focus()
+        else:
+            self.focus()
+
+    def on_resize(self, _event: Resize) -> None:
+        if self._rows:
+            self.call_after_refresh(self._render_options)
+
+    # --- input --------------------------------------------------------
+
+    def on_key(self, event: Key) -> None:
+        if event.key == "up":
+            event.stop()
+            self.model = self.model.move(-1)
+            self._render_options()
+        elif event.key == "down":
+            event.stop()
+            self.model = self.model.move(1)
+            self._render_options()
+        elif event.key == "enter" and self.search is None:
+            event.stop()
+            self._choose()
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if self.search is None:
+            return
+        if event.value == self._query:
+            return
+        self._query = event.value
+        self.model = self.model.with_options(self.search(event.value))
+        self._render_options()
+
+    def on_input_submitted(self, _event: Input.Submitted) -> None:
+        if self.search is not None:
+            self._choose()
+
+    def action_cancel(self) -> None:
+        self._finish(self.cancel_value)
+
+    # --- rendering ----------------------------------------------------
+
+    def _choose(self) -> None:
+        current = self.model.current
+        self._finish(current.value if current is not None else None)
+
+    def _finish(self, value: str | None) -> None:
+        if self.on_result is not None:
+            self.on_result(value)
+
+    def _render_options(self) -> None:
+        if self.model.index < self._window_start:
+            self._window_start = self.model.index
+        elif self.model.index >= self._window_start + MAX_ROWS:
+            self._window_start = self.model.index - MAX_ROWS + 1
+        maximum_start = max(0, len(self.model.options) - MAX_ROWS)
+        self._window_start = min(self._window_start, maximum_start)
+        visible = self.model.rows[
+            self._window_start : self._window_start + MAX_ROWS
+        ]
+        for position, row in enumerate(self._rows):
+            if position >= len(visible):
+                row.display = False
+                continue
+            row.display = True
+            row.set_class(
+                self._window_start + position == self.model.index,
+                "selected",
+            )
+            rendered = Text(visible[position])
+            width = row.content_size.width
+            if width:
+                rendered.truncate(width, overflow="ellipsis")
+            row.update(rendered)
+        if visible:
+            selected = self._rows[self.model.index - self._window_start]
+            self.call_after_refresh(selected.scroll_visible, animate=False)
+
+    @property
+    def rendered_rows(self) -> tuple[str, ...]:
+        """The rows currently on screen, for tests and for inspection."""
+        return tuple(
+            str(row.content)
+            for row in self._rows
+            if row.display
+        )
+
+
+__all__ = ["MAX_ROWS", "SELECTION_CSS", "Option", "SelectionModel", "SelectionPanel"]

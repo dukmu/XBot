@@ -8,24 +8,23 @@ objects as ``execute_tools`` parameters.
 
 from __future__ import annotations
 
+from XBotv2.agentloop.api.contracts import TOOLS
 from typing import Any
-
 import xcore
-
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_service import ToolsService
-from XBotv2.core.tools import ClientEvent
-from XBotv2.permissions import ApprovalDecision
+from XBotv2.agentloop.impl.tool_registry import ToolRegistry
+from XBotv2.agentloop.impl.tool_service import ToolsService
+from XBotv2.permissions.api.models import Denied
+from XBotv2.permissions.api.models import Approval, PermissionRequest
 
 
 class _UnavailableApproval:
-    async def request(self, _event: ClientEvent) -> ApprovalDecision:
-        return ApprovalDecision(decision="deny")
+    async def request(self, _event: PermissionRequest) -> Approval:
+        return Denied(reason="approval unavailable")
 
 
 async def _ignore_permission_decision(
-    _event: ClientEvent, decision: ApprovalDecision
-) -> ApprovalDecision:
+    _event: PermissionRequest, decision: Approval
+) -> Approval:
     return decision
 
 
@@ -38,7 +37,7 @@ def make_tool_ctx(
     interactions: Any = None,
     extra_guards: tuple[Any, ...] = (),
     base: Any = None,
-) -> xcore.Context:
+) -> xcore.api.context.Context:
     """Build an XCore context with the tool pipeline services registered.
 
     Guards are registered in the order a plugin tree would compose them:
@@ -47,13 +46,15 @@ def make_tool_ctx(
     without it ``ask`` fails closed).  Pass ``base`` to register onto an
     existing context (e.g. one carrying event listeners).
     """
-    ctx = base or xcore.Context()
-    tools_service = ctx.get("tools", strict=False)
+    ctx = base or xcore.api.context.Context()
+    tools_service = ctx.get(TOOLS, strict=False)
     if tools_service is None:
-        tools_service = ToolsService(registry, events=ctx)
-        ctx.set("tools", tools_service)
+        # The harness composes and owns this context, so registrations made
+        # outside a plugin apply are caller-owned here.
+        tools_service = ToolsService(registry, events=ctx, ownership="caller")
+        ctx.provide(TOOLS, tools_service)
     if permissions is not None:
-        from XBotv2.permissions.guard import PermissionGuard
+        from XBotv2.permissions.impl.guard import PermissionGuard
 
         if ctx.get("permissions", strict=False) is None:
             ctx.set("permissions", permissions)
@@ -63,128 +64,15 @@ def make_tool_ctx(
             ctx.emit,
             _ignore_permission_decision,
         )
-        tools_service.guard(guard.check)
+        tools_service.guard(guard.check, approval=True, cleanup="caller")
     if sandbox is not None:
         if ctx.get("sandbox", strict=False) is None:
             ctx.set("sandbox", sandbox)
-        tools_service.guard(sandbox.make_guard())
+        tools_service.guard(sandbox.make_guard(), cleanup="caller")
     for guard in extra_guards:
-        tools_service.guard(guard)
+        tools_service.guard(guard, cleanup="caller")
     if approval is not None:
         ctx.set("approval", approval)
     if interactions is not None:
         ctx.set("interactions", interactions)
     return ctx
-
-
-def make_engine(
-    *,
-    llm,
-    tool_registry,
-    plugin_ctx,
-    state_store,
-    sandbox_policy=None,
-    permission_system=None,
-    config=None,
-    context_builder=None,
-):
-    """Build the current Engine from the pre-refactor test composition.
-
-    The concrete loop driver now receives only provider-neutral core ports:
-    a model client, a tool service, an event port, loop state, and settings.
-    This helper maps the old test inputs (LLM, registry, hook context, store,
-    policy objects, runtime config) onto those ports the way application
-    composition does.
-    """
-    from XBotv2.agentloop.engine import Engine
-    from XBotv2.config.contracts import RuntimeConfig
-    from XBotv2.agentloop import LoopSettings, LoopState
-    from XBotv2.core.history import ConversationHistory
-    from XBotv2.session import SessionInfo
-    from XBotv2.permissions.system import PermissionSystem
-    from XBotv2.sandbox.policy import SandboxPolicy
-
-    if sandbox_policy is None:
-        sandbox_policy = SandboxPolicy(
-            enabled=False,
-            workspace_root=str(state_store.workspace_root),
-        )
-    if permission_system is None:
-        permission_system = PermissionSystem(default_decision="allow")
-    events = make_tool_ctx(
-        tool_registry,
-        sandbox=sandbox_policy,
-        permissions=permission_system,
-        base=plugin_ctx,
-    )
-    runtime_config = config or RuntimeConfig()
-    state = LoopState(
-        session=SessionInfo(
-            session_id=state_store.session_id,
-            thread_id=state_store.thread_id,
-            workspace_root=str(state_store.workspace_root),
-            provider="default",
-        ),
-    )
-    state.set_history(ConversationHistory(
-        sink=state_store.history,
-        nodes=state_store.history.load_surface(),
-    ))
-    settings = LoopSettings(
-        provider="default",
-        model="mock",
-        context_window=runtime_config.max_context_tokens,
-        max_output_tokens=runtime_config.max_output_tokens or 0,
-        agent_name=runtime_config.agent_name,
-        agent_role=runtime_config.agent_role,
-        developer_instructions=runtime_config.instructions,
-        agent_instructions=runtime_config.agent_instructions,
-        memory=runtime_config.memory,
-        workspace=str(state_store.workspace_root),
-    )
-    from XBotv2.context_builder import (
-        BUILD_CONTEXT,
-        CONTEXT_COMPONENTS_BUILT,
-        ContextBuildRequest,
-        ContextComponentsBuilt,
-    )
-    from XBotv2.context_builder.builder import ContextBuilder
-
-    builder = ContextBuilder()
-
-    async def _build_context(event: ContextBuildRequest) -> None:
-        components = builder.build_components(
-            messages=event.messages,
-            agent_name=event.agent_name,
-            agent_role=event.agent_role,
-            user_name=event.user_name,
-            user_id=event.user_id,
-            developer_instructions=event.developer_instructions,
-            instructions=event.instructions,
-            memory=event.memory,
-            sandbox_summary=event.sandbox_summary,
-            runtime_paths=event.runtime_paths,
-            system_notice=event.system_notice,
-            turn_count=event.turn_count,
-            active_subagents=event.active_subagents,
-        )
-        component_event = ContextComponentsBuilt(
-            components=components,
-            session=event.session,
-        )
-        await events.emit(
-            CONTEXT_COMPONENTS_BUILT,
-            component_event,
-        )
-        event.context_messages = builder.messages_from_components(
-            component_event.components
-        )
-
-    events.on(BUILD_CONTEXT, _build_context)
-    return Engine(
-        model_client=llm,
-        tools=events.tools,
-        events=events,
-        state=state,
-        settings=settings,
-    )

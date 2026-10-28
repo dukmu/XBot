@@ -33,8 +33,9 @@ ns = state.namespace("goal")          # 命名空间视图（键前缀 "goal."�
 
 ## 并发与命名空间
 
-- 同一文件的全部视图（含所有 `namespace()`）**共享内存缓存与 `asyncio.Lock`**：
+- 同一服务的全部视图（含所有 `namespace()`）**共享内存缓存与 `asyncio.Lock`**：
   `set`/`delete` 持锁做 read-modify-write —— 多插件并发写互不丢键。
+- 独立 StateService 实例不共享锁和缓存；同一文件的 writer 所有权由宿主保证。
 - `namespace(prefix)`：键实际存储为 `"prefix.<key>"`；per-plugin 隔离（迁移层将
   XBotv2 `PluginStore` 映射为 `ctx.state.namespace(plugin_name)`）。
 - `ctx.state` 注册为 root 服务 `"state"`：插件可以 `inject: ["state"]`，也可
@@ -44,3 +45,6 @@ ns = state.namespace("goal")          # 命名空间视图（键前缀 "goal."�
 
 `Context(data_dir=...)` → `ctx.state` 落在 `data_dir/state.json`。生产环境必须显式
 传入 `data_dir`（缺省为当前目录）。
+
+文件是当前 KV 值的单个 JSON 对象，不是操作日志。会话 trace 的 append-only
+要求不属于这个服务；插件也不应将无限增长的会话历史塞入一个状态值。

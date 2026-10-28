@@ -2,78 +2,54 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import AsyncGenerator, Mapping
 from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
-
 import httpx
-from pydantic import JsonValue
+from pydantic import JsonValue, TypeAdapter
+from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
+from XBotv2.agentloop.api.protocol import ToolListResponse
+from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
+from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
+from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
+from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
+from XBotv2.llm.api.contracts import ProviderCatalog
+from XBotv2.permissions.api.protocol import PermissionResponseRequest
+from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
+from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, MediaInput
+from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
+from XBotv2.session.api.protocol import CloseResponse, DeleteSessionResponse, ForkResponse, InterruptResponse, MessageRequest, OpenSessionRequest, OpenSessionResponse, OpenThreadRequest, PendingInputListResponse, PendingInputUpdateRequest, RegenerateRequest, SessionListResponse, ThreadListResponse, UndoRequest
+from XBotv2.commands.api.protocol import CommandListResponse, CommandRequest, CommandResponse
+from XBotv2.workspaces.api.protocol import WorkspaceListResponse, WorkspaceSessionPageResponse
+from XBotv2.protocol.api.sse import SseDecoder, decode_server_event
+from XBotv2.protocol.api.version import PROTOCOL_VERSION
+from XBotv2.core.api.domain import Cursor
+from XBotv2.core.api.history import HistoryPage, TrajectoryRead
+from XBotv2.session.api.records import ConversationRecord, DisplayRecord, DisplayBodyPage
 
-from XBotv2.agents import (
-    AgentListResponse,
-    AgentSelectionRequest,
-    AgentSelectionResponse,
-)
-from XBotv2.agentloop import ToolListResponse
-from XBotv2.config import (
-    PermissionDecision,
-    PatchPluginConfig,
-    PluginConfigCatalog,
-    PluginConfigScope,
-    SandboxKey,
-    SandboxValue,
-    SessionPolicyPatch,
-    SessionPolicyResponse,
-)
-from XBotv2.interactions import (
-    InteractionResponse,
-    UserInputResponseRequest,
-)
-from XBotv2.jobs import TaskListResponse, TaskStopResponse
-from XBotv2.llm import (
-    EffortSelectionRequest,
-    EffortSelectionResponse,
-    ProviderCatalog,
-    ProviderSelectionRequest,
-    ProviderSelectionResponse,
-)
-from XBotv2.permissions import PermissionResponseRequest
-from XBotv2.protocol import (
-    ErrorResponse,
-    HealthResponse,
-    HelloRequest,
-    HelloResponse,
-    ServerEvent,
-    WireModel,
-)
-from XBotv2.session import (
-    AttachmentInput,
-    CloseResponse,
-    DeleteSessionResponse,
-    ForkResponse,
-    HistoryMutationResponse,
-    ImageInput,
-    InterruptResponse,
-    MessageRequest,
-    OpenSessionRequest,
-    OpenSessionResponse,
-    OpenThreadRequest,
-    PendingInputListResponse,
-    PendingInputUpdateRequest,
-    RegenerateRequest,
-    SessionListResponse,
-    SessionMode,
-    SessionSummary,
-    ThreadListResponse,
-    ThreadMessagesResponse,
-    ThreadTrajectoryResponse,
-    ThreadSummary,
-    UndoRequest,
-)
-from XBotv2.protocol.sse import SseDecoder, decode_server_event
-from XBotv2.protocol.version import PROTOCOL_VERSION
+ResponseModel = TypeVar("ResponseModel")
 
-ResponseModel = TypeVar("ResponseModel", bound=WireModel)
+# Hosts that name this machine. A request to one of them cannot need a proxy, and
+# consulting the proxy settings for it is not merely useless: ``httpx`` parses
+# every ``NO_PROXY`` entry as a URL at client construction, so an entry such as
+# ``[::1]`` (its port parses as ``":1]"``) makes the client impossible to build.
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
+
+
+def uses_proxy_environment(base_url: str, *, uds_path: str | None = None) -> bool:
+    """Whether the process proxy settings may apply to this target.
+
+    Local targets -- loopback and Unix sockets -- opt out; anything else keeps
+    httpx's default, so a client behind a corporate proxy still works.
+    """
+    if uds_path is not None:
+        return False
+    try:
+        host = httpx.URL(base_url).host
+    except (httpx.InvalidURL, ValueError):
+        return True
+    return str(host).lower() not in _LOOPBACK_HOSTS
 
 
 class XBotClientError(RuntimeError):
@@ -99,6 +75,7 @@ class XBotClient:
         uds_path: str | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
         headers: Mapping[str, str] | None = None,
+        trust_env: bool | None = None,
     ) -> None:
         if uds_path is not None and transport is not None:
             raise ValueError("uds_path and transport are mutually exclusive")
@@ -111,6 +88,11 @@ class XBotClient:
             headers=request_headers,
             timeout=timeout,
             transport=transport,
+            trust_env=(
+                uses_proxy_environment(base_url, uds_path=uds_path)
+                if trust_env is None
+                else trust_env
+            ),
         )
 
     async def __aenter__(self) -> "XBotClient":
@@ -130,7 +112,7 @@ class XBotClient:
         *,
         client_name: str = "xbotv2-python",
         session_id: str | None = None,
-        thread_id: str = "agent",
+        thread_id: str = "main",
     ) -> HelloResponse:
         return await self._request(
             "POST",
@@ -147,18 +129,49 @@ class XBotClient:
     async def list_providers(self) -> ProviderCatalog:
         return await self._request("GET", "/providers", ProviderCatalog)
 
-    async def list_sessions(self) -> SessionListResponse:
-        return await self._request("GET", "/sessions", SessionListResponse)
+    async def list_sessions(
+        self, *, limit: int = 100, cursor: str | None = None,
+        workspace_root: str | None = None,
+    ) -> SessionListResponse:
+        return await self._request(
+            "GET", "/sessions", SessionListResponse,
+            params={"limit": limit, "cursor": cursor, "workspace_root": workspace_root},
+        )
+
+    async def list_workspaces(
+        self, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceListResponse:
+        return await self._request(
+            "GET", "/workspaces", WorkspaceListResponse,
+            params={"limit": limit, "cursor": cursor},
+        )
+
+    async def list_workspace_sessions(
+        self, workspace_id: str, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        return await self._request(
+            "GET", f"/workspaces/{_segment(workspace_id)}/sessions", WorkspaceSessionPageResponse,
+            params={"limit": limit, "cursor": cursor},
+        )
+
+    async def list_archived_sessions(
+        self, *, limit: int = 100, cursor: str | None = None,
+    ) -> WorkspaceSessionPageResponse:
+        return await self._request(
+            "GET", "/workspaces/archived-sessions", WorkspaceSessionPageResponse,
+            params={"limit": limit, "cursor": cursor},
+        )
 
     async def open_session(
         self,
         *,
         session_id: str | None = None,
-        thread_id: str = "agent",
+        thread_id: str = "main",
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
         history_limit: int | None = None,
+        include_history: bool = True,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -171,6 +184,7 @@ class XBotClient:
                 mode=mode,
                 agent=agent,
                 history_limit=history_limit,
+                include_history=include_history,
             ),
         )
 
@@ -216,7 +230,7 @@ class XBotClient:
     ) -> PluginConfigCatalog:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/plugin-config",
+            f"{thread_path(session_id, thread_id)}/plugin-config",
             PluginConfigCatalog,
             params={"scope": scope},
         )
@@ -230,7 +244,7 @@ class XBotClient:
     ) -> PluginConfigCatalog:
         return await self._request(
             "PATCH",
-            f"{_thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
+            f"{thread_path(session_id, thread_id)}/plugin-config/{_segment(plugin_id)}",
             PluginConfigCatalog,
             patch,
             params={"scope": patch.scope},
@@ -251,9 +265,16 @@ class XBotClient:
             "POST", f"/sessions/{_segment(session_id)}/close", CloseResponse
         )
 
-    async def list_threads(self, session_id: str) -> ThreadListResponse:
+    async def list_threads(
+        self, session_id: str, *, limit: int = 100, cursor: str | None = None,
+        parent_thread_id: str | None = None, kind: Literal["main", "subagent"] | None = None,
+    ) -> ThreadListResponse:
         return await self._request(
-            "GET", f"/sessions/{_segment(session_id)}/threads", ThreadListResponse
+            "GET", f"/sessions/{_segment(session_id)}/threads", ThreadListResponse,
+            params={
+                "limit": limit, "cursor": cursor,
+                "parent_thread_id": parent_thread_id, "kind": kind,
+            },
         )
 
     async def open_thread(
@@ -261,11 +282,12 @@ class XBotClient:
         session_id: str,
         *,
         thread_id: str,
-        parent_thread_id: str = "agent",
+        parent_thread_id: str = "main",
         workspace_root: str | None = None,
         mode: SessionMode = "new",
         agent: str | None = None,
         history_limit: int | None = None,
+        include_history: bool = True,
     ) -> OpenSessionResponse:
         return await self._request(
             "POST",
@@ -278,6 +300,7 @@ class XBotClient:
                 mode=mode,
                 agent=agent,
                 history_limit=history_limit,
+                include_history=include_history,
             ),
         )
 
@@ -285,21 +308,46 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> ThreadSummary:
         return await self._request(
-            "GET", _thread_path(session_id, thread_id), ThreadSummary
+            "GET", thread_path(session_id, thread_id), ThreadSummary
         )
 
     async def close_thread(
         self, session_id: str, thread_id: str
     ) -> CloseResponse:
         return await self._request(
-            "POST", f"{_thread_path(session_id, thread_id)}/close", CloseResponse
+            "POST", f"{thread_path(session_id, thread_id)}/close", CloseResponse
+        )
+
+    async def list_commands(
+        self, session_id: str, thread_id: str
+    ) -> CommandListResponse:
+        """What this thread can run, and what each command touches."""
+        return await self._request(
+            "GET",
+            f"{thread_path(session_id, thread_id)}/commands",
+            CommandListResponse,
+        )
+
+    async def run_command(
+        self,
+        session_id: str,
+        thread_id: str,
+        *,
+        raw: str,
+    ) -> CommandResponse:
+        """Run one server command, given the line exactly as the user typed it."""
+        return await self._request(
+            "POST",
+            f"{thread_path(session_id, thread_id)}/commands",
+            CommandResponse,
+            CommandRequest(raw=raw),
         )
 
     async def list_agents(
         self, session_id: str, thread_id: str
     ) -> AgentListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/agents", AgentListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/agents", AgentListResponse
         )
 
     async def select_agent(
@@ -307,7 +355,7 @@ class XBotClient:
     ) -> AgentSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/agent",
+            f"{thread_path(session_id, thread_id)}/agent",
             AgentSelectionResponse,
             AgentSelectionRequest(name=name),
         )
@@ -317,7 +365,7 @@ class XBotClient:
     ) -> EffortSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/effort",
+            f"{thread_path(session_id, thread_id)}/effort",
             EffortSelectionResponse,
             EffortSelectionRequest(effort=effort),
         )
@@ -331,7 +379,7 @@ class XBotClient:
     ) -> ProviderSelectionResponse:
         return await self._request(
             "PUT",
-            f"{_thread_path(session_id, thread_id)}/provider",
+            f"{thread_path(session_id, thread_id)}/provider",
             ProviderSelectionResponse,
             ProviderSelectionRequest(name=name, model=model),
         )
@@ -340,7 +388,7 @@ class XBotClient:
         self, session_id: str, thread_id: str
     ) -> ToolListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/tools", ToolListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/tools", ToolListResponse
         )
 
     async def list_messages(
@@ -348,37 +396,41 @@ class XBotClient:
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
         limit: int | None = None,
-    ) -> ThreadMessagesResponse:
+        before_id: str | None = None,
+        after_id: str | None = None,
+    ) -> HistoryPage[ConversationRecord]:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/messages",
-            ThreadMessagesResponse,
-            params={
-                key: value
-                for key, value in {"cursor": cursor, "limit": limit}.items()
-                if value is not None
-            },
+            f"{thread_path(session_id, thread_id)}/messages",
+            HistoryPage[ConversationRecord],
+            params={"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id},
         )
+
+    async def list_display_messages(self, session_id: str, thread_id: str, *, cursor: Cursor | None = None, limit: int = 50, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[DisplayRecord]:
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/display-messages", HistoryPage[DisplayRecord],
+            params={"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id},
+        )
+
+    async def read_display_body(self, session_id: str, thread_id: str, message_id: str, *, field: str, offset: int = 0, limit: int = 4096) -> DisplayBodyPage:
+        return await self._request("GET", f"{thread_path(session_id, thread_id)}/display-messages/{_segment(message_id)}/body", DisplayBodyPage, params={"field": field, "offset": offset, "limit": limit})
 
     async def list_trajectory(
         self,
         session_id: str,
         thread_id: str,
         *,
-        cursor: str | None = None,
+        cursor: Cursor | None = None,
+        before: int | None = None,
         limit: int = 160,
-    ) -> ThreadTrajectoryResponse:
+    ) -> TrajectoryRead:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/trajectory",
-            ThreadTrajectoryResponse,
-            params={
-                key: value
-                for key, value in {"cursor": cursor, "limit": limit}.items()
-                if value is not None
-            },
+            f"{thread_path(session_id, thread_id)}/trajectory",
+            TrajectoryRead,
+            params={"cursor": cursor, "before": before, "limit": limit},
         )
 
     async def read_artifact(
@@ -388,61 +440,61 @@ class XBotClient:
         artifact_id: str,
     ) -> bytes:
         response = await self._http.get(
-            f"{_thread_path(session_id, thread_id)}/artifacts/"
+            f"{thread_path(session_id, thread_id)}/artifacts/"
             f"{quote(artifact_id, safe='/')}"
         )
-        _raise_for_status(response)
+        await _raise_for_status(response)
         return response.content
 
     async def clear_history(
         self, session_id: str, thread_id: str
-    ) -> HistoryMutationResponse:
+    ) -> HistoryMutation:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/clear",
-            HistoryMutationResponse,
+            f"{thread_path(session_id, thread_id)}/history/clear",
+            HistoryMutation,
         )
 
     async def undo_history(
         self, session_id: str, thread_id: str, count: int = 1
-    ) -> HistoryMutationResponse:
+    ) -> HistoryMutation:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/undo",
-            HistoryMutationResponse,
+            f"{thread_path(session_id, thread_id)}/history/undo",
+            HistoryMutation,
             UndoRequest(count=count),
         )
 
-    async def list_tasks(
+    async def list_jobs(
         self, session_id: str, thread_id: str
-    ) -> TaskListResponse:
+    ) -> JobListResponse:
         return await self._request(
-            "GET", f"{_thread_path(session_id, thread_id)}/tasks", TaskListResponse
+            "GET", f"{thread_path(session_id, thread_id)}/jobs", JobListResponse
         )
 
-    async def stop_task(
-        self, session_id: str, thread_id: str, task_id: str
-    ) -> TaskStopResponse:
+    async def stop_job(
+        self, session_id: str, thread_id: str, job_id: str
+    ) -> JobStopResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/tasks/{_segment(task_id)}/stop",
-            TaskStopResponse,
+            f"{thread_path(session_id, thread_id)}/jobs/{_segment(job_id)}/stop",
+            JobStopResponse,
         )
 
-    async def stop_all_tasks(
+    async def stop_all_jobs(
         self, session_id: str, thread_id: str
-    ) -> TaskStopResponse:
+    ) -> JobStopResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/tasks/stop",
-            TaskStopResponse,
+            f"{thread_path(session_id, thread_id)}/jobs/stop",
+            JobStopResponse,
         )
 
     async def interrupt(
         self, session_id: str, thread_id: str
     ) -> InterruptResponse:
         return await self._request(
-            "POST", f"{_thread_path(session_id, thread_id)}/interrupt", InterruptResponse
+            "POST", f"{thread_path(session_id, thread_id)}/interrupt", InterruptResponse
         )
 
     async def respond_permission(
@@ -456,7 +508,7 @@ class XBotClient:
     ) -> InteractionResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/interactions/permission-response",
+            f"{thread_path(session_id, thread_id)}/interactions/permission-response",
             InteractionResponse,
             PermissionResponseRequest(
                 request_id=request_id,
@@ -475,7 +527,7 @@ class XBotClient:
     ) -> InteractionResponse:
         return await self._request(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/interactions/user-input",
+            f"{thread_path(session_id, thread_id)}/interactions/user-input",
             InteractionResponse,
             UserInputResponseRequest(request_id=request_id, answer=answer),
         )
@@ -487,7 +539,7 @@ class XBotClient:
     ) -> PendingInputListResponse:
         return await self._request(
             "GET",
-            f"{_thread_path(session_id, thread_id)}/queue",
+            f"{thread_path(session_id, thread_id)}/queue",
             PendingInputListResponse,
         )
 
@@ -502,12 +554,12 @@ class XBotClient:
     ) -> PendingInputListResponse:
         return await self._request(
             "PATCH",
-            f"{_thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
+            f"{thread_path(session_id, thread_id)}/queue/{_segment(message_id)}",
             PendingInputListResponse,
             PendingInputUpdateRequest(action=action, content=content),
         )
 
-    def send_message(
+    async def send_message(
         self,
         session_id: str,
         thread_id: str,
@@ -515,31 +567,31 @@ class XBotClient:
         *,
         request_id: str = "",
         delivery: Literal["queue", "steer"] = "steer",
-        images: list[ImageInput | dict[str, JsonValue]] | None = None,
-        attachments: list[AttachmentInput | dict[str, JsonValue]] | None = None,
-    ) -> AsyncIterator[ServerEvent]:
-        return self._stream(
+        media: list[MediaInput] | None = None,
+        attachments: list[AttachmentInput] | None = None,
+    ) -> None:
+        await self._request_no_content(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/messages",
+            f"{thread_path(session_id, thread_id)}/messages",
             MessageRequest(
                 content=content,
                 request_id=request_id,
                 delivery=delivery,
-                images=images or [],
+                media=media or [],
                 attachments=attachments or [],
             ),
         )
 
-    def regenerate_message(
+    async def regenerate_message(
         self,
         session_id: str,
         thread_id: str,
         *,
         request_id: str = "",
-    ) -> AsyncIterator[ServerEvent]:
-        return self._stream(
+    ) -> None:
+        await self._request_no_content(
             "POST",
-            f"{_thread_path(session_id, thread_id)}/history/regenerate",
+            f"{thread_path(session_id, thread_id)}/history/regenerate",
             RegenerateRequest(request_id=request_id),
         )
 
@@ -549,10 +601,20 @@ class XBotClient:
         thread_id: str,
         *,
         after: int | None = None,
-    ) -> AsyncIterator[ServerEvent]:
+    ) -> AsyncGenerator[ServerEvent, None]:
         return self._stream(
-            "GET",
-            f"{_thread_path(session_id, thread_id)}/events",
+            f"{thread_path(session_id, thread_id)}/events",
+            params={"after": after} if after is not None else None,
+        )
+
+    def stream_workspace_events(
+        self,
+        *,
+        after: int | None = None,
+    ) -> AsyncIterator[ServerEvent]:
+        """Stream the process session/workspace catalog used by Web clients."""
+        return self._stream(
+            "/workspaces/events",
             params={"after": after} if after is not None else None,
         )
 
@@ -560,36 +622,49 @@ class XBotClient:
         self,
         method: str,
         path: str,
-        response_model: type[ResponseModel],
+        response_model: Any,
         payload: WireModel | None = None,
         *,
         params: Mapping[str, JsonValue] | None = None,
     ) -> ResponseModel:
+        if params is not None:
+            params = {key: value for key, value in params.items() if value is not None}
         response = await self._http.request(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
             params=params,
         )
-        _raise_for_status(response)
-        return response_model.model_validate(response.json())
+        await _raise_for_status(response)
+        return TypeAdapter(response_model).validate_python(response.json())
 
-    async def _stream(
+    async def _request_no_content(
         self,
         method: str,
         path: str,
         payload: WireModel | None = None,
-        *,
-        params: Mapping[str, JsonValue] | None = None,
-    ) -> AsyncIterator[ServerEvent]:
-        async with self._http.stream(
+    ) -> None:
+        response = await self._http.request(
             method,
             path,
             json=payload.model_dump() if payload is not None else None,
+        )
+        await _raise_for_status(response)
+
+    async def _stream(
+        self,
+        path: str,
+        *,
+        params: Mapping[str, JsonValue] | None = None,
+    ) -> AsyncGenerator[ServerEvent, None]:
+        async with self._http.stream(
+            "GET",
+            path,
             params=params,
+            headers={"Accept": "text/event-stream"},
             timeout=httpx.Timeout(self._timeout, read=None),
         ) as response:
-            _raise_for_status(response)
+            await _raise_for_status(response)
             decoder = SseDecoder()
             async for line in response.aiter_lines():
                 message = decoder.feed(line)
@@ -597,14 +672,14 @@ class XBotClient:
                     continue
                 event = decode_server_event(message)
                 yield event
-                if event.type == "end":
+                if event.kind == "end":
                     return
             message = decoder.finish()
             if message is not None:
                 yield decode_server_event(message)
 
 
-def _thread_path(session_id: str, thread_id: str) -> str:
+def thread_path(session_id: str, thread_id: str) -> str:
     return f"/sessions/{_segment(session_id)}/threads/{_segment(thread_id)}"
 
 
@@ -612,9 +687,17 @@ def _segment(value: str) -> str:
     return quote(value, safe="")
 
 
-def _raise_for_status(response: httpx.Response) -> None:
+async def _raise_for_status(response: httpx.Response) -> None:
+    """Raise the typed client error for one non-success response.
+
+    A streaming response has not read its body yet, so the error payload must
+    be read first; otherwise httpx raises ``ResponseNotRead`` and the real
+    status and error code are lost.
+    """
     if response.is_success:
         return
+    if not response.is_stream_consumed:
+        await response.aread()
     try:
         error = ErrorResponse.model_validate(response.json())
     except (ValueError, TypeError):

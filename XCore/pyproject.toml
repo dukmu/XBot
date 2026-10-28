@@ -24,3 +24,6 @@ markers = [
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["xcore*"]
+
+[tool.setuptools.package-data]
+xcore = ["py.typed"]

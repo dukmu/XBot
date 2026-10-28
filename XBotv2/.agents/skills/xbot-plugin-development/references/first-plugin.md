@@ -1,395 +1,123 @@
-# First Plugin: From Empty Directory to a Running Tool
+# First plugin
 
-This guide builds an external package named `my-xbot-plugin`. It works whether
-XBot came from PyPI, a uv dependency, or a source checkout. Replace the names,
-but preserve the ownership and test shape until the first plugin works.
-
-## 1. Select the Runtime
-
-The Python that launches XBot must also import the plugin. First record the
-environment:
-
-```bash
-command -v xbot
-python -c 'import sys, XBotv2, xcore; print(sys.executable); print(XBotv2.__file__); print(xcore.__file__)'
-```
-
-If `command -v xbot` is empty, use the project entry point explicitly (for
-example `.venv/bin/xbot`) and run the provenance command with that same
-`.venv/bin/python`. `uv` environments may intentionally have no standalone
-`pip`; `uv run python` is still the runtime, while `uv pip` is only an
-installer. Never infer the runtime from whichever `pytest` happens to be on
-`PATH`.
-
-For a uv project, use `uv run xbot` and `uv run python` in every command. For a
-pip installation, activate its virtual environment and use `python -m pip`,
-`python -m pytest`, and that environment's `xbot`. Never install the plugin in
-one interpreter and launch XBot from another.
-
-For source-only development, a checkout can be imported without installing a
-wheel:
-
-```bash
-export XBOT_ROOT="$(git -C /path/to/XBot rev-parse --show-toplevel)"
-PYTHONPATH="$XBOT_ROOT:$XBOT_ROOT/XCore:$PWD/src" \
-  "$XBOT_ROOT/.venv/bin/python" -c \
-  'import sys, XBotv2, xcore, my_xbot_plugin; print(sys.executable); print(XBotv2.__file__); print(xcore.__file__); print(my_xbot_plugin.__file__)'
-```
-
-This is valid for a source checkout or a read-only sandbox. When testing a
-published `xbotv2` wheel, remove the checkout paths from `PYTHONPATH` and
-verify that both packages come from the selected environment's
-`site-packages`.
-
-## 2. Create the Package
-
-Use this layout:
+An external plugin is a regular Python package with `api/`, `impl/`, `doc/`
+and `tests/`. Keep package `__init__.py` files empty. For example:
 
 ```text
-my-xbot-plugin/
-├── pyproject.toml
-├── src/
-│   └── my_xbot_plugin/
-│       ├── __init__.py
-│       └── plugin.py
-└── tests/
-    └── test_plugin.py
+extensions/
+└── hello_plugin/
+    ├── __init__.py
+    ├── api/
+    │   ├── __init__.py
+    │   └── contracts.py
+    ├── impl/
+    │   ├── __init__.py
+    │   └── plugin.py
+    ├── doc/design.md
+    └── tests/test_plugin.py
 ```
 
-`pyproject.toml`:
+The loader discovers `hello_plugin.impl.plugin` under an explicitly supplied
+plugin directory. Installed packages can instead use an explicit complete
+module name in `plugins.yaml`. Do not export a `plugin` singleton or put
+registration at the package root.
 
-```toml
-[build-system]
-requires = ["setuptools>=75"]
-build-backend = "setuptools.build_meta"
-
-[project]
-name = "my-xbot-plugin"
-version = "0.1.0"
-description = "Example XBot greeting plugin"
-requires-python = ">=3.11"
-dependencies = ["xbotv2>=0.2"]
-
-[project.optional-dependencies]
-test = ["pytest>=8", "pytest-asyncio>=0.24"]
-
-[tool.setuptools.packages.find]
-where = ["src"]
-
-[tool.pytest.ini_options]
-asyncio_mode = "auto"
-```
-
-Install for development using one mode:
-
-```bash
-# uv project
-uv sync --extra test
-
-# pip virtual environment
-python -m pip install -e '.[test]'
-
-# Developing against an XBot checkout instead of a published release:
-uv add --editable /path/to/XBot
-# or: python -m pip install -e /path/to/XBot
-```
-
-Do not put an absolute checkout path in committed dependency metadata. Use it
-only as a local editable development source.
-
-`src/my_xbot_plugin/__init__.py` may be empty. XBot tries
-`my_xbot_plugin.plugin` before `my_xbot_plugin`, so put the conventional export
-in `plugin.py`.
-
-## 3. Implement the Plugin
-
-## `plugin.py`
+Define the shared contract in `api/contracts.py`:
 
 ```python
-from pydantic import BaseModel, ConfigDict
-from XBotv2.core import Tool, ToolResult
-from xcore import Context
+from typing import Protocol
+from xcore.api.services import ServiceKey
 
+class Greeting(Protocol):
+    def text(self) -> str: ...
 
-class HelloHandler:
-    def __init__(self, greeting: str) -> None:
-        self._greeting = greeting
-
-    async def hello(self, name: str) -> ToolResult:
-        """Greet one person and return the greeting to the Agent."""
-        return ToolResult.success(f"{self._greeting}, {name}!")
-
-
-class HelloPlugin:
-    name = "hello"
-    inject = ["tools"]
-    class Config(BaseModel):
-        model_config = ConfigDict(extra="forbid")
-        greeting: str = "Hello"
-
-    def apply(self, ctx: Context, config: Config) -> None:
-        handler = HelloHandler(config.greeting)
-        ctx.tools.register(Tool.from_function(handler.hello, name="hello"))
-
-
-plugin = HelloPlugin()
+GREETING = ServiceKey[Greeting]("hello.greeting")
 ```
 
-Configuration is a Pydantic model owned by the plugin. `extra="forbid"`
-rejects undeclared keys; defaults, nested validation, and the JSON Schema shown
-to clients all come from the same model. Do not duplicate this model in a
-configuration service or hand-write a second schema.
-
-The component only composes declared dependencies. XCore validates `Config`
-before `apply`, waits for `tools`, and reruns composition if that required
-service is later removed and restored. The named handler owns Tool behavior and
-receives only the exact value it needs; it does not retain `Context`.
-`ctx.tools.register` binds cleanup to the current XCore fiber, so unload removes
-the Tool automatically.
-
-Avoid these common first attempts:
+Define the actual facets in `impl/plugin.py`:
 
 ```python
-# Do not keep the service locator in business code.
-self.ctx = ctx
+from pydantic import BaseModel
+from hello_plugin.api.contracts import GREETING
 
-# Do not hide a required dependency behind probing or a fallback.
-tools = getattr(ctx, "tools", None)
-if tools is not None:
-    ...
+class Config(BaseModel):
+    message: str = "Hello"
 
-# Do not register a closure that captures the entire component.
-async def hello(name: str):
-    return await self._do_work(name)
+class GreetingService:
+    def __init__(self, message):
+        self.message = message
+
+    def text(self):
+        return self.message
+
+def mount_process(ctx, config):
+    ctx.provide(GREETING, GreetingService(config.message))
+
+mount_process.inject = ()
+mount_process.provide = (GREETING,)
+mount_process.Config = Config
+
+def mount_thread(ctx, config):
+    # This callback owns a thread-local registration. XCore removes it at close.
+    ctx.on("hello/read", lambda _: ctx.require(GREETING).text())
+
+mount_thread.inject = (GREETING,)
+mount_thread.provide = ()
+mount_thread.Config = Config
 ```
 
-Required dependencies belong in `inject`; optional dependencies are only for a
-real documented feature mode in which absence is valid.
+A function is mounted only for its declared scope. There is no factory layer.
+Declarations are real runtime boundaries: publish only services in `provide`,
+list required services in `inject`, and never depend on a private service
+falling through to a parent. Config validation occurs before activation.
 
-## 4. Test Composition and Behavior
-
-Use a real XCore lifecycle plus the XBot Tool service. This test imports two
-implementation classes only to construct the smallest realistic registry;
-plugin production code still imports public contracts from package roots.
-
-```python
-from pathlib import Path
-
-from xcore import Context, FiberState
-
-from XBotv2.agentloop.tool_registry import ToolRegistry
-from XBotv2.agentloop.tool_service import ToolsService
-from my_xbot_plugin.plugin import plugin
-
-
-async def test_hello_registers_invokes_and_unloads(tmp_path: Path) -> None:
-    ctx = Context(data_dir=tmp_path)
-    tools = ToolsService(ToolRegistry())
-    ctx.set("tools", tools)
-    handle = ctx.plugin(plugin, {"greeting": "Welcome"})
-
-    await ctx.start()
-
-    assert handle.state is FiberState.RUNNING
-    tool = tools.resolve("hello")
-    assert tool is not None
-    result = await tool.ainvoke({"name": "Ada"})
-    assert result.content == "Welcome, Ada!"
-    assert tool.provider_schema()["function"]["parameters"]["required"] == ["name"]
-
-    await ctx.stop()
-    assert tools.resolve("hello", include_disabled=True) is None
-
-
-async def test_hello_waits_for_required_tools(tmp_path: Path) -> None:
-    ctx = Context(data_dir=tmp_path)
-    handle = ctx.plugin(plugin, {})
-
-    await ctx.start()
-
-    assert handle.state is FiberState.PENDING
-    assert handle.missing_dependencies == ("tools",)
-    await ctx.destroy()
-```
-
-For a plugin that injects application-only services, provide the typed values
-at the test composition boundary instead of weakening `inject`:
-
-```python
-from XBotv2.core.paths import RuntimePaths
-
-paths = RuntimePaths.from_data_dir(tmp_path / "data")
-ctx = Context(data_dir=paths.data_dir)
-ctx.set("runtime_paths", paths)
-ctx.set("workspace_root", tmp_path / "workspace")
-ctx.set("data_root", paths.data_dir)
-```
-
-The complete service matrix is in [plugins_list.md](plugins_list.md). A
-`PENDING` handle is a useful diagnostic: print `handle.missing_dependencies`
-and add only those services. Supplying `None` to make a required dependency
-appear present tests the wrong contract.
-
-Run it with the selected environment:
-
-```bash
-uv run pytest -q
-# or, in the pip virtual environment:
-python -m pytest -q
-```
-
-If the test collects zero items, imports XBot from an unexpected path, or uses
-a global `pytest` executable, stop and fix the environment before trusting it.
-
-## 5. Add the Tree Entry
-
-## Tree Entry
-
-Create `.xbot/plugins.yaml` in the workspace used for the smoke test:
+An overlay entry can use the exact implementation module:
 
 ```yaml
 - id: hello
-  name: my_xbot_plugin
-  profiles: [agent]
+  name: hello_plugin.impl.plugin
+  optional: true
   config:
-    greeting: "Hello"
+    message: Hello from the plugin
 ```
 
-The `name` is the import package, not the distribution name (`my_xbot_plugin`,
-not `my-xbot-plugin`). A new overlay entry needs both `id` and `name`. Use an
-`agent` profile for an Agent Tool. Do not add a server-only plugin to the Agent
-profile merely because both processes can import it.
+Required import/configuration/activation/dependency failures prevent opening.
+Optional failures dispose just that facet. A module with no scope functions is
+an error. An enabled module with only another scope's facet is valid and skipped.
+`no_plugins` removes optional entries, including directory discoveries.
 
-XBot merges configuration in this order: bundled `xcore.yaml`, configured
-`<data-dir>/config/plugins.yaml`, workspace `.xbot/plugins.yaml`, session
-`sessions/<session_id>/config.yaml`, then explicit in-memory launch overrides.
-The session file uses the same plugin overlay grammar as the other files.
-Only `config` deep-merges; fields such as
-`profiles` replace the prior value.
-
-## 6. Smoke Test Through XBot
-
-Use disposable paths first:
-
-```bash
-mkdir -p /tmp/xbot-plugin-smoke/data /tmp/xbot-plugin-smoke/workspace/.xbot
-# copy the overlay above to /tmp/xbot-plugin-smoke/workspace/.xbot/plugins.yaml
-xbot once --data-dir /tmp/xbot-plugin-smoke/data \
-  --workspace /tmp/xbot-plugin-smoke/workspace \
-  "Call the hello tool with the name Ada and report its exact result."
-```
-
-Prefix with `uv run` for uv. A real provider requires its configured
-credentials. If none is available, the mounted test is still valid evidence
-for loading, registration, execution, and cleanup; report that the provider
-smoke was not run rather than claiming it passed.
-
-The command-line launcher currently has no `--plugin-dirs` option. A package
-installed into the XBot environment is selected by its import name in the
-workspace overlay. In a sandbox where installation or the global data root is
-read-only, expose the source package with `PYTHONPATH` and run a small Python
-harness that calls `start_application(..., plugin_dirs=[plugin_parent])` with
-a disposable `RuntimePaths`; this exercises the same loader without writing
-to the user's data directory. The overlay selects the import name; it does
-not create a second plugin discovery mechanism.
-
-When no provider credentials or network are available, use the mounted XCore
-test plus a persistence-only trace test (see [session-trace.md](session-trace.md)).
-Record “provider smoke not run: missing credentials/endpoint” separately from
-plugin load or persistence evidence. A non-zero `xbot once` exit caused by a
-provider error is not proof that the plugin failed to load, and an empty trace
-is not proof that a no-op turn succeeded.
-
-When startup says the module cannot be imported, rerun the provenance command
-from step 1 and then:
-
-```bash
-python -c 'import my_xbot_plugin, my_xbot_plugin.plugin; print(my_xbot_plugin.__file__)'
-```
-
-When startup reports unmet dependencies, check the selected profile and the
-plugin's `inject` names against the mounted tree. Do not add a `None` fallback
-to silence the error.
-
-## 7. Add Tool Invocation Metadata Only When Needed
-
-If the Tool must know which final model call invoked it, use the standard
-`ToolCall` parameter rather than a session or invocation wrapper:
+Exercise the same public loader as production in a focused test:
 
 ```python
-from XBotv2.core import ToolCall, ToolResult
+import pytest
+from xcore.api.context import Context
+from XBotv2.loader.api.service import create_loader
+from XBotv2.loader.api.contracts import PluginEntry, PluginTree
+from hello_plugin.api.contracts import GREETING
 
-
-async def inspect_call(value: str, *, tool_call: ToolCall) -> ToolResult:
-    return ToolResult.success(f"{tool_call.id}: {value}")
+@pytest.mark.asyncio
+async def test_process_and_thread():
+    root = Context()
+    loader = create_loader()
+    tree = PluginTree([PluginEntry("hello", "hello_plugin.impl.plugin")])
+    try:
+        await loader.mount(root, tree, kind="process")
+        thread = loader.scope(root, "thread:main", kind="thread", tree=tree)
+        await loader.mount(thread, tree, kind="thread")
+        assert thread.require(GREETING) is root.require(GREETING)
+        await thread.close()
+        assert root.require(GREETING).text() == "Hello"
+    finally:
+        await root.close()
 ```
 
-`tool_call` is keyword-only, excluded from the provider schema, and receives
-the call after `BEFORE_TOOL_CALL` rewriting. Sandbox, jobs, approval, and other
-services should instead be constructor dependencies of a named handler.
+Use `ctx.pre_stop` for asynchronous drain: reject new work, cancel and await
+owned tasks/started workers, then let disposal revoke services and release
+resources. A synchronous disposer cannot stand in for completion. Register
+Agent tools through the public `TOOLS` registry and its normal guard/execution
+path. Human slash commands, Agent tools and prompt expansion remain separate.
 
-## 8. Add Persistent State Without Choosing a File
-
-State is neither plugin configuration nor a plugin-chosen file. Resolve one
-namespace during composition and pass it to the owning service:
-
-```python
-class CounterService:
-    def __init__(self, state) -> None:
-        self._state = state
-
-    async def increment(self) -> ToolResult:
-        stored = await self._state.get("count")
-        value = (0 if stored is None else int(stored)) + 1
-        await self._state.set("count", value)
-        return ToolResult.success(str(value), data={"count": value})
-
-
-class CounterPlugin:
-    name = "counter"
-    inject = ["tools"]
-
-    def apply(self, ctx, config=None) -> None:
-        service = CounterService(ctx.state.namespace("counter"))
-        ctx.tools.register(Tool.from_function(service.increment))
-```
-
-Do not join `data_dir`, `plugin_state`, or a JSON/YAML filename yourself.
-
-State values must be JSON-compatible. Store stable domain data, not an HTTP
-client, coroutine, event waiter, `Path`, dataclass instance, or duplicated
-conversation history. To prove recovery, stop the first Context, construct a
-new Context with the same `data_dir`, and read through the same namespace.
-
-## 9. Build and Inspect the Distribution
-
-Build a wheel in a clean output directory:
-
-```bash
-uv build --wheel
-# or: python -m build --wheel
-```
-
-Install that wheel into a fresh virtual environment and rerun provenance,
-imports, and plugin tests. Also inspect the archive when the plugin bundles
-templates, prompts, skills, or reference files; setuptools includes Python
-packages by default but non-Python assets require explicit package-data
-configuration.
-
-## 10. Completion Checklist
-
-- the same interpreter owns XBot, xcore, the plugin, and pytest;
-- the plugin has a stable import package and conventional `plugin` export;
-- `Config` rejects malformed values and documents defaults;
-- every required service is in `inject` and passed narrowly to a named owner;
-- public behavior is invoked, not inferred from private fields;
-- unload removes registrations and closes resources;
-- durable state uses one namespace and survives a new Context;
-- the intended XBot profile loads the overlay from the intended workspace/data
-  directory;
-- the built wheel installs and contains every required non-Python asset;
-- skipped provider, browser, network, or sandbox smoke tests are recorded.
-
-Continue with [extension-patterns.md](extension-patterns.md) for commands,
-events, shared services, transactional dynamic registration, and external
-resource cleanup.
+For a full runtime test use `XBotv2.main.open_runtime`, locate/open a thread
+through `SESSIONS`, then require the responsible owner's API. The session API
+returns an actual Context. Main thread ID is `main`; child IDs identify the
+thread independently of the selected Agent definition.

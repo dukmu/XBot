@@ -1,147 +1,51 @@
-import { describe, expect, it } from "vitest";
-import type { WorkspaceData } from "../api/types";
+import { expect, it, vi } from "vitest";
 import { WorkspaceManager } from "./WorkspaceManager";
+import type { WorkspaceData } from "../api/types";
+const workspace = (id: string): WorkspaceData => ({ workspace_id: id, title: id, path: `/${id}`, session_count: 2, created_at: "", updated_at: "" });
 
-const first = workspace("ws-1", "First", "2026-01-01T00:00:00Z");
-const second = workspace("ws-2", "Second", "2026-01-01T00:00:00Z");
-
-describe("WorkspaceManager", () => {
-  it("publishes the baseline and unary changes without a second list request", async () => {
-    let listCalls = 0;
-    const api = fakeApi({
-      listWorkspaces: async () => { listCalls += 1; return { items: [first, second], archived_session_ids: [], event_cursor: 4 }; },
-      renameWorkspace: async () => ({ ...first, title: "Renamed", updated_at: "2026-01-02T00:00:00Z" }),
-    });
-    const manager = new WorkspaceManager(api);
-
-    await manager.refresh();
-    await manager.rename("ws-1", "Renamed");
-
-    expect(manager.getSnapshot().items.map((item) => item.title)).toEqual(["Renamed", "Second"]);
-    expect(listCalls).toBe(1);
-    expect(manager.getSnapshot().eventCursor).toBe(4);
-  });
-
-  it("does not let an older refresh resurrect a deleted workspace", async () => {
-    let resolveList: (items: WorkspaceData[]) => void = () => undefined;
-    const list = new Promise<WorkspaceData[]>((resolve) => { resolveList = resolve; });
-    const manager = new WorkspaceManager(fakeApi({
-      listWorkspaces: async () => ({ items: await list, archived_session_ids: [], event_cursor: 0 }),
-    }));
-
-    const refresh = manager.refresh();
-    await manager.delete("ws-1");
-    resolveList([first]);
-    await refresh;
-
-    expect(manager.getSnapshot().items).toEqual([]);
-  });
-
-  it("optimistically reorders and rolls back a failed request", async () => {
-    const api = fakeApi({ reorderWorkspace: async () => { throw new Error("reorder failed"); } });
-    const manager = new WorkspaceManager(api);
-    await manager.refresh();
-
-    await expect(manager.move("ws-1", 1)).rejects.toThrow("reorder failed");
-
-    expect(manager.getSnapshot().items.map((item) => item.workspace_id)).toEqual(["ws-1", "ws-2"]);
-  });
-
-  it("installs the authoritative session order returned by the server", async () => {
-    const ordered = { ...first, session_ids: ["s2", "s1"] };
-    const api = fakeApi({
-      listWorkspaces: async () => ({
-        items: [{ ...first, session_ids: ["s1", "s2"] }],
-        archived_session_ids: [],
-        event_cursor: 0,
-      }),
-      reorderWorkspaceSession: async () => ordered,
-    });
-    const manager = new WorkspaceManager(api);
-    await manager.refresh();
-
-    await manager.moveSession("ws-1", "s1", 1);
-
-    expect(manager.getSnapshot().items[0].session_ids).toEqual(["s2", "s1"]);
-  });
-
-  it("protects a Workspace frame from an older in-flight baseline", async () => {
-    let resolveList: (items: WorkspaceData[]) => void = () => undefined;
-    const list = new Promise<WorkspaceData[]>((resolve) => { resolveList = resolve; });
-    const manager = new WorkspaceManager(fakeApi({
-      listWorkspaces: async () => ({ items: await list, archived_session_ids: [], event_cursor: 1 }),
-    }));
-
-    const refresh = manager.refresh();
-    manager.handleCatalogEvent({
-      protocol_version: "xbotv2.v3", session_id: "", thread_id: "workspaces",
-      request_id: "", sequence: 2, type: "catalog/workspace-changed",
-      data: { workspace: { ...first, title: "From frame", updated_at: "2026-01-02T00:00:00Z" } },
-    });
-    resolveList([{ ...first, title: "Stale baseline" }]);
-    await refresh;
-
-    expect(manager.getSnapshot().items[0].title).toBe("From frame");
-    expect(manager.getSnapshot().eventCursor).toBe(2);
-  });
-
-  it("keeps untouched baseline workspaces while replaying an in-flight Workspace frame", async () => {
-    let resolveList: (items: WorkspaceData[]) => void = () => undefined;
-    const list = new Promise<WorkspaceData[]>((resolve) => { resolveList = resolve; });
-    const manager = new WorkspaceManager(fakeApi({
-      listWorkspaces: async () => ({ items: await list, archived_session_ids: [], event_cursor: 1 }),
-    }));
-
-    const refresh = manager.refresh();
-    manager.handleCatalogEvent({
-      protocol_version: "xbotv2.v3", session_id: "", thread_id: "workspaces",
-      request_id: "", sequence: 2, type: "catalog/workspace-changed",
-      data: { workspace: { ...first, title: "From frame", updated_at: "2026-01-02T00:00:00Z" } },
-    });
-    resolveList([{ ...first, title: "Stale baseline" }, second]);
-    await refresh;
-
-    expect(manager.getSnapshot().items.map((item) => item.title)).toEqual(["From frame", "Second"]);
-  });
-
-  it("accepts a later recreation of a removed deterministic Workspace id", async () => {
-    const manager = new WorkspaceManager(fakeApi());
-    await manager.refresh();
-    manager.handleCatalogEvent({
-      protocol_version: "xbotv2.v3", session_id: "", thread_id: "workspaces",
-      request_id: "", sequence: 1, type: "catalog/workspace-removed",
-      data: { workspace_id: "ws-1" },
-    });
-    manager.handleCatalogEvent({
-      protocol_version: "xbotv2.v3", session_id: "", thread_id: "workspaces",
-      request_id: "", sequence: 2, type: "catalog/workspace-changed",
-      data: { workspace: { ...first, updated_at: "2026-01-02T00:00:00Z" } },
-    });
-
-    expect(manager.getSnapshot().items.map((item) => item.workspace_id)).toEqual(["ws-1", "ws-2"]);
-  });
+it("keeps one workspace page and uses relative moves at a page boundary", async () => {
+  const reorderWorkspace = vi.fn(async (id: string, before: string | null) => ({ workspace_id: id, before_workspace_id: before }));
+  const reorderWorkspaceSession = vi.fn(async () => workspace("a"));
+  const listWorkspaces = vi.fn(async (cursor?: string | null) => cursor === "next"
+    ? { items: [workspace("c")], previous_cursor: "prev", next_cursor: null, event_cursor: 0 }
+    : { items: [workspace("a"), workspace("b")], previous_cursor: null, next_cursor: "next", event_cursor: 0 });
+  const manager = new WorkspaceManager({ listWorkspaces, reorderWorkspace, reorderWorkspaceSession, createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(), setSessionArchived: vi.fn() });
+  await manager.refresh();
+  await manager.move("a", 1);
+  expect(reorderWorkspace).toHaveBeenCalledWith("b", "a");
+  await manager.moveSession("a", ["one", "two"], "one", 1);
+  expect(reorderWorkspaceSession).toHaveBeenCalledWith("a", "two", "one");
+  await manager.next();
+  expect(manager.getSnapshot()).toMatchObject({ items: [workspace("c")], canPrevious: true, canNext: false });
+  await manager.back();
+  expect(manager.getSnapshot().items).toEqual([workspace("a"), workspace("b")]);
+  expect(listWorkspaces.mock.calls.at(-1)?.[0]).toBe("prev");
 });
 
-function workspace(workspaceId: string, title: string, updatedAt: string): WorkspaceData {
-  return {
-    workspace_id: workspaceId,
-    path: `/workspace/${workspaceId}`,
-    title,
-    session_ids: [],
-    created_at: "2026-01-01T00:00:00Z",
-    updated_at: updatedAt,
-  };
-}
 
-function fakeApi(overrides: Partial<Record<keyof ConstructorParameters<typeof WorkspaceManager>[0], unknown>> = {}) {
-  return {
-    listWorkspaces: async () => ({ items: [first, second], archived_session_ids: [], event_cursor: 0 }),
-    createWorkspace: async () => first,
-    renameWorkspace: async () => first,
-    deleteWorkspace: async () => undefined,
-    reorderWorkspace: async () => ["ws-2", "ws-1"],
-    reorderWorkspaceSession: async () => first,
-    setSessionArchived: async (_sessionId: string, archived: boolean) => archived ? ["session-1"] : [],
-    ...overrides,
-  } as ConstructorParameters<typeof WorkspaceManager>[0];
-}
+it("refreshes after deletion while an older page is still in flight", async () => {
+  let resolve!: (value: { items: WorkspaceData[]; previous_cursor: null; next_cursor: null; event_cursor: number }) => void;
+  const listWorkspaces = vi.fn()
+    .mockImplementationOnce(() => new Promise((done) => { resolve = done; }))
+    .mockResolvedValue({ items: [], previous_cursor: null, next_cursor: null, event_cursor: 1 });
+  const manager = new WorkspaceManager({ listWorkspaces, createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(async () => undefined), reorderWorkspace: vi.fn(), reorderWorkspaceSession: vi.fn(), setSessionArchived: vi.fn() });
+  const first = manager.refresh();
+  const removed = manager.delete("a");
+  await Promise.resolve();
+  resolve({ items: [workspace("a")], previous_cursor: null, next_cursor: null, event_cursor: 0 });
+  await Promise.all([first, removed]);
+  expect(manager.getSnapshot().items).toEqual([]);
+  expect(listWorkspaces).toHaveBeenCalledTimes(2);
+});
+
+it("keeps the previous cursor when the last workspace page becomes empty", async () => {
+  const listWorkspaces = vi.fn(async (cursor?: string | null) => cursor === "next"
+    ? { items: [], previous_cursor: "prev", next_cursor: null, event_cursor: 0 }
+    : { items: [workspace("a")], previous_cursor: null, next_cursor: "next", event_cursor: 0 });
+  const manager = new WorkspaceManager({ listWorkspaces, createWorkspace: vi.fn(), renameWorkspace: vi.fn(), deleteWorkspace: vi.fn(), reorderWorkspace: vi.fn(), reorderWorkspaceSession: vi.fn(), setSessionArchived: vi.fn() });
+  await manager.refresh();
+  await manager.next();
+  expect(manager.getSnapshot()).toMatchObject({ items: [], canPrevious: true });
+  await manager.back();
+  expect(manager.getSnapshot().items).toEqual([workspace("a")]);
+});

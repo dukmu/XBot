@@ -1,6 +1,7 @@
 """Command-line parsing and entrypoint tests."""
 
 import argparse
+import asyncio
 import types
 from pathlib import Path
 
@@ -17,8 +18,8 @@ def test_default_command_is_tui():
     args = parse([])
 
     assert args.command == "tui"
-    assert args.provider == "default"
-    assert args.thread == "agent"
+    assert args.provider is None
+    assert args.thread == "main"
 
 
 @pytest.mark.parametrize("command", ["serve", "tui", "web"])
@@ -35,6 +36,16 @@ def test_tui_has_server_defaults_for_auto_spawn():
 
     assert args.bind == "127.0.0.1"
     assert args.port == 4096
+
+
+def test_tui_display_options():
+    assert parse(["tui"]).fullscreen is None
+    assert parse(["tui", "--fullscreen"]).fullscreen is True
+    assert parse(["tui", "--inline"]).fullscreen is False
+    with pytest.raises(SystemExit):
+        parse(["tui", "--fullscreen", "--inline"])
+
+
 
 
 def test_workspace_defaults_to_startup_directory(monkeypatch, tmp_path):
@@ -69,6 +80,12 @@ def compiled_web_root(monkeypatch, tmp_path):
     (root / "assets").mkdir(parents=True)
     (root / "index.html").write_text("<main>XBot</main>", encoding="utf-8")
     monkeypatch.setattr(cli, "_WEB_STATIC_ROOT", root)
+
+
+def test_web_missing_assets_reports_install_or_source_build(monkeypatch, tmp_path):
+    monkeypatch.setattr(cli, "_WEB_STATIC_ROOT", tmp_path / "missing-web")
+    with pytest.raises(SystemExit, match="install a distribution containing the Web assets"):
+        cli._run_web(None)
 
 
 def test_web_runs_compiled_client_with_auto_uds_then_cleans_up(
@@ -171,7 +188,7 @@ def test_web_server_and_uds_are_mutually_exclusive():
 def test_server_creates_uds_parent(monkeypatch, tmp_path):
     socket_path = tmp_path / "missing" / "xbot.sock"
     import uvicorn
-    from XBotv2.server import http
+    from XBotv2.server.impl import http
 
     class _FakeApp:
         def __init__(self) -> None:
@@ -194,11 +211,15 @@ def test_server_creates_uds_parent(monkeypatch, tmp_path):
 
     monkeypatch.setattr(http, "create_app", lambda **_kwargs: _FakeApp())
     served = {}
-    monkeypatch.setattr(
-        uvicorn,
-        "run",
-        lambda app, **kwargs: served.update(app=app, **kwargs),
-    )
+
+    class Server:
+        def __init__(self, config):
+            self.config = config
+
+        async def serve(self):
+            served.update(app=self.config.app, uds=self.config.uds)
+
+    monkeypatch.setattr(uvicorn, "Server", Server)
 
     cli._run_server(parse([
         "serve", "--uds", str(socket_path),

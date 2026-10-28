@@ -1,3 +1,4 @@
+import type { OpenedThread, TrajectoryRead, ServerEvent } from "./wire";
 import { decodeSseStream } from "./sse";
 import {
   PROTOCOL_VERSION,
@@ -6,24 +7,22 @@ import {
   type CommandInfo,
   type CommandResult,
   type DirectoryListingData,
-  type HistoryItem,
-  type ImageInput,
+  type MediaInput,
   type JsonObject,
-  type MessagePage,
-  type OpenSessionResponse,
+  type MessageRequest,
   type PendingInput,
   type PluginConfigCatalog,
   type PluginConfigScope,
   type ProviderInfo,
-  type ServerEvent,
+  type RegenerateRequest,
   type SessionListData,
   type SessionPolicy,
   type SessionPolicyPatch,
   type SessionSummary,
-  type TaskData,
-  type TrajectoryPage,
-  type TodoItemData,
+  type JobData,
   type ThreadSummary,
+  type ThreadListPage,
+  type ToolInfo,
   type WorkspaceData,
   type WorkspaceListData,
   type XBotErrorBody,
@@ -41,10 +40,20 @@ export class XBotApiError extends Error {
   }
 }
 
+/**
+ * Whether an error means the session or thread this client is attached to no
+ * longer exists.  Callers recover by re-opening the session: the request was a
+ * background refresh the user never asked for, so a banner over a working chat
+ * would only report noise.
+ */
+export function isMissingSessionError(error: unknown): boolean {
+  return error instanceof XBotApiError && (error.status === 404 || error.code === "not_found");
+}
+
 export class XBotApi {
   constructor(private readonly baseUrl = "/api") {}
 
-  hello(sessionId?: string, threadId = "agent") {
+  hello(sessionId?: string, threadId = "main") {
     return this.request<{ server_name: string; protocol_version: string }>(
       "POST",
       "/hello",
@@ -57,16 +66,24 @@ export class XBotApi {
     );
   }
 
-  listSessions(): Promise<SessionListData> {
-    return this.request("GET", "/sessions");
+  listSessions(cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/sessions${pageQuery(cursor)}`);
+  }
+
+  listWorkspaceSessions(workspaceId: string, cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/workspaces/${segment(workspaceId)}/sessions${pageQuery(cursor)}`);
+  }
+
+  listArchivedSessions(cursor?: string | null): Promise<SessionListData> {
+    return this.request("GET", `/workspaces/archived-sessions${pageQuery(cursor)}`);
   }
 
   renameSession(sessionId: string, title: string): Promise<SessionSummary> {
     return this.request("PATCH", `/sessions/${segment(sessionId)}`, { title });
   }
 
-  listWorkspaces(): Promise<WorkspaceListData> {
-    return this.request("GET", "/workspaces");
+  listWorkspaces(cursor?: string | null): Promise<WorkspaceListData> {
+    return this.request("GET", `/workspaces${pageQuery(cursor)}`);
   }
 
   listDirectories(path?: string, signal?: AbortSignal): Promise<DirectoryListingData> {
@@ -96,13 +113,8 @@ export class XBotApi {
     await this.request("DELETE", `/workspaces/${segment(workspaceId)}`);
   }
 
-  async reorderWorkspace(workspaceId: string, beforeWorkspaceId: string | null): Promise<string[]> {
-    const result = await this.request<{ workspace_ids: string[] }>(
-      "POST",
-      `/workspaces/${segment(workspaceId)}/order`,
-      { before_workspace_id: beforeWorkspaceId },
-    );
-    return result.workspace_ids;
+  reorderWorkspace(workspaceId: string, beforeWorkspaceId: string | null): Promise<{ workspace_id: string; before_workspace_id: string | null }> {
+    return this.request("POST", `/workspaces/${segment(workspaceId)}/order`, { before_workspace_id: beforeWorkspaceId });
   }
 
   async reorderWorkspaceSession(
@@ -118,12 +130,8 @@ export class XBotApi {
     return result.workspace;
   }
 
-  async setSessionArchived(sessionId: string, archived: boolean): Promise<string[]> {
-    const result = await this.request<{ archived_session_ids: string[] }>(
-      archived ? "PUT" : "DELETE",
-      `/sessions/${segment(sessionId)}/archive`,
-    );
-    return result.archived_session_ids;
+  setSessionArchived(sessionId: string, archived: boolean): Promise<{ session_id: string; archived: boolean }> {
+    return this.request(archived ? "PUT" : "DELETE", `/sessions/${segment(sessionId)}/archive`);
   }
 
   async listProviders(): Promise<{ default: string; providers: ProviderInfo[] }> {
@@ -137,24 +145,27 @@ export class XBotApi {
     mode: "new" | "resume";
     agent?: string;
     historyLimit?: number;
-  }): Promise<OpenSessionResponse> {
-    const result = await this.request<OpenSessionResponse>("POST", "/sessions", {
+  }): Promise<OpenedThread> {
+    const result = await this.request<{ data: OpenedThread }>("POST", "/sessions", {
       session_id: options.sessionId || null,
-      thread_id: options.threadId || "agent",
+      thread_id: options.threadId || "main",
       workspace_root: options.workspaceRoot || null,
       mode: options.mode,
       agent: options.agent || null,
       history_limit: options.historyLimit ?? 160,
     });
-    return this.withArtifactUrls(result);
+    return result.data;
   }
 
-  async listThreads(sessionId: string): Promise<ThreadSummary[]> {
-    const result = await this.request<{ threads: ThreadSummary[] }>(
-      "GET",
-      `/sessions/${segment(sessionId)}/threads`,
-    );
-    return result.threads;
+  listThreads(
+    sessionId: string,
+    options: { cursor?: string | null; limit?: number; kind?: "main" | "subagent"; parentThreadId?: string } = {},
+  ): Promise<ThreadListPage> {
+    const query = new URLSearchParams({ limit: String(options.limit ?? 100) });
+    if (options.cursor) query.set("cursor", options.cursor);
+    if (options.kind) query.set("kind", options.kind);
+    if (options.parentThreadId) query.set("parent_thread_id", options.parentThreadId);
+    return this.request("GET", `/sessions/${segment(sessionId)}/threads?${query}`);
   }
 
   getSessionPolicy(sessionId: string): Promise<SessionPolicy> {
@@ -195,16 +206,16 @@ export class XBotApi {
     return this.request("GET", `${threadPath(sessionId, threadId)}`);
   }
 
-  async openThread(sessionId: string, thread: ThreadSummary): Promise<OpenSessionResponse> {
-    const result = await this.request<OpenSessionResponse>("POST", `/sessions/${segment(sessionId)}/threads`, {
+  async openThread(sessionId: string, thread: ThreadSummary): Promise<OpenedThread> {
+    const result = await this.request<{ data: OpenedThread }>("POST", `/sessions/${segment(sessionId)}/threads`, {
       thread_id: thread.thread_id,
-      parent_thread_id: thread.parent_thread_id || "agent",
+      parent_thread_id: thread.parent_thread_id || "main",
       workspace_root: null,
       mode: "resume",
       agent: null,
       history_limit: 160,
     });
-    return this.withArtifactUrls(result);
+    return result.data;
   }
 
   async listAgents(sessionId: string, threadId: string): Promise<AgentInfo[]> {
@@ -243,70 +254,39 @@ export class XBotApi {
     }>("PUT", `${threadPath(sessionId, threadId)}/effort`, { effort });
   }
 
-  async listMessages(
+  listMessages(
     sessionId: string,
     threadId: string,
     options: { cursor?: string; limit?: number } = {},
-  ): Promise<MessagePage> {
+  ): Promise<import("./wire").HistoryPage<import("./wire").ConversationRecord>> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
     if (options.limit) query.set("limit", String(options.limit));
-    const result = await this.request<MessagePage>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/messages${query.size ? `?${query}` : ""}`,
-    );
-    return {
-      ...result,
-      messages: this.decorateHistory(sessionId, threadId, result.messages),
-    };
+    return this.request("GET", `${threadPath(sessionId, threadId)}/messages${query.size ? `?${query}` : ""}`);
   }
 
-  async listTrajectory(
+  listTrajectory(
     sessionId: string,
     threadId: string,
-    options: { cursor?: string; limit?: number } = {},
-  ): Promise<TrajectoryPage> {
+    options: { cursor?: string; before?: number; limit?: number } = {},
+  ): Promise<TrajectoryRead> {
     const query = new URLSearchParams();
     if (options.cursor) query.set("cursor", options.cursor);
+    if (options.before) query.set("before", String(options.before));
     if (options.limit) query.set("limit", String(options.limit));
-    const result = await this.request<TrajectoryPage>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/trajectory${query.size ? `?${query}` : ""}`,
-    );
-    return {
-      ...result,
-      items: result.items.map((item) => {
-        if (item.kind === "message") {
-          return {
-            ...item,
-            message: {
-              ...this.decorateHistory(sessionId, threadId, [item.message])[0],
-              id: item.message_id,
-            },
-          };
-        }
-        if (item.kind === "surface_replace") {
-          return { ...item, messages: this.decorateHistory(sessionId, threadId, item.messages) };
-        }
-        return item;
-      }),
-    };
+    return this.request("GET", `${threadPath(sessionId, threadId)}/trajectory${query.size ? `?${query}` : ""}`);
   }
 
-  async listTasks(sessionId: string, threadId: string): Promise<TaskData[]> {
-    const result = await this.request<{ tasks: TaskData[] }>(
+  async listJobs(sessionId: string, threadId: string): Promise<JobData[]> {
+    const result = await this.request<{ jobs: JobData[] }>(
       "GET",
-      `${threadPath(sessionId, threadId)}/tasks`,
+      `${threadPath(sessionId, threadId)}/jobs`,
     );
-    return result.tasks;
+    return result.jobs;
   }
 
-  async listTodos(sessionId: string, threadId: string): Promise<TodoItemData[]> {
-    const result = await this.request<{ items: TodoItemData[] }>(
-      "GET",
-      `${threadPath(sessionId, threadId)}/todos`,
-    );
-    return result.items;
+  listTodos(sessionId: string, threadId: string): Promise<import("./wire").TaskList> {
+    return this.request("GET", `${threadPath(sessionId, threadId)}/todos`);
   }
 
   async listCommands(sessionId: string, threadId: string): Promise<CommandInfo[]> {
@@ -317,23 +297,23 @@ export class XBotApi {
     return result.commands;
   }
 
-  runCommand(sessionId: string, threadId: string, command: string, raw: string) {
+  runCommand(sessionId: string, threadId: string, _command: string, raw: string) {
     return this.request<CommandResult>(
       "POST",
       `${threadPath(sessionId, threadId)}/commands`,
-      { command, raw, kind: "server" },
+      { raw },
     );
   }
 
   clearHistory(sessionId: string, threadId: string) {
-    return this.request<{ messages: HistoryItem[] }>(
+    return this.request<import("./wire").HistoryMutation>(
       "POST",
       `${threadPath(sessionId, threadId)}/history/clear`,
     );
   }
 
   undoHistory(sessionId: string, threadId: string, count = 1) {
-    return this.request<{ messages: HistoryItem[]; removed_turns: number; history_cursor?: string | null }>(
+    return this.request<import("./wire").HistoryMutation>(
       "POST",
       `${threadPath(sessionId, threadId)}/history/undo`,
       { count, history_limit: 160 },
@@ -361,17 +341,17 @@ export class XBotApi {
     );
   }
 
-  stopTask(sessionId: string, threadId: string, taskId: string) {
-    return this.request<{ tasks: TaskData[] }>(
+  stopJob(sessionId: string, threadId: string, jobId: string) {
+    return this.request<{ jobs: JobData[] }>(
       "POST",
-      `${threadPath(sessionId, threadId)}/tasks/${segment(taskId)}/stop`,
+      `${threadPath(sessionId, threadId)}/jobs/${segment(jobId)}/stop`,
     );
   }
 
-  stopAllTasks(sessionId: string, threadId: string) {
-    return this.request<{ tasks: TaskData[] }>(
+  stopAllJobs(sessionId: string, threadId: string) {
+    return this.request<{ jobs: JobData[] }>(
       "POST",
-      `${threadPath(sessionId, threadId)}/tasks/stop`,
+      `${threadPath(sessionId, threadId)}/jobs/stop`,
     );
   }
 
@@ -396,6 +376,14 @@ export class XBotApi {
     });
   }
 
+  /** Tool catalog for the active thread: namespace tells a skill tool apart. */
+  listTools(sessionId: string, threadId: string) {
+    return this.request<{ tools: ToolInfo[] }>(
+      "GET",
+      `${threadPath(sessionId, threadId)}/tools`,
+    );
+  }
+
   updatePendingInput(
     sessionId: string,
     threadId: string,
@@ -409,41 +397,56 @@ export class XBotApi {
     );
   }
 
-  async *sendMessage(
+  sendMessage(
     sessionId: string,
     threadId: string,
     content: string,
-    images: ImageInput[],
+    media: MediaInput[],
     attachments: AttachmentInput[],
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
     delivery: "queue" | "steer" = "steer",
-  ): AsyncGenerator<ServerEvent> {
-    for await (const event of this.stream("POST", `${threadPath(sessionId, threadId)}/messages`, {
+  ): Promise<void> {
+    const payload: MessageRequest = {
       content,
-      images,
+      media,
       attachments,
       request_id: requestId,
       delivery,
-    }, signal)) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
-    }
+    };
+    return this.requestNoContent("POST", `${threadPath(sessionId, threadId)}/messages`, payload, signal);
   }
 
-  async *regenerateMessage(
+  regenerateMessage(
     sessionId: string,
     threadId: string,
     signal?: AbortSignal,
     requestId = crypto.randomUUID(),
-  ): AsyncGenerator<ServerEvent> {
-    for await (const event of this.stream(
+  ): Promise<void> {
+    const payload: RegenerateRequest = { request_id: requestId };
+    return this.requestNoContent(
       "POST",
       `${threadPath(sessionId, threadId)}/history/regenerate`,
-      { request_id: requestId },
+      payload,
       signal,
-    )) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
-    }
+    );
+  }
+
+  private async requestNoContent(
+    method: string,
+    path: string,
+    body?: MessageRequest | RegenerateRequest,
+    signal?: AbortSignal,
+  ): Promise<void> {
+    const response = await fetch(`${this.baseUrl}${path}`, {
+      method,
+      signal,
+      headers: {
+        ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+      },
+      body: body === undefined ? undefined : JSON.stringify(body),
+    });
+    if (!response.ok) await throwResponse(response);
   }
 
   artifactUrl(sessionId: string, threadId: string, artifactId: string): string {
@@ -456,14 +459,16 @@ export class XBotApi {
     threadId: string,
     after: number,
     signal?: AbortSignal,
+    onConnected?: () => void,
   ) {
     for await (const event of this.stream(
       "GET",
       `${threadPath(sessionId, threadId)}/events?after=${encodeURIComponent(after)}`,
       undefined,
       signal,
+      onConnected,
     )) {
-      yield this.withEventArtifactUrls(sessionId, threadId, event);
+      yield event;
     }
   }
 
@@ -492,6 +497,7 @@ export class XBotApi {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    onConnected?: () => void,
   ): AsyncGenerator<ServerEvent> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
@@ -504,85 +510,15 @@ export class XBotApi {
     });
     if (!response.ok) await throwResponse(response);
     if (!response.body) throw new Error("XBot returned an empty event stream");
+    onConnected?.();
     for await (const event of decodeSseStream(response.body)) {
       yield event;
-      if (event.type === "end") return;
+      if (event.kind === "end") return;
     }
     throw new Error("XBot event stream ended before its terminal event");
   }
 
-  private withArtifactUrls(session: OpenSessionResponse): OpenSessionResponse {
-    return {
-      ...session,
-      history: this.decorateHistory(session.session_id, session.thread_id, session.history),
-    };
-  }
 
-  private decorateHistory(
-    sessionId: string,
-    threadId: string,
-    history: HistoryItem[],
-  ): HistoryItem[] {
-    return history.map((item) => ({
-      ...item,
-      images: item.images.map((image) => ({
-        ...image,
-        url: this.artifactUrl(sessionId, threadId, image.path),
-      })),
-      artifacts: item.artifacts.map((artifact) => ({
-        ...artifact,
-        url: typeof artifact.id === "string"
-          ? this.artifactUrl(sessionId, threadId, artifact.id)
-          : undefined,
-      })),
-    }));
-  }
-
-  private withEventArtifactUrls(
-    sessionId: string,
-    threadId: string,
-    event: ServerEvent,
-  ): ServerEvent {
-    if (event.type === "history_updated") {
-      const history = Array.isArray(event.data.history)
-        ? event.data.history as unknown as HistoryItem[]
-        : [];
-      return {
-        ...event,
-        data: {
-          ...event.data,
-          history: this.decorateHistory(sessionId, threadId, history),
-        },
-      };
-    }
-    if (!["message", "tool_result"].includes(event.type)) return event;
-    const images = Array.isArray(event.data.images) ? event.data.images : [];
-    const artifacts = Array.isArray(event.data.artifacts) ? event.data.artifacts : [];
-    return {
-      ...event,
-      data: {
-        ...event.data,
-        images: images.map((value) => {
-          const image = value && typeof value === "object" ? value as Record<string, unknown> : {};
-          return {
-            ...image,
-            url: typeof image.path === "string"
-              ? this.artifactUrl(sessionId, threadId, image.path)
-              : undefined,
-          };
-        }),
-        artifacts: artifacts.map((value) => {
-          const artifact = value && typeof value === "object" ? value as Record<string, unknown> : {};
-          return {
-            ...artifact,
-            url: typeof artifact.id === "string"
-              ? this.artifactUrl(sessionId, threadId, artifact.id)
-              : undefined,
-          };
-        }),
-      },
-    };
-  }
 }
 
 async function throwResponse(response: Response): Promise<never> {
@@ -606,4 +542,10 @@ function segment(value: string): string {
 
 function threadPath(sessionId: string, threadId: string): string {
   return `/sessions/${segment(sessionId)}/threads/${segment(threadId)}`;
+}
+
+function pageQuery(cursor?: string | null): string {
+  const query = new URLSearchParams({ limit: "100" });
+  if (cursor) query.set("cursor", cursor);
+  return `?${query}`;
 }

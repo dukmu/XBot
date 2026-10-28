@@ -6,7 +6,8 @@ import asyncio
 
 import pytest
 
-from xcore import Context, FiberState
+from xcore.api.context import Context
+from xcore.api.plugins import FiberState
 
 
 # ---------------------------------------------------------------------------
@@ -180,7 +181,7 @@ async def test_apply_failure_is_isolated_and_awaitable():
 
 
 async def test_bound_effect_and_current_plugin_name():
-    from xcore import bound_effect, current_plugin_name
+    from xcore.api.plugins import bound_effect, current_plugin_name
 
     ctx = Context()
     cleaned: list[str] = []
@@ -203,7 +204,7 @@ async def test_bound_effect_and_current_plugin_name():
 
 
 async def test_current_fiber_tracks_applying_plugin_and_binds_cleanup():
-    from xcore import current_fiber
+    from xcore.api.plugins import current_fiber
 
     ctx = Context()
     seen: list[str | None] = []

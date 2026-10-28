@@ -1,0 +1,323 @@
+"""Tool definitions, schemas and canonical result values."""
+
+from __future__ import annotations
+
+import inspect
+import types
+from collections.abc import Mapping
+from dataclasses import dataclass
+from typing import Any, Callable, Literal, TypeAlias, get_args, get_origin, get_type_hints
+from pydantic import BaseModel, ConfigDict, Field, JsonValue
+from XBotv2.core.api.artifacts import ArtifactRef
+from XBotv2.core.api.domain import MessageId, StructuredToolOutput, ToolCallId
+from XBotv2.core.api.parts import MediaPart, TextPart
+
+
+@dataclass(frozen=True)
+class GuardDecision:
+    """Monotonic denial returned by a tool-execution guard plugin.
+
+    Guards are registered on ``ctx.tools`` (``ToolsService.guard``) and
+    evaluated in registration order before dispatch. ``None`` means the guard
+    does not gate this call. A denial cannot be reversed by another guard.
+    """
+
+    action: Literal["deny"] = "deny"
+    reason: str = ""
+    source: str = "guard"
+    pass
+
+
+@dataclass(frozen=True, slots=True)
+class SandboxEscape:
+    """One call's tool-owned request to execute outside the sandbox."""
+
+    argument: str
+    reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class ToolInvocation:
+    """Identity of a tool call in its canonical assistant message."""
+
+    assistant_message_id: MessageId
+    call_id: ToolCallId
+
+
+class ToolCall(BaseModel):
+    id: ToolCallId = Field(min_length=1)
+    name: str = Field(min_length=1)
+    args: dict[str, JsonValue] = Field(default_factory=dict)
+    type: Literal["tool_call"] = "tool_call"
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolError(BaseModel):
+    code: str
+    message: str
+    retryable: bool = False
+    details: Mapping[str, JsonValue] = Field(default_factory=dict)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolCallRef(BaseModel):
+    id: ToolCallId
+    name: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolOutput(BaseModel):
+    parts: tuple[TextPart | MediaPart, ...] = ()
+    structured: StructuredToolOutput | None = None
+    artifacts: tuple[ArtifactRef, ...] = ()
+    model_config = ConfigDict(extra="forbid", frozen=True, arbitrary_types_allowed=True)
+
+
+class ToolSucceeded(BaseModel):
+    kind: Literal["succeeded"] = "succeeded"
+    output: ToolOutput
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolFailed(BaseModel):
+    kind: Literal["failed"] = "failed"
+    error: ToolError
+    output: ToolOutput
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolDenied(BaseModel):
+    kind: Literal["denied"] = "denied"
+    reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class ToolCancelled(BaseModel):
+    kind: Literal["cancelled"] = "cancelled"
+    reason: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+ToolOutcome: TypeAlias = ToolSucceeded | ToolFailed | ToolDenied | ToolCancelled
+
+
+def tool_outcome_parts(outcome: ToolOutcome) -> tuple[TextPart | MediaPart, ...]:
+    """Return the complete model-facing result without duplicating stored data."""
+    if isinstance(outcome, ToolSucceeded):
+        return outcome.output.parts
+    if isinstance(outcome, ToolFailed):
+        error = TextPart(
+            text=f"Tool error [{outcome.error.code}]: {outcome.error.message}"
+        )
+        return (error, *outcome.output.parts)
+    if isinstance(outcome, ToolDenied):
+        return (TextPart(text=f"Tool denied: {outcome.reason}"),)
+    return (TextPart(text=f"Tool cancelled: {outcome.reason}"),)
+
+
+def text_output(text: str, *, artifacts: tuple[ArtifactRef, ...] = ()) -> ToolOutput:
+    """Create the canonical textual tool output."""
+    return ToolOutput(parts=(TextPart(text=text),), artifacts=artifacts)
+
+
+def succeeded_text(text: str, *, artifacts: tuple[ArtifactRef, ...] = ()) -> ToolSucceeded:
+    return ToolSucceeded(output=text_output(text, artifacts=artifacts))
+
+
+def failed_text(code: str, message: str, *, retryable: bool = False) -> ToolFailed:
+    return ToolFailed(
+        error=ToolError(code=code, message=message, retryable=retryable),
+        output=ToolOutput(),
+    )
+
+
+class ContinueTurn(BaseModel):
+    kind: Literal["continue"] = "continue"
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class CompleteTurn(BaseModel):
+    kind: Literal["complete"] = "complete"
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+TurnDirective: TypeAlias = ContinueTurn | CompleteTurn
+
+
+class ToolExecution(BaseModel):
+    message: "ToolMessage"
+    events: tuple[object, ...] = ()
+    directive: TurnDirective
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+@dataclass(frozen=True)
+class Tool:
+    name: str
+    description: str
+    function: Callable[..., Any]
+    parameters: dict[str, Any]
+    tool_call_parameter: str | None = None
+    #: The owning package is the only place that knows which argument values
+    #: request execution outside the sandbox. Returning a requirement makes
+    #: that one call approval-gated; ``None`` is an ordinary sandboxed call.
+    sandbox_escape: Callable[[Mapping[str, JsonValue]], SandboxEscape | None] | None = None
+    #: Declared by the owning package: the model-facing category of this tool
+    #: (``read``/``edit``/``execute``/``search``/``fetch``/``think``/``other``).
+    #: Clients such as ACP render it directly; carriers consume the
+    #: declaration instead of re-deriving a taxonomy from tool names.
+    kind: str = "other"
+    #: Declared by the owning package: the argument names that define this
+    #: tool's authorization scope when a session grant is minted from one
+    #: call (selectors, not bulk payloads). Empty means "constrain every
+    #: scalar argument", which is the conservative fallback.
+    grant_selectors: tuple[str, ...] = ()
+    tool_invocation_parameter: str | None = None
+
+    @classmethod
+    def from_function(
+        cls,
+        function: Callable[..., Any],
+        *,
+        name: str | None = None,
+        excluded_parameters: frozenset[str] = frozenset(),
+    ) -> "Tool":
+        signature = inspect.signature(function)
+        description = (inspect.getdoc(function) or "").strip()
+        try:
+            type_hints = get_type_hints(function)
+        except (NameError, TypeError):
+            type_hints = {}
+        tool_call_parameters = tuple(
+            parameter_name
+            for parameter_name, parameter in signature.parameters.items()
+            if type_hints.get(parameter_name, parameter.annotation)
+            is ToolCall
+        )
+        if len(tool_call_parameters) > 1:
+            raise TypeError("a Tool may declare only one ToolCall parameter")
+        if tool_call_parameters:
+            parameter = signature.parameters[tool_call_parameters[0]]
+            if parameter.kind is not inspect.Parameter.KEYWORD_ONLY:
+                raise TypeError("a ToolCall parameter must be keyword-only")
+        invocation_parameters = tuple(
+            parameter_name
+            for parameter_name, parameter in signature.parameters.items()
+            if type_hints.get(parameter_name, parameter.annotation) is ToolInvocation
+        )
+        if len(invocation_parameters) > 1:
+            raise TypeError("a Tool may declare only one ToolInvocation parameter")
+        if invocation_parameters and signature.parameters[invocation_parameters[0]].kind is not inspect.Parameter.KEYWORD_ONLY:
+            raise TypeError("a ToolInvocation parameter must be keyword-only")
+        return cls(
+            name=name or function.__name__,
+            description=description,
+            function=function,
+            parameters=_parameters_schema(
+                signature,
+                type_hints,
+                excluded=frozenset(tool_call_parameters) | frozenset(invocation_parameters) | excluded_parameters,
+            ),
+            tool_call_parameter=(
+                tool_call_parameters[0] if tool_call_parameters else None
+            ),
+            tool_invocation_parameter=(invocation_parameters[0] if invocation_parameters else None),
+        )
+
+
+    def provider_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": self.parameters,
+            },
+        }
+
+
+def provider_tool_schema(tool: Tool) -> dict[str, Any]:
+    return tool.provider_schema()
+
+
+def tool_parameters_schema(tool: Tool) -> dict[str, Any]:
+    """Return the JSON Schema declared by one registered XBot ``Tool``."""
+    return tool.parameters
+
+
+def _parameters_schema(
+    signature: inspect.Signature,
+    type_hints: dict[str, Any] | None = None,
+    *,
+    excluded: frozenset[str] = frozenset(),
+) -> dict[str, Any]:
+    properties: dict[str, Any] = {}
+    required: list[str] = []
+    accepts_extra = False
+    for name, parameter in signature.parameters.items():
+        if name in excluded:
+            continue
+        if parameter.kind == parameter.VAR_KEYWORD:
+            accepts_extra = True
+            continue
+        if parameter.kind == parameter.VAR_POSITIONAL:
+            continue
+        if parameter.kind == parameter.KEYWORD_ONLY and parameter.default is not inspect.Parameter.empty:
+            continue
+        annotation = (type_hints or {}).get(name, parameter.annotation)
+        properties[name] = _annotation_schema(annotation)
+        if parameter.default is inspect.Parameter.empty:
+            required.append(name)
+    schema: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "additionalProperties": accepts_extra,
+    }
+    if required:
+        schema["required"] = required
+    return schema
+
+
+def _annotation_schema(annotation: Any) -> dict[str, Any]:
+    if annotation is inspect.Signature.empty:
+        return {"type": "string"}
+    if annotation is Any:
+        return {}
+    origin = get_origin(annotation)
+    args = get_args(annotation)
+    if origin is Literal:
+        values = list(args)
+        value_type = type(values[0]) if values else str
+        schema = _annotation_schema(value_type)
+        schema["enum"] = values
+        return schema
+    if origin is list:
+        return {"type": "array", "items": _annotation_schema(args[0] if args else str)}
+    if origin is dict:
+        value_type = args[1] if len(args) > 1 else Any
+        return {
+            "type": "object",
+            "additionalProperties": _annotation_schema(value_type),
+        }
+    if origin in {tuple, set}:
+        return {"type": "object"}
+    if origin is types.UnionType:
+        branches = [
+            {"type": "null"} if arg is type(None) else _annotation_schema(arg)
+            for arg in args
+        ]
+        if len(branches) == 1:
+            return branches[0]
+        return {"anyOf": branches}
+    if origin is not None and type(None) in args:
+        non_null = [
+            _annotation_schema(arg)
+            for arg in args
+            if arg is not type(None)
+        ]
+        return {"anyOf": [*non_null, {"type": "null"}]}
+    return {
+        str: {"type": "string"},
+        int: {"type": "integer"},
+        float: {"type": "number"},
+        bool: {"type": "boolean"},
+    }.get(annotation, {"type": "string"})

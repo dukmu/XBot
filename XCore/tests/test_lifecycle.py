@@ -7,7 +7,8 @@ import logging
 
 import pytest
 
-from xcore import Context, FiberState
+from xcore.api.context import Context
+from xcore.api.plugins import FiberState
 
 
 async def test_start_loads_plugins_and_fires_ready():
