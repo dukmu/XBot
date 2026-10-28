@@ -2,41 +2,43 @@
 
 from __future__ import annotations
 
+from typing import Callable
+
 from textual.app import ComposeResult
-from textual.containers import Vertical
-from textual.screen import ModalScreen
+from textual.containers import VerticalScroll
+from textual.widget import Widget
 from textual.widgets import Input, Static
 
 
 INTERACTION_INPUT_CSS = """
-InteractionInputScreen {
-    align: center middle;
-}
-InteractionInputScreen > #interaction-input-card {
-    width: 72;
-    max-width: 90%;
+InteractionInputPanel {
+    width: 100%;
     height: auto;
-    background: $panel;
-    border: round $accent;
+    max-height: 100%;
+}
+InteractionInputPanel > #interaction-input-card {
+    width: 100%;
+    max-height: 100%;
+    height: auto;
     padding: 0 1;
 }
-InteractionInputScreen #interaction-input-title {
+InteractionInputPanel #interaction-input-title {
     height: auto;
     text-style: bold;
 }
-InteractionInputScreen #interaction-input-question {
+InteractionInputPanel #interaction-input-question {
     height: auto;
     color: $text-muted;
 }
-InteractionInputScreen #interaction-input-source,
-InteractionInputScreen #interaction-input-hint {
+InteractionInputPanel #interaction-input-source,
+InteractionInputPanel #interaction-input-hint {
     height: 1;
     color: $text-muted;
 }
-InteractionInputScreen #interaction-input-hint {
+InteractionInputPanel #interaction-input-hint {
     margin-top: 1;
 }
-InteractionInputScreen Input {
+InteractionInputPanel Input {
     height: 1;
     border: none;
     padding: 0;
@@ -44,7 +46,7 @@ InteractionInputScreen Input {
 """
 
 
-class InteractionInputScreen(ModalScreen[str | None]):
+class InteractionInputPanel(Widget):
     """Collect one non-empty answer without turning it into a chat message."""
 
     DEFAULT_CSS = INTERACTION_INPUT_CSS
@@ -52,11 +54,12 @@ class InteractionInputScreen(ModalScreen[str | None]):
 
     def __init__(self, question: str, *, source: str = "") -> None:
         super().__init__()
+        self.on_result: Callable[[str | None], None] | None = None
         self.question = question
         self.source = source
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="interaction-input-card"):
+        with VerticalScroll(id="interaction-input-card"):
             yield Static("Question", id="interaction-input-title")
             yield Static(self.question, id="interaction-input-question")
             if self.source:
@@ -70,10 +73,14 @@ class InteractionInputScreen(ModalScreen[str | None]):
     def on_input_submitted(self, event: Input.Submitted) -> None:
         answer = event.value.strip()
         if answer:
-            self.dismiss(answer)
+            self._finish(answer)
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self._finish(None)
+
+    def _finish(self, value: str | None) -> None:
+        if self.on_result is not None:
+            self.on_result(value)
 
 
-__all__ = ["INTERACTION_INPUT_CSS", "InteractionInputScreen"]
+__all__ = ["INTERACTION_INPUT_CSS", "InteractionInputPanel"]

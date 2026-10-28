@@ -11,10 +11,20 @@ TUI_CSS = """
 Screen {
     layout: vertical;
 }
+Screen:inline {
+    height: 24;
+    max-height: 100%;
+}
 #transcript {
     height: 1fr;
     width: 1fr;
     padding: 0 1;
+}
+#inline-panel {
+    height: auto;
+    max-height: 60%;
+    width: 1fr;
+    display: none;
 }
 #completion {
     height: auto;
@@ -43,25 +53,23 @@ Screen {
     max-height: 4;
     width: 1fr;
     padding: 0 1;
-    border-top: solid $primary-darken-2;
     color: $text-muted;
     display: none;
 }
 #composer {
     padding: 0 1;
-    border-top: solid $primary-darken-2;
-    border-bottom: solid $primary-darken-2;
-    background: $panel;
+    border-top: solid $text-muted;
+    background: $background;
 }
 #status {
-    background: $panel;
+    background: $background;
     color: $text-muted;
 }
 #footer {
     height: 1;
     width: 1fr;
     padding: 0 1;
-    background: $panel;
+    background: $background;
     color: $text-muted;
 }
 """

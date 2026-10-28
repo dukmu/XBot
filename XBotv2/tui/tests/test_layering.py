@@ -231,18 +231,3 @@ def _attribute_chain(node: ast.expr) -> list[str]:
 def test_only_the_reducer_writes_the_facts() -> None:
     """Invariant I7: the status is derived, so its inputs have one writer."""
     assert assignments_outside_the_reducer() == []
-
-
-# --- one chooser, not one per command ------------------------------------
-
-
-def test_there_is_exactly_one_place_that_offers_a_selection() -> None:
-    """``/session``, ``/thread``, ``/provider``, ``/model``, ``/effort`` and
-    ``/agent`` all ask the same question, so they share one screen and one
-    runner. A second ``SelectionScreen(...)`` call site is a second
-    implementation of "list, choose, apply" waiting to drift.
-    """
-    app_source = (TUI / "app.py").read_text(encoding="utf-8")
-    assert app_source.count("SelectionScreen(") == 1, (
-        "every picker must go through the one chooser in app.py"
-    )

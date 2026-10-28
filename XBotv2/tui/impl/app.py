@@ -17,7 +17,7 @@ from typing import TYPE_CHECKING, Awaitable, Callable, Literal, Sequence
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
-from textual.containers import Horizontal
+from textual.containers import Horizontal, Vertical
 from textual import on
 from textual.widgets import Collapsible, TextArea
 
@@ -49,19 +49,19 @@ from XBotv2.tui.impl.view.pickers import (
     session_options,
     thread_options,
 )
-from XBotv2.tui.impl.view.selection import Option, SelectionScreen
+from XBotv2.tui.impl.view.selection import Option, SelectionPanel
 from XBotv2.tui.impl.view.settings import (
     PluginConfigDraft,
     PluginConfigSaveAction,
     SettingsAction,
     SettingsData,
-    SettingsScreen,
+    SettingsPanel,
 )
 from XBotv2.tui.impl.view.composer import Composer, ComposerModel, composer_can_submit
 from XBotv2.tui.impl.view.entries import BlockVisibility, block_choice
 from XBotv2.tui.impl.view.footer import FooterBar
 from XBotv2.tui.impl.view.jobs import JobPanel
-from XBotv2.tui.impl.view.interaction import InteractionInputScreen
+from XBotv2.tui.impl.view.interaction import InteractionInputPanel
 from XBotv2.tui.impl.view.queue import QueuePanel
 from XBotv2.tui.impl.view.status_bar import StatusBar, StatusLine, status_report
 from XBotv2.tui.impl.view.transcript import TranscriptScroll, TranscriptView
@@ -173,6 +173,8 @@ class TuiApp(App[None]):
         Binding("ctrl+end", "live", "Return to live", show=False, priority=True),
         Binding("ctrl+p", "palette", "Commands"),
         Binding("ctrl+t", "agents", "Agent threads"),
+        Binding("ctrl+q", "queue_editor", "Edit queue", priority=True),
+        Binding("ctrl+r", "recall_input", "Recall message", priority=True),
         Binding("f2", "settings", "Settings", priority=True),
         Binding("ctrl+o", "expand_blocks", "Expand folded content", priority=True),
         Binding("ctrl+right", "body_next", "Next body page", show=False, priority=True),
@@ -208,8 +210,10 @@ class TuiApp(App[None]):
         self._tasks: list[asyncio.Task] = []
         self._presented_interaction_id: str | None = None
         self._active_interaction_screen: (
-            SelectionScreen | InteractionInputScreen | None
+            SelectionPanel | InteractionInputPanel | None
         ) = None
+        self._queue_edit: tuple[str, str, str, str] | None = None
+        self._active_panel = None
 
     @property
     def workspace(self) -> str:
@@ -230,6 +234,7 @@ class TuiApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield TranscriptScroll(id="transcript")
+        yield Vertical(id="inline-panel")
         with Horizontal(id="panels"):
             yield Collapsible(JobPanel(id="jobs"), title="Tasks", collapsed=True, id="job-panel")
         yield QueuePanel(id="queue")
@@ -336,6 +341,23 @@ class TuiApp(App[None]):
         """
         if self.controller is None:
             return
+        if self._queue_edit is not None:
+            session, thread, message_id, draft = self._queue_edit
+            if (session, thread) != (self.controller.state.session_id, self.controller.state.thread_id) or self.controller.state.read_only:
+                self.view.composer.load_text(text)
+                self._notify("queue", "Thread changed; your edit is preserved. Esc cancels editing.")
+                return
+            try:
+                await self._backend.update_pending_input(session, thread, message_id, action="edit", content=text)
+            except Exception as exc:
+                self.view.composer.load_text(text)
+                self._notify("queue", f"Could not save queued input: {exc}. Your edit is preserved.")
+                return
+            self._queue_edit = None
+            self.view.composer.set_queue_editing(False)
+            self.view.composer.load_text(draft)
+            self._notify("queue", "Queued input updated.")
+            return
         parsed = self.commands.parse(text)
         if parsed is None:
             if not composer_can_submit(self.controller.composer_model(), text=text):
@@ -410,9 +432,9 @@ class TuiApp(App[None]):
         compact: bool = False,
         cancel_value: str | None = None,
         initial_value: str | None = None,
-    ) -> SelectionScreen:
+    ) -> SelectionPanel:
         choices = tuple(options)
-        return SelectionScreen(
+        return SelectionPanel(
             title,
             choices,
             search=(lambda query: filter_options(choices, query)) if searchable else None,
@@ -423,6 +445,36 @@ class TuiApp(App[None]):
             cancel_value=cancel_value,
             initial_value=initial_value,
         )
+
+    async def _close_panel(self, panel) -> None:
+        if self._active_panel is panel:
+            self._active_panel = None
+            panel.on_result = None
+            await panel.remove()
+            self.query_one("#inline-panel", Vertical).display = False
+            self.query_one("#composer", Composer).focus()
+
+    async def _show_panel(self, panel, callback) -> None:
+        if (self._active_panel is not None
+                and self._active_panel is self._active_interaction_screen
+                and panel is not self._active_interaction_screen):
+            self._notify("interaction", "Respond to the current request first.")
+            return
+        if self._active_panel is not None:
+            await self._close_panel(self._active_panel)
+        container = self.query_one("#inline-panel", Vertical)
+        self._active_panel = panel
+        container.display = True
+
+        def finish(value) -> None:
+            async def close_and_apply() -> None:
+                if self._active_panel is panel:
+                    await self._close_panel(panel)
+                    callback(value)
+            self.run_worker(close_and_apply(), exclusive=False, name="tui-panel-result")
+
+        panel.on_result = finish
+        await container.mount(panel)
 
     async def _present_interaction(
         self, request: InteractionRequest | None
@@ -438,8 +490,8 @@ class TuiApp(App[None]):
             self._presented_interaction_id = None
             active = self._active_interaction_screen
             self._active_interaction_screen = None
-            if active is not None and self.screen is active:
-                active.dismiss(None)
+            if active is not None and self._active_panel is active:
+                await self._close_panel(active)
             return
         if request.interaction_id == self._presented_interaction_id:
             return
@@ -448,10 +500,7 @@ class TuiApp(App[None]):
             return
         self._presented_interaction_id = request.interaction_id
         self._active_interaction_screen = screen
-        await self.push_screen(
-            screen,
-            callback=lambda value: self._interaction_chosen(request, value),
-        )
+        await self._show_panel(screen, lambda value: self._interaction_chosen(request, value))
 
     def _interaction_chosen(
         self, request: InteractionRequest, value: str | None
@@ -494,7 +543,7 @@ class TuiApp(App[None]):
     def _interaction_screen(
         self,
         request: InteractionRequest,
-    ) -> SelectionScreen | InteractionInputScreen | None:
+    ) -> SelectionPanel | InteractionInputPanel | None:
         """Build presentation from the request's public typed shape.
 
         ``PermissionRequest`` is the one protocol for every approval — a
@@ -521,12 +570,12 @@ class TuiApp(App[None]):
                 compact=True,
             )
         if isinstance(request, UserInputRequest):
-            return InteractionInputScreen(request.question, source=request.source)
+            return InteractionInputPanel(request.question, source=request.source)
         return None
 
     def _permission_screen(
         self, request: PermissionRequest,
-    ) -> SelectionScreen:
+    ) -> SelectionPanel:
         """One prompt for every permission request, whatever raised it."""
         if isinstance(request.subject, ToolPermission):
             subject = request.subject.tool_call.name
@@ -605,7 +654,7 @@ class TuiApp(App[None]):
         if not options:
             self._notify(title.lower(), f"Nothing to choose from in {title.lower()}.")
             return
-        await self.push_screen(
+        await self._show_panel(
             self._selection_screen(
                 title,
                 options,
@@ -782,8 +831,8 @@ class TuiApp(App[None]):
             reasoning_visible=visibility.reasoning,
             tool_details_visible=visibility.details,
         )
-        self.push_screen(
-            SettingsScreen(
+        await self._show_panel(
+            SettingsPanel(
                 data,
                 initial_page=initial_page,
                 read_only=read_only,
@@ -823,10 +872,10 @@ class TuiApp(App[None]):
             self._notify("settings", f"No {title.lower()} are available.")
             self._restore_composer_focus()
             return
-        self.push_screen(
+        self.run_worker(self._show_panel(
             self._selection_screen(title, action.choices),
             callback=lambda value: self._settings_value_chosen(value, apply),
-        )
+        ), exclusive=False, name="tui-settings-choices")
 
     async def _save_plugin_config(self, action: PluginConfigSaveAction) -> None:
         if self.controller is None:
@@ -1244,12 +1293,116 @@ class TuiApp(App[None]):
         self.exit()
 
     async def action_interrupt(self) -> None:
+        if self._queue_edit is not None and self.view is not None:
+            self.view.composer.load_text(self._queue_edit[3])
+            self._queue_edit = None
+            self.view.composer.set_queue_editing(False)
+            self._notify("queue", "Queued input edit cancelled.")
+            return
         if self.controller is None:
             return
         if self.controller.state.read_only:
             await self._switch_thread("")
             return
         await self.controller.interrupt()
+
+    async def action_queue_editor(self) -> None:
+        if self.controller is None or self.view is None or self._queue_edit is not None:
+            return
+        state = self.controller.state
+        if state.read_only:
+            self._notify("queue", "This thread is read-only.")
+            return
+        identity = (state.session_id, state.thread_id)
+        options = [Option(item.message_id, f"{item.content.replace(chr(10), ' ')[:80]}  [{item.target.value}]") for item in state.queue]
+        if not options:
+            self._notify("queue", "No queued inputs.")
+            return
+        async def selected(message_id: str) -> None:
+            if identity != (state.session_id, state.thread_id) or state.read_only:
+                self._notify("queue", "Thread changed; select the input again.")
+                return
+            item = next((item for item in state.queue if item.message_id == message_id), None)
+            if item is None:
+                self._notify("queue", "That input is no longer queued.")
+                return
+            async def apply(action: str) -> None:
+                if identity != (state.session_id, state.thread_id) or state.read_only:
+                    self._notify("queue", "Thread changed; select the input again.")
+                    return
+                if action == "edit":
+                    current = next((entry for entry in state.queue if entry.message_id == message_id), None)
+                    if current is None:
+                        self._notify("queue", "That input is no longer queued.")
+                        return
+                    if current.artifact_count:
+                        self._notify("queue", "Editing this queued message is unavailable; Remove and Steer are available.")
+                        return
+                    self._queue_edit = (*identity, message_id, self.view.composer.text)
+                    self.view.composer.set_queue_editing(True)
+                    self.view.composer.load_text(current.content)
+                    self.view.composer.focus()
+                    self._notify("queue", "Editing queued input: Enter saves, Esc cancels; Shift+Enter adds a line.")
+                    return
+                try:
+                    await self._backend.update_pending_input(*identity, message_id, action=action)
+                except Exception as exc:
+                    self._notify("queue", f"Could not update queued input: {exc}")
+            await self._show_panel(SelectionPanel("Queued input", [Option("edit", "Edit"), Option("remove", "Remove"), Option("steer", "Steer")]), callback=lambda value: self._chosen(value, apply))
+        await self._show_panel(SelectionPanel("Queued inputs", options, hint="Up/Down select · Enter actions · Esc cancel"), callback=lambda value: self._chosen(value, selected))
+
+    async def action_recall_input(self) -> None:
+        from XBotv2.tui.impl.timeline import Delivery, UserEntry
+
+        if self.controller is None or self.view is None or self._queue_edit is not None:
+            return
+        state = self.controller.state
+        if state.read_only:
+            self._notify("history", "This thread is read-only.")
+            return
+        identity = (state.session_id, state.thread_id)
+        history = self.controller._history_state or state
+        draft = self.view.composer.text
+        entries = [entry for entry in history.timeline if isinstance(entry, UserEntry) and entry.delivery is Delivery.ACCEPTED and entry.id not in {item.message_id for item in state.queue}]
+        if not entries:
+            self._notify("history", "No loaded user messages to recall.")
+            return
+        options = [Option(entry.id, entry.content.replace("\n", " ")[:80]) for entry in reversed(entries)]
+        async def selected(message_id: str) -> None:
+            entry = next(entry for entry in entries if entry.id == message_id)
+            text = entry.content
+            from XBotv2.core.api.artifacts import ArtifactKind
+            original = next((ref for ref in entry.artifacts if ref.kind == ArtifactKind.CONTEXT and ref.name == "original-user-input.txt"), None)
+            if original is not None:
+                try:
+                    text = (await self._backend.read_artifact(*identity, original.id)).decode("utf-8")
+                except Exception as exc:
+                    self._notify("history", f"Could not read original message: {exc}")
+                    return
+            elif entry.body_ref is not None and entry.body_ref.length > len(text):
+                try:
+                    parts = []
+                    offset = 0
+                    while True:
+                        page = await self._backend.read_display_body(*identity, message_id, field="content", offset=offset)
+                        parts.append(page.content)
+                        if page.next_offset is None:
+                            break
+                        offset = page.next_offset
+                    text = "".join(parts)
+                except Exception as exc:
+                    self._notify("history", f"Could not read complete message: {exc}")
+                    return
+            if identity != (state.session_id, state.thread_id) or state.read_only:
+                self._notify("history", "Thread changed; message was not recalled.")
+                return
+            if self.view.composer.text != draft:
+                self._notify("history", "Draft changed; message was not recalled.")
+                return
+            self.view.composer.load_text(text)
+            self.view.composer.focus()
+            self._notify("history", "Recalled as a new draft; history is unchanged. Reattach any files before sending.")
+        await self._show_panel(SelectionPanel("Recall a message as a new draft", options, description="The selected message replaces the current draft.", hint="Up/Down select · Enter recall · Esc cancel"), callback=lambda value: self._chosen(value, selected))
 
     async def action_older(self) -> None:
         if self.controller is not None:
@@ -1303,7 +1456,7 @@ class TuiApp(App[None]):
             self.call_after_refresh(container.scroll_to_tail)
 
     async def action_palette(self) -> None:
-        await self.push_screen(CommandPalette(self.commands), callback=self._command_chosen)
+        await self._show_panel(CommandPalette(self.commands), callback=self._command_chosen)
 
     def _command_chosen(self, value: str | None) -> None:
         """Put the chosen command into the composer, ready for arguments."""

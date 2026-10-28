@@ -38,6 +38,14 @@ def test_tui_has_server_defaults_for_auto_spawn():
     assert args.port == 4096
 
 
+def test_tui_display_options():
+    assert parse(["tui"]).fullscreen is None
+    assert parse(["tui", "--fullscreen"]).fullscreen is True
+    assert parse(["tui", "--inline"]).fullscreen is False
+    with pytest.raises(SystemExit):
+        parse(["tui", "--fullscreen", "--inline"])
+
+
 
 
 def test_workspace_defaults_to_startup_directory(monkeypatch, tmp_path):

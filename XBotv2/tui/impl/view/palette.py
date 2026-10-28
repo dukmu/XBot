@@ -1,7 +1,7 @@
 """Picking a command: the palette is the selection list over a command search.
 
 There is no separate palette model. ``CommandPalette`` is a
-:class:`SelectionScreen` whose options come from ``CommandRegistry.search``, so the
+:class:`SelectionPanel` whose options come from ``CommandRegistry.search``, so the
 palette and the slash completion stay consistent about what matches, and there is
 one implementation of "navigate a filtered list".
 """
@@ -12,13 +12,12 @@ from typing import Sequence
 
 from XBotv2.commands.api.contracts import CommandDescription
 from XBotv2.tui.impl.commands import CommandRegistry
-from XBotv2.tui.impl.view.selection import Option, SelectionScreen
+from XBotv2.tui.impl.view.selection import Option, SelectionPanel
 
 PALETTE_CSS = """
 CommandPalette #selection {
-    width: 90%;
-    max-width: 120;
-    max-height: 90%;
+    width: 100%;
+    max-height: 100%;
 }
 """
 
@@ -35,10 +34,10 @@ def command_options(specs: Sequence[CommandDescription]) -> tuple[Option, ...]:
     )
 
 
-class CommandPalette(SelectionScreen):
+class CommandPalette(SelectionPanel):
     """A searchable list of the commands the client can run."""
 
-    DEFAULT_CSS = SelectionScreen.DEFAULT_CSS + PALETTE_CSS
+    DEFAULT_CSS = SelectionPanel.DEFAULT_CSS + PALETTE_CSS
 
     def __init__(self, registry: CommandRegistry) -> None:
         self.registry = registry

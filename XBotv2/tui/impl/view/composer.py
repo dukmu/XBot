@@ -10,7 +10,7 @@ be checked without a terminal. Two things it must get right:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Awaitable, Callable, Literal
 
 from textual.containers import Horizontal, Vertical
@@ -31,6 +31,7 @@ Composer > .composer-hint {
     height: auto;
     width: 1fr;
     padding: 0 1;
+    color: $text-muted;
 }
 Composer > .composer-row {
     height: auto;
@@ -38,16 +39,20 @@ Composer > .composer-row {
 }
 Composer .composer-prompt {
     height: 1;
-    width: 1;
-    color: $text;
+    width: 2;
+    color: $accent;
     text-style: bold;
 }
 Composer #composer-input {
     height: auto;
-    min-height: 3;
-    max-height: 12;
+    min-height: 1;
+    max-height: 8;
     width: 1fr;
+    border: none;
+    padding: 0;
+    background: $background;
 }
+Composer #composer-input:focus { border: none; }
 """
 
 _DEFAULT_HINT = ""
@@ -65,6 +70,7 @@ class ComposerModel:
     # Images waiting to be sent with the next message. They make an otherwise
     # empty composer submittable.
     pending_images: int = 0
+    queue_editing: bool = False
 
 
 def composer_enabled(model: ComposerModel) -> bool:
@@ -85,6 +91,8 @@ def _attachment_note(count: int) -> str:
 def composer_hint(model: ComposerModel) -> str:
     facts = model.facts
     running = facts.server_turn is ServerTurn.RUNNING or facts.turn_open
+    if model.queue_editing:
+        return "Editing queued input · Enter save · Esc cancel · Shift+Enter newline"
     if model.read_only:
         return _READ_ONLY_HINT
     if facts.interaction is Interaction.PERMISSION:
@@ -211,6 +219,8 @@ class Composer(Vertical):
         super().__init__(id=id)
         self._on_submit = on_submit
         self._hint_text = ""
+        self._queue_editing = False
+        self._model: ComposerModel | None = None
         self._hint = Static("", classes="composer-hint")
         self._prompt = Static("❯", classes="composer-prompt")
         self._input = ComposerInput(
@@ -242,14 +252,21 @@ class Composer(Vertical):
     def focus(self, *args, **kwargs) -> None:
         self._input.focus(*args, **kwargs)
 
+    def set_queue_editing(self, editing: bool) -> None:
+        self._queue_editing = editing
+        if self._model is not None:
+            self.show(self._model)
+
     def show(self, model: ComposerModel) -> None:
         """Apply a model: hint, placeholder, and whether input is accepted."""
+        self._model = model
+        model = replace(model, queue_editing=self._queue_editing)
         self._hint_text = composer_hint(model)
         if str(self._hint.content) != self._hint_text:
             self._hint.update(self._hint_text)
         self._hint.display = bool(self._hint_text)
         self._input.placeholder = composer_placeholder(model)
-        self._input.may_submit_empty = model.pending_images > 0
+        self._input.may_submit_empty = model.pending_images > 0 and not model.queue_editing
 
 
 __all__ = [

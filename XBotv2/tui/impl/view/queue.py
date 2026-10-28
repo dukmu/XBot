@@ -27,8 +27,7 @@ QueuePanel {
 QueuePanel .queue-row {
     height: auto;
     width: 1fr;
-    padding-left: 1;
-    border-left: tall $accent;
+    color: $text-muted;
 }
 """
 

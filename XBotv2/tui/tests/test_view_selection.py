@@ -10,7 +10,7 @@ from XBotv2.commands.api.contracts import CommandDescription
 from XBotv2.tui.tests.factories import tui_command_registry
 from XBotv2.tui.impl.commands import CommandRegistry
 from XBotv2.tui.impl.view.palette import CommandPalette, command_options
-from XBotv2.tui.impl.view.selection import MAX_ROWS, Option, SelectionModel, SelectionScreen
+from XBotv2.tui.impl.view.selection import MAX_ROWS, Option, SelectionModel, SelectionPanel
 
 
 def options(*values: str) -> tuple[Option, ...]:
@@ -70,16 +70,20 @@ def test_replacing_with_nothing_resets() -> None:
 
 
 class Harness(App[None]):
-    def __init__(self, screen: SelectionScreen) -> None:
+    def __init__(self, screen: SelectionPanel) -> None:
         super().__init__()
         self.screen_under_test = screen
         self.chosen: list[str | None] = []
 
+    def compose(self) -> ComposeResult:
+        yield Static("Transcript context", id="transcript-context")
+        yield self.screen_under_test
+
     def on_mount(self) -> None:
-        self.push_screen(self.screen_under_test, callback=self.chosen.append)
+        self.screen_under_test.on_result = self.chosen.append
 
 
-async def open_screen(screen: SelectionScreen):
+async def open_screen(screen: SelectionPanel):
     app = Harness(screen)
     context = app.run_test(size=(100, 20))
     pilot = await context.__aenter__()
@@ -88,10 +92,10 @@ async def open_screen(screen: SelectionScreen):
 
 
 async def test_the_screen_shows_its_title_and_rows() -> None:
-    app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
+    app, pilot, context = await open_screen(SelectionPanel("Sessions", options("a", "b")))
     try:
-        screen = app.screen
-        assert isinstance(screen, SelectionScreen)
+        screen = app.screen_under_test
+        assert isinstance(screen, SelectionPanel)
         assert screen.rendered_rows == ("▸ A  the a one", "  B  the b one")
     finally:
         await context.__aexit__(None, None, None)
@@ -100,7 +104,7 @@ async def test_the_screen_shows_its_title_and_rows() -> None:
 async def test_the_selected_row_uses_visible_terminal_independent_colours() -> None:
     """The highlight must not rely on the terminal's reverse-video support."""
     app, _pilot, context = await open_screen(
-        SelectionScreen("Sessions", options("a", "b"))
+        SelectionPanel("Sessions", options("a", "b"))
     )
     try:
         selected = app.screen.query_one(".selection-row.selected", Static)
@@ -117,7 +121,7 @@ async def test_a_long_selected_title_remains_visible_in_its_single_line_row() ->
         "你可以自己试试使用，然后根据你自己的上下文分析。"
     )
     app, _pilot, context = await open_screen(
-        SelectionScreen(
+        SelectionPanel(
             "Sessions",
             (Option("current", title, "current active 4 threads /workspace"),),
         )
@@ -129,7 +133,7 @@ async def test_a_long_selected_title_remains_visible_in_its_single_line_row() ->
 
 
 async def test_the_visible_window_follows_a_selection_beyond_the_row_cap() -> None:
-    screen = SelectionScreen(
+    screen = SelectionPanel(
         "Sessions",
         options(*[f"v{index}" for index in range(MAX_ROWS + 2)]),
     )
@@ -148,7 +152,7 @@ async def test_the_visible_window_follows_a_selection_beyond_the_row_cap() -> No
 
 async def test_an_initial_selection_beyond_the_row_cap_is_visible() -> None:
     values = options(*[f"v{index}" for index in range(MAX_ROWS + 2)])
-    screen = SelectionScreen(
+    screen = SelectionPanel(
         "Sessions",
         values,
         initial_value=values[-1].value,
@@ -161,7 +165,7 @@ async def test_an_initial_selection_beyond_the_row_cap_is_visible() -> None:
 
 
 async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
-    screen = SelectionScreen(
+    screen = SelectionPanel(
         "Permission required",
         options("a", "b"),
         description="Tool: edit\nApproval is required",
@@ -171,7 +175,8 @@ async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
     app, pilot, context = await open_screen(screen)
     try:
         card = app.screen.query_one("#selection")
-        assert card.region.width <= 72
+        assert card.region.width <= app.screen.region.width
+        assert app.query_one("#transcript-context").region.height > 0
         assert "Tool: edit" in str(
             app.screen.query_one("#selection-description", Static).content
         )
@@ -183,7 +188,7 @@ async def test_a_compact_prompt_shows_context_and_keyboard_help() -> None:
 
 
 async def test_a_compact_prompt_stays_wholly_visible_after_a_short_resize() -> None:
-    screen = SelectionScreen(
+    screen = SelectionPanel(
         "Permission required",
         options("once", "session", "deny"),
         description=(
@@ -208,11 +213,11 @@ async def test_a_compact_prompt_stays_wholly_visible_after_a_short_resize() -> N
 
 
 async def test_arrows_move_the_highlight() -> None:
-    app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
+    app, pilot, context = await open_screen(SelectionPanel("Sessions", options("a", "b")))
     try:
         await pilot.press("down")
         await pilot.pause()
-        screen = app.screen
+        screen = app.screen_under_test
         assert screen.model.current.value == "b"
         await pilot.press("up")
         await pilot.pause()
@@ -223,21 +228,21 @@ async def test_arrows_move_the_highlight() -> None:
 
 async def test_arrows_keep_selection_bounded_after_winding_past_both_ends() -> None:
     app, pilot, context = await open_screen(
-        SelectionScreen("Sessions", options("a", "b", "c"))
+        SelectionPanel("Sessions", options("a", "b", "c"))
     )
     try:
         # Eight downs over three rows wrap twice and land on c. The next up
         # must move to b; it must not pay back an unbounded press counter.
         await pilot.press(*(["down"] * 8))
-        assert app.screen.model.current.value == "c"
+        assert app.screen_under_test.model.current.value == "c"
         await pilot.press("up")
-        assert app.screen.model.current.value == "b"
+        assert app.screen_under_test.model.current.value == "b"
     finally:
         await context.__aexit__(None, None, None)
 
 
 async def test_enter_returns_the_highlighted_value() -> None:
-    app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a", "b")))
+    app, pilot, context = await open_screen(SelectionPanel("Sessions", options("a", "b")))
     try:
         await pilot.press("down", "enter")
         await pilot.pause()
@@ -247,7 +252,7 @@ async def test_enter_returns_the_highlighted_value() -> None:
 
 
 async def test_escape_returns_nothing() -> None:
-    app, pilot, context = await open_screen(SelectionScreen("Sessions", options("a")))
+    app, pilot, context = await open_screen(SelectionPanel("Sessions", options("a")))
     try:
         await pilot.press("escape")
         await pilot.pause()
@@ -257,7 +262,7 @@ async def test_escape_returns_nothing() -> None:
 
 
 async def test_escape_can_return_the_owner_defined_cancellation_value() -> None:
-    screen = SelectionScreen(
+    screen = SelectionPanel(
         "Permission required", options("allow", "deny"), cancel_value="deny"
     )
     app, pilot, context = await open_screen(screen)
@@ -270,7 +275,7 @@ async def test_escape_can_return_the_owner_defined_cancellation_value() -> None:
 
 
 async def test_enter_with_no_options_returns_nothing() -> None:
-    app, pilot, context = await open_screen(SelectionScreen("Sessions", ()))
+    app, pilot, context = await open_screen(SelectionPanel("Sessions", ()))
     try:
         await pilot.press("enter")
         await pilot.pause()
@@ -286,10 +291,10 @@ async def test_a_searchable_screen_filters_as_the_user_types() -> None:
         )
 
     app, pilot, context = await open_screen(
-        SelectionScreen("Commands", options("alpha", "beta", "gamma"), search=search)
+        SelectionPanel("Commands", options("alpha", "beta", "gamma"), search=search)
     )
     try:
-        screen = app.screen
+        screen = app.screen_under_test
         await pilot.press("b")
         await pilot.pause()
         assert [option.value for option in screen.model.options] == ["beta"]
@@ -304,7 +309,7 @@ async def test_a_searchable_screen_chooses_on_submit() -> None:
         )
 
     app, pilot, context = await open_screen(
-        SelectionScreen("Commands", options("alpha", "beta"), search=search)
+        SelectionPanel("Commands", options("alpha", "beta"), search=search)
     )
     try:
         await pilot.press("b", "enter")
@@ -349,7 +354,7 @@ async def test_the_palette_filters_and_returns_a_slash_command() -> None:
     try:
         await pilot.press("s", "t", "a")
         await pilot.pause()
-        screen = app.screen
+        screen = app.screen_under_test
         assert "/status" in [option.value for option in screen.model.options]
         await pilot.press("enter")
         await pilot.pause()

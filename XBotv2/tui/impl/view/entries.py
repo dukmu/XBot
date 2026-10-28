@@ -54,8 +54,8 @@ EntryWidget {
     width: 1fr;
     margin-bottom: 0;
 }
-EntryWidget.user {
-    background: $panel;
+EntryWidget.user, EntryWidget.assistant {
+    margin-bottom: 1;
 }
 EntryWidget > .meta {
     height: auto;
@@ -70,8 +70,10 @@ EntryWidget > .body, EntryWidget > .reasoning {
     width: 1fr;
 }
 EntryWidget ClampedBlock:focus {
-    border-left: thick $accent;
+    border-left: none;
+    text-style: bold;
 }
+EntryWidget > .reasoning, EntryWidget > .tool-result { color: $text-muted; }
 """
 
 
@@ -291,7 +293,7 @@ class _TranscriptMarkdown(Markdown):
     """Reuse Rich's output when Textual measures and paints the same document."""
 
     def __init__(self, markup: str) -> None:
-        super().__init__(markup, code_theme="monokai")
+        super().__init__(markup, code_theme="ansi_dark")
         self._render_cache: list[tuple[Console, ConsoleOptions, tuple[Segment, ...]]] = []
         self._line_cache: tuple[tuple[int, tuple[Strip, ...]], ...] = ()
 

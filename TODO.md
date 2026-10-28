@@ -563,3 +563,11 @@
 - [x] 计量勘误：此前TODO/原始报告limitations中“不含shell子进程IO”有误。[Linux proc_pid_io(5)](https://www.man7.org/linux/man-pages/man5/proc_pid_io.5.html)说明该计数包含本进程和已等待回收子进程；活跃未回收child尚未完整汇入，RSS仍只覆盖本进程。shell源码为child直接写spool，200MiB工况累计write_bytes211,542,016B与此一致。保留历史原JSON/日志及数值不改，只纠正harness两处limitations和README，不从原数字改造新的历史结果；本轮表中write_bytes均为该计量域的累计值，非设备实写或纯SQLite写量。
 - [x] 只用Terra完成运行与证据/文档实施，主代理审读指南14/15、现有owner边界和实际产物；只读对照在 `/tmp/xbot-final-requirements-audit.md`。layout及公开API、XCore/loader/session关系、物理backend与owner业务分离、工作集/协作/media/客户端/安装产物已按各迭代证据收口；未恢复旧路径、未添加新框架或重复校验。修stress README已解决缺陷和report应入库两处旧说明。源码组合仍是迭代18记录的分段执行及失败定向修复，不宣称一次全套全绿；本次不重复旧源码套件、PTY/浏览器、探针、构建或hash。
 - [x] 第8节顶层清单反映当前完成状态；各历史迭代的未勾选限制保留其当时范围，后续解除以对应后续日志为准，不把它们重新变成验证任务。e949之后只改本日志、说明文档和harness计量描述字符串，无执行逻辑/生产代码变化，因此不重跑工况或重建wheel。最终只提交这些收尾文件，不纳入原用户设计稿、.worktrees、环境或运行产物，不推送、不合并main。
+
+## 9. TUI 产品与默认视觉（2026-10-28，进行中）
+
+- [x] 新goal从 `6ead4811` 开始；用户要求对照CPP/Maya、Codex推进实际TUI产品功能、默认样式与非弹窗交互，明确不修改runtime。仅三名Terra分工消息编辑/面板、默认外观与启动、行内组件与实际PTY；服务端/协议/存储业务保持原代码。
+- [x] 用户明确纠正“主题”指现有界面不好看，不是增加 `/theme`。撤掉本轮一度新增的主题命令、菜单、CLI/config选择和动态重排；直接统一默认终端底色、ANSI代码色、紧凑输入行、少边框/色块及弱化元数据。使用现有Textual原生inline，不新增Maya绑定；CPP只读参考提交 `851b9367f5c09136477691f723fa1d2a43a204f8`，官方Codex/Textual依据在TUI设计文档。
+- [x] 选择器、设置、审批与问答从ModalScreen改为主界面Widget，主界面单独管理挂载、关闭和焦点；保留目录分页。Ctrl+Q管理pending输入，编辑保存/取消保留原草稿及待发送图片；Ctrl+R明确召回为新草稿，不伪装修改已消费历史。现有轨迹不返回pending接收/编辑记录，带未知artifact的pending无法从公开接口取完整原文，故不以预览覆盖；不为此改变runtime。
+- [x] 必要定向证据：行内组件25项及新增2项actual0（仅工具记录，无磁盘原日志，重命名前）；迁移后的App/新布局首组34 passed/2 failed（`/tmp/xbot-inline-app-tests.log`，exit1），两项旧设置操作/Screen身份假设改为真实键盘滚动和Panel身份后仅两项通过（`/tmp/xbot-inline-plugin-retest.log`，exit0）。消息编辑/原文召回5项（`/tmp/xbot-message-editing.log`，actual0）及编辑持续提示/附件草稿相关新增项通过；后来删除的主题选择测试不算最终功能证据。默认实际代码ANSI/透明背景与紧凑布局2项通过（`/tmp/xbot-tui-layout-test.log`，actual0）。旧全套、压力、provider和wheel不重跑。
+- [ ] 冻结客户端候选后，统一真实TCP服务+生产CLI/tmux验证默认inline、退出scrollback、80×24/40×16、无居中弹窗、真实审批和queue编辑，以及相同对话的旧wheel/new fullscreen外观对照；主代理实际看截图，不能以测试颜色字段或通过数宣称视觉完成。

@@ -128,6 +128,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         help="conversation entries kept in memory before released pages are dropped",
     )
+    display = tui.add_mutually_exclusive_group()
+    display.add_argument(
+        "--fullscreen", dest="fullscreen", action="store_true", default=None,
+        help="use the alternate screen instead of inline terminal display",
+    )
+    display.add_argument(
+        "--inline", dest="fullscreen", action="store_false",
+        help="display inline and keep the output after exit (default)",
+    )
 
     serve = commands.add_parser(
         "serve",
@@ -300,6 +309,7 @@ def _run_tui(args) -> None:
         ("session_id", session_id), ("agent", args.agent),
         ("history_window", args.history_window),
         ("history_retention", args.history_retention),
+        ("fullscreen", args.fullscreen),
     ):
         if value is not None:
             tui_config[key] = value

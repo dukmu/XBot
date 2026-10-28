@@ -13,7 +13,7 @@ FooterBar {
     height: 1;
     width: 1fr;
     padding: 0 1;
-    background: $panel;
+    background: $background;
     color: $text-muted;
 }
 """
@@ -32,9 +32,9 @@ def footer_hint_text(model: ComposerModel) -> str:
         return "Waiting for interrupt · ? shortcuts · Ctrl+C copy/quit"
     if facts.server_turn is ServerTurn.RUNNING or facts.turn_open:
         return (
-            "Esc interrupt · Enter/Alt+S steer · ? shortcuts"
+            "Esc interrupt · Enter/Alt+S steer · Ctrl+Q queue · Ctrl+R recall"
         )
-    return "PageUp/PageDown history · Ctrl+P commands · Ctrl+T agents · F2 settings"
+    return "Ctrl+Q queue · Ctrl+R recall · PageUp/PageDown history · Ctrl+P commands"
 
 
 def render_footer_hints(model: ComposerModel, *, width: int) -> Text:

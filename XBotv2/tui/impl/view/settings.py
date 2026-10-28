@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Callable, Literal
 
 from pydantic import JsonValue
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
-from textual.screen import ModalScreen
 from textual.widget import Widget
 from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
 
@@ -35,16 +34,14 @@ SettingName = Literal["provider", "model", "effort", "agent", "thinking", "detai
 PAGES = ("Status", "Model", "Permissions", "Sandbox", "Plugins", "Appearance")
 
 SETTINGS_CSS = """
-SettingsScreen {
-    align: center middle;
-    background: $background 50%;
+SettingsPanel {
+    width: 100%;
+    height: 18;
+    max-height: 100%;
 }
 #settings {
-    width: 96%;
-    max-width: 110;
-    height: 90%;
-    border: round $accent;
-    background: $panel;
+    width: 100%;
+    height: 100%;
     padding: 0 1;
 }
 #settings-title {
@@ -59,8 +56,7 @@ SettingsScreen {
     height: 1fr;
 }
 #settings-nav > .option-list--option-highlighted {
-    color: $text;
-    background: $primary-darken-2;
+    color: $accent;
     text-style: bold;
 }
 #settings-content {
@@ -93,17 +89,17 @@ Button.settings-action {
     min-height: 1;
     margin-bottom: 1;
     padding: 0 1;
-    background: $panel;
+    background: transparent;
     color: $text;
     text-align: left;
     content-align: left middle;
 }
 .settings-action:focus {
-    background: $primary-darken-2;
+    color: $accent;
     text-style: bold;
 }
 .settings-action:hover {
-    background: $primary-darken-3;
+    color: $accent;
 }
 #settings-help {
     height: 1;
@@ -163,7 +159,7 @@ class PluginConfigSaveAction:
     draft: PluginConfigDraft
 
 
-class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]):
+class SettingsPanel(Widget):
     """Keyboard-first settings navigation with explicit unavailable pages."""
 
     DEFAULT_CSS = SETTINGS_CSS
@@ -177,6 +173,7 @@ class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]
         read_only: bool = False,
     ) -> None:
         super().__init__()
+        self.on_result: Callable[[SettingsAction | PluginConfigSaveAction | None], None] | None = None
         self.data = data
         self.read_only = read_only
         self.page_index = PAGES.index(initial_page) if initial_page in PAGES else 0
@@ -252,7 +249,7 @@ class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]
     async def on_setting_action(self, event: Button.Pressed) -> None:
         name = event.button.id
         if name == "plugin-config-apply":
-            self.dismiss(self._plugin_save_action())
+            self._finish(self._plugin_save_action())
             return
         if name in self._plugin_clear_bindings:
             plugin_id, field_name = self._plugin_clear_bindings[name]
@@ -280,7 +277,7 @@ class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]
             name = "details"
         else:
             return
-        self.dismiss(SettingsAction(name=name, choices=choices))
+        self._finish(SettingsAction(name=name, choices=choices))
 
     @on(Select.Changed, "#plugin-config-selection")
     async def on_plugin_selected(self, event: Select.Changed) -> None:
@@ -336,7 +333,11 @@ class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]
             self._refresh_plugin_apply()
 
     def action_cancel(self) -> None:
-        self.dismiss(None)
+        self._finish(None)
+
+    def _finish(self, value: SettingsAction | PluginConfigSaveAction | None) -> None:
+        if self.on_result is not None:
+            self.on_result(value)
 
     async def _show_page(self) -> None:
         title = PAGES[self.page_index]
@@ -411,7 +412,7 @@ class SettingsScreen(ModalScreen[SettingsAction | PluginConfigSaveAction | None]
                 compact=True,
             ),
             Static(
-                "Theme selection is not exposed by the current typed TUI configuration.",
+                "Choose a theme at startup with --theme terminal|dark|light or the client profile theme.",
                 classes="settings-copy",
             ),
         )
@@ -815,7 +816,7 @@ __all__ = [
     "SettingName",
     "SettingsAction",
     "SettingsData",
-    "SettingsScreen",
+    "SettingsPanel",
     "PluginConfigDraft",
     "PluginConfigSaveAction",
 ]

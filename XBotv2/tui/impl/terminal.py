@@ -38,12 +38,17 @@ class TextualTerminalClient:
             transcript_limit=config.transcript_limit,
             render_interval=config.render_interval,
         )
+        self.app.theme = "ansi-dark"
+        self.fullscreen = config.fullscreen
 
     async def run(self) -> None:
         loop = asyncio.get_running_loop()
         task_factory = loop.get_task_factory()
         try:
-            await self.app.run_async()
+            await self.app.run_async(
+                inline=not self.fullscreen,
+                inline_no_clear=not self.fullscreen,
+            )
         finally:
             # Textual 8.2 sets eager_task_factory on the running loop and leaves
             # it there. The plugin host must not inherit that global mutation.

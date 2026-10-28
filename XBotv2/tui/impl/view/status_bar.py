@@ -25,14 +25,14 @@ from XBotv2.tui.impl.status import ServerTurn, Status, StatusFacts, derive, stat
 _RUNNING_JOB_STATUSES = frozenset({"queued", "running"})
 
 _BADGE_STYLE: dict[Status, str] = {
-    Status.CONNECTING: "yellow",
+    Status.CONNECTING: "dim",
     Status.DISCONNECTED: "red",
-    Status.READY: "green",
-    Status.RUNNING: "yellow",
+    Status.READY: "dim",
+    Status.RUNNING: "dim",
     Status.WAITING_USER: "cyan",
-    Status.APPROVAL_REQUIRED: "magenta",
-    Status.COMPACTING: "blue",
-    Status.INTERRUPTING: "yellow",
+    Status.APPROVAL_REQUIRED: "yellow",
+    Status.COMPACTING: "dim",
+    Status.INTERRUPTING: "dim",
     Status.ERROR: "red",
 }
 
@@ -184,7 +184,7 @@ def render_status_line(model: StatusLine, *, width: int) -> Text:
     status = derive(model.facts)
     label = status_label(status, model.facts)
     segments: list[tuple[str, str]] = [
-        (_clip(label, width), _BADGE_STYLE.get(status, "white"))
+        (_clip(label, width), _BADGE_STYLE[status])
     ]
     used = cell_len(segments[0][0])
     for text, style in _optional_segments(model):
@@ -207,25 +207,25 @@ def _optional_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
     if model.thread_kind == SUBAGENT_THREAD_KIND:
         # Which thread is on screen is not optional detail: the transcript, the
         # composer and the status all belong to it.
-        yield f"subagent:{model.thread_id}", "magenta"
+        yield f"subagent:{model.thread_id}", "bold"
     if model.queue_depth:
-        yield f"queued:{model.queue_depth}", "yellow"
+        yield f"queued:{model.queue_depth}", "dim"
     yield from _usage_segments(model)
     context = _context_segment(model)
     if context is not None:
         yield context
     if model.session_label:
-        yield f"session:{model.session_label}", "bold"
+        yield f"session:{model.session_label}", "dim"
     if model.provider or model.model:
-        yield "/".join(x for x in (model.provider, model.model) if x), "green"
+        yield "/".join(x for x in (model.provider, model.model) if x), ""
     if model.agent_name:
-        yield f"agent:{model.agent_name}", "blue"
+        yield f"agent:{model.agent_name}", ""
     if model.model_mode:
-        yield f"mode:{model.model_mode}", "green"
+        yield f"mode:{model.model_mode}", ""
     for name, value in model.status_slots.items():
-        yield f"{name}:{value}", "magenta"
+        yield f"{name}:{value}", ""
     if model.workspace:
-        yield f"cwd:{model.workspace}", "cyan"
+        yield f"cwd:{model.workspace}", ""
 
 
 def _context_segment(model: StatusLine) -> tuple[str, str] | None:
@@ -236,7 +236,7 @@ def _context_segment(model: StatusLine) -> tuple[str, str] | None:
             f"ctx:{marker}{_compact_count(model.context_input_tokens)}"
             f"/{_compact_count(model.context_window)}"
             f"{'!' if overflow else ''}",
-            "red" if overflow else "cyan",
+            "red" if overflow else "",
         )
     return None
 
@@ -249,7 +249,7 @@ def _usage_segments(model: StatusLine) -> Iterator[tuple[str, str]]:
         cache_basis = counters.input + counters.cache_read
         if cache_basis:
             cache_rate = round(100 * counters.cache_read / cache_basis)
-            yield f"cache:{cache_rate}%", "green"
+            yield f"cache:{cache_rate}%", ""
 
 
 def _compact_count(value: int) -> str:

@@ -38,7 +38,8 @@ class FakeApp:
         self.run_error = None
         self.factory_after_run = None
 
-    async def run_async(self) -> None:
+    async def run_async(self, **kwargs) -> None:
+        self.run_kwargs = kwargs
         loop = asyncio.get_running_loop()
         loop.set_task_factory(lambda _loop, coro, **kwargs: asyncio.Task(coro, **kwargs))
         if self.run_error:
@@ -78,6 +79,8 @@ async def test_adapter_builds_app_from_launch_and_plugin_config(fake_app) -> Non
     assert app.kwargs["workspace"] == "/workspace"
     assert app.kwargs["render_interval"] == 0.25
     assert app.kwargs["transcript_limit"] == 80
+    assert app.theme == "ansi-dark"
+    assert app.run_kwargs == {"inline": True, "inline_no_clear": True}
     transport = app.kwargs["config"]
     assert transport.session_id == "resume-me"
     assert transport.thread_id == "main"
@@ -107,6 +110,16 @@ async def test_adapter_uses_new_session_defaults_and_launch_overrides(fake_app) 
     assert transport.mode == "new"
     assert transport.history_window == 17
     assert transport.history_retention == 300
+
+
+async def test_adapter_uses_fullscreen_when_requested(fake_app) -> None:
+    adapter = terminal_module.TextualTerminalClient(
+        backend=FakeBackend(), commands=commands_port(),
+        config=TextualTuiConfig(fullscreen=True),
+    )
+    await adapter.run()
+    assert fake_app[0].theme == "ansi-dark"
+    assert fake_app[0].run_kwargs == {"inline": False, "inline_no_clear": False}
 
 
 @pytest.mark.parametrize("fails", [False, True])

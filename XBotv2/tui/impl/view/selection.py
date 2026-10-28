@@ -11,33 +11,28 @@ from typing import Callable, Sequence
 
 from rich.text import Text
 from textual.app import ComposeResult
-from textual.containers import Vertical, VerticalScroll
+from textual.containers import VerticalScroll
 from textual.events import Key, Resize
-from textual.screen import ModalScreen
+from textual.widget import Widget
 from textual.widgets import Input, Static
 
 MAX_ROWS = 12
 
 SELECTION_CSS = """
-SelectionScreen {
-    align: center middle;
+SelectionPanel {
+    width: 100%;
+    height: auto;
+    max-height: 100%;
 }
 #selection {
-    width: 80%;
-    max-width: 100;
+    width: 100%;
     height: auto;
-    max-height: 80%;
-    background: $panel;
-    border: round $accent;
+    max-height: 100%;
     padding: 0 1;
 }
 #selection-title {
     height: 1;
     text-style: bold;
-}
-#selection.compact {
-    width: 90%;
-    max-width: 72;
 }
 #selection-description {
     height: auto;
@@ -53,8 +48,7 @@ SelectionScreen {
     width: 1fr;
 }
 .selection-row.selected {
-    background: $primary-darken-2;
-    color: $text;
+    color: $accent;
     text-style: bold;
 }
 #selection-hint {
@@ -119,8 +113,11 @@ class SelectionModel:
             return SelectionModel(options=(), index=0)
         return SelectionModel(options=replacements, index=0)
 
-class SelectionScreen(ModalScreen[str | None]):
-    """A modal list; dismisses with the chosen value or ``None``."""
+
+class SelectionPanel(Widget):
+    """An inline list reporting a choice to its owner."""
+
+    can_focus = True
 
     DEFAULT_CSS = SELECTION_CSS
     BINDINGS = [("escape", "cancel", "Cancel")]
@@ -139,6 +136,7 @@ class SelectionScreen(ModalScreen[str | None]):
         initial_value: str | None = None,
     ) -> None:
         super().__init__()
+        self.on_result: Callable[[str | None], None] | None = None
         self.title_text = title
         choices = tuple(options)
         initial_index = next(
@@ -161,7 +159,7 @@ class SelectionScreen(ModalScreen[str | None]):
         self._query = ""
 
     def compose(self) -> ComposeResult:
-        with Vertical(id="selection", classes="compact" if self.compact else ""):
+        with VerticalScroll(id="selection", classes="compact" if self.compact else ""):
             yield Static(self.title_text, id="selection-title")
             if self.description_text:
                 yield Static(self.description_text, id="selection-description")
@@ -181,6 +179,8 @@ class SelectionScreen(ModalScreen[str | None]):
         self._render_options()
         if self.search is not None:
             self.query_one("#selection-input", Input).focus()
+        else:
+            self.focus()
 
     def on_resize(self, _event: Resize) -> None:
         if self._rows:
@@ -215,13 +215,17 @@ class SelectionScreen(ModalScreen[str | None]):
             self._choose()
 
     def action_cancel(self) -> None:
-        self.dismiss(self.cancel_value)
+        self._finish(self.cancel_value)
 
     # --- rendering ----------------------------------------------------
 
     def _choose(self) -> None:
         current = self.model.current
-        self.dismiss(current.value if current is not None else None)
+        self._finish(current.value if current is not None else None)
+
+    def _finish(self, value: str | None) -> None:
+        if self.on_result is not None:
+            self.on_result(value)
 
     def _render_options(self) -> None:
         if self.model.index < self._window_start:
@@ -247,6 +251,9 @@ class SelectionScreen(ModalScreen[str | None]):
             if width:
                 rendered.truncate(width, overflow="ellipsis")
             row.update(rendered)
+        if visible:
+            selected = self._rows[self.model.index - self._window_start]
+            self.call_after_refresh(selected.scroll_visible, animate=False)
 
     @property
     def rendered_rows(self) -> tuple[str, ...]:
@@ -258,4 +265,4 @@ class SelectionScreen(ModalScreen[str | None]):
         )
 
 
-__all__ = ["MAX_ROWS", "SELECTION_CSS", "Option", "SelectionModel", "SelectionScreen"]
+__all__ = ["MAX_ROWS", "SELECTION_CSS", "Option", "SelectionModel", "SelectionPanel"]

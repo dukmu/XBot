@@ -37,8 +37,9 @@ from textual.screen import Screen
 from XBotv2.interactions.api.models import Answered, UserInputRecorded, UserInputRequest
 from XBotv2.permissions.api.models import NamedPermission, PermissionRequest
 from XBotv2.tui.impl.app import TuiApp
-from XBotv2.tui.impl.view.interaction import InteractionInputScreen
-from XBotv2.tui.impl.view.selection import SelectionScreen
+from XBotv2.tui.impl.view.interaction import InteractionInputPanel
+from XBotv2.tui.impl.view.selection import SelectionPanel
+from XBotv2.tui.impl.view.settings import SettingsPanel
 from XBotv2.tui.impl.transport import TransportConfig
 from XBotv2.tui.impl.view.completion import CompletionPopup
 from XBotv2.tui.impl.view.composer import Composer
@@ -323,7 +324,7 @@ async def test_open_ended_user_input_uses_a_focused_typed_response_screen() -> N
         await app.controller.flush()
         await pilot.pause()
 
-        assert isinstance(app.screen, InteractionInputScreen)
+        assert bool(app.query(InteractionInputPanel))
         await pilot.press("s", "h", "i", "p", "enter")
         await settle(pilot)
 
@@ -353,9 +354,9 @@ async def test_attach_rebuilds_a_pending_interaction_from_the_server_snapshot() 
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
 
-        assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.title_text == "Question"
-        assert "Which release channel?" in app.screen.description_text
+        assert bool(app.query(SelectionPanel))
+        assert app.query_one(SelectionPanel).title_text == "Question"
+        assert "Which release channel?" in app.query_one(SelectionPanel).description_text
         assert "Stable" in selection_text(app)
         await pilot.press("enter")
         await settle(pilot)
@@ -384,7 +385,7 @@ async def test_escape_denies_a_permission_instead_of_abandoning_it() -> None:
         app.controller.dispatch(InteractionOpened(request=request))
         await app.controller.flush()
         await pilot.pause()
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         assert "Approval required" in status_text(app)
 
         await pilot.press("escape")
@@ -401,7 +402,8 @@ async def test_escape_denies_a_permission_instead_of_abandoning_it() -> None:
 
 
 async def test_external_interaction_resolution_closes_its_stale_prompt() -> None:
-    app = app_for(ScriptedBackend())
+    backend = ScriptedBackend()
+    app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
         assert app.controller is not None
@@ -412,7 +414,7 @@ async def test_external_interaction_resolution_closes_its_stale_prompt() -> None
         )))
         await app.controller.flush()
         await pilot.pause()
-        assert isinstance(app.screen, InteractionInputScreen)
+        assert bool(app.query(InteractionInputPanel))
 
         app.controller.dispatch(InteractionResolved(payload=UserInputRecorded(
             interaction_id="external-answer",
@@ -421,7 +423,8 @@ async def test_external_interaction_resolution_closes_its_stale_prompt() -> None
         await app.controller.flush()
         await pilot.pause()
 
-        assert not isinstance(app.screen, InteractionInputScreen)
+        assert not bool(app.query(InteractionInputPanel))
+        assert backend.interaction_responses == []
         assert app.screen.focused is app.query_one("#composer", Composer).input
 
 
@@ -827,7 +830,7 @@ async def test_ctrl_p_opens_the_palette_and_fills_the_composer() -> None:
         await settle(pilot)
         await pilot.press("ctrl+p")
         await settle(pilot)
-        assert isinstance(app.screen, CommandPalette)
+        assert bool(app.query(CommandPalette))
         await pilot.press("down", "enter")
         await settle(pilot)
         composer = app.query_one("#composer", Composer)
@@ -1016,7 +1019,7 @@ async def test_slash_session_switches_to_the_named_session() -> None:
 
 
 async def test_slash_session_without_an_argument_opens_a_picker() -> None:
-    from XBotv2.tui.impl.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionPanel
 
     backend = ScriptedBackend(session_catalog=[summary("one"), summary("two", title="Second")])
     app = app_for(backend)
@@ -1026,13 +1029,13 @@ async def test_slash_session_without_an_argument_opens_a_picker() -> None:
         composer.load_text("/session")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
-        values = [option.value for option in app.screen.model.options]
+        assert bool(app.query(SelectionPanel))
+        values = [option.value for option in app.query_one(SelectionPanel).model.options]
         assert values == ["one", "two"]
 
 
 async def test_slash_session_starts_on_the_current_session_in_a_long_catalog() -> None:
-    from XBotv2.tui.impl.view.selection import MAX_ROWS, SelectionScreen
+    from XBotv2.tui.impl.view.selection import MAX_ROWS, SelectionPanel
 
     sessions = [summary(f"old-{index}") for index in range(MAX_ROWS + 1)]
     sessions.append(summary("s1", title="Current work", status="active"))
@@ -1045,12 +1048,12 @@ async def test_slash_session_starts_on_the_current_session_in_a_long_catalog() -
         await pilot.press("enter")
         await settle(pilot)
 
-        assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.model.current is not None
-        assert app.screen.model.current.value == "s1"
+        assert bool(app.query(SelectionPanel))
+        assert app.query_one(SelectionPanel).model.current is not None
+        assert app.query_one(SelectionPanel).model.current.value == "s1"
         assert any(
             row.startswith("▸ s1 · Current work")
-            for row in app.screen.rendered_rows
+            for row in app.query_one(SelectionPanel).rendered_rows
         )
 
 
@@ -1211,7 +1214,7 @@ async def test_attach_without_arguments_explains_itself() -> None:
 
 
 async def test_thread_lists_what_the_session_holds_and_picks_one() -> None:
-    from XBotv2.tui.impl.view.selection import SelectionScreen
+    from XBotv2.tui.impl.view.selection import SelectionPanel
 
     backend = ScriptedBackend(
         threads=(
@@ -1234,9 +1237,9 @@ async def test_thread_lists_what_the_session_holds_and_picks_one() -> None:
         await pilot.press("enter")
         await settle(pilot)
         assert backend.sent == [], "listing threads is local"
-        assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.title_text == "Subagents"
-        assert "read-only" in app.screen.description_text
+        assert bool(app.query(SelectionPanel))
+        assert app.query_one(SelectionPanel).title_text == "Subagents"
+        assert "read-only" in app.query_one(SelectionPanel).description_text
         assert "child-1" in selection_text(app), (
             "the picker shows the id the user would type"
         )
@@ -1262,15 +1265,15 @@ async def test_thread_picker_preselects_the_thread_being_viewed() -> None:
         await pilot.press("ctrl+t")
         await settle(pilot)
 
-        assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.model.current is not None
-        assert app.screen.model.current.value == "child-1"
+        assert bool(app.query(SelectionPanel))
+        assert app.query_one(SelectionPanel).model.current is not None
+        assert app.query_one(SelectionPanel).model.current.value == "child-1"
 
 
 def selection_text(app: TuiApp) -> str:
     """Everything the current screen is showing, for picker assertions."""
     parts: list[str] = []
-    for widget in app.screen.query(Static):
+    for widget in app.query_one(SelectionPanel).query(Static):
         content = getattr(widget, "content", None)
         parts.append(str(getattr(content, "plain", "") or ""))
     return "\n".join(parts)
@@ -1317,8 +1320,8 @@ async def test_agent_thread_picker_switches_read_only_and_escape_returns_to_main
 
         await pilot.press("ctrl+t")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
-        assert app.screen.title_text == "Subagents"
+        assert bool(app.query(SelectionPanel))
+        assert app.query_one(SelectionPanel).title_text == "Subagents"
 
         backend.session = snapshot(
             thread_id="child-1",
@@ -1908,7 +1911,7 @@ async def test_the_session_picker_goes_through_the_shared_chooser() -> None:
         composer.load_text("/session")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen), transcript_text(app)
+        assert bool(app.query(SelectionPanel)), transcript_text(app)
         await pilot.press("down", "enter")
         await settle(pilot)
         assert app.controller is not None
@@ -1924,7 +1927,7 @@ async def test_the_provider_picker_switches_the_provider() -> None:
         composer.load_text("/provider")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         assert "p1" in selection_text(app) and "p2" in selection_text(app)
         await pilot.press("down", "enter")
         await settle(pilot)
@@ -1944,7 +1947,7 @@ async def test_the_model_picker_switches_within_the_current_provider() -> None:
         composer.load_text("/model")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         await pilot.press("down", "enter")
         await settle(pilot)
         assert backend.selections[-1]["kind"] == "provider"
@@ -1961,7 +1964,7 @@ async def test_the_effort_picker_switches_the_tier() -> None:
         composer.load_text("/effort")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         await pilot.press("down", "enter")
         await settle(pilot)
         assert backend.selections[-1]["kind"] == "effort"
@@ -1977,7 +1980,7 @@ async def test_the_agent_picker_switches_the_agent() -> None:
         composer.load_text("/agent")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         await pilot.press("down", "enter")
         await settle(pilot)
         assert backend.selections[-1]["kind"] == "agent"
@@ -1996,7 +1999,7 @@ async def test_arguments_still_go_to_the_server_command() -> None:
         await settle(pilot)
         assert backend.command_calls[-1]["raw"] == "/model use m9"
         assert backend.selections == [], "an argument form is not a picker"
-        assert app.screen is not None and not isinstance(app.screen, SelectionScreen)
+        assert app.screen is not None and not bool(app.query(SelectionPanel))
 
 
 async def test_status_is_rendered_locally() -> None:
@@ -2065,7 +2068,7 @@ async def test_settings_model_page_reuses_the_provider_catalog_picker() -> None:
 
         await pilot.click("#setting-provider")
         await pilot.pause()
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         assert "p" in selection_text(app)
         await pilot.press("p", "2", "enter")
         await settle(pilot)
@@ -2243,13 +2246,15 @@ async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revisio
 
         enabled = app.screen.query_one("#plugin-config-field-0", Checkbox)
         assert enabled.value is True
-        await pilot.click(enabled)
+        enabled.focus()
+        await pilot.pause()
+        await pilot.press("space")
         await pilot.pause()
         assert enabled.value is False
         button = app.screen.query_one("#plugin-config-apply", Button)
         assert not button.disabled
         assert button.region.bottom <= app.screen.region.bottom
-        previous_screen = app.screen
+        previous_panel = app.query_one(SettingsPanel)
         clicked = await pilot.click("#plugin-config-apply")
         assert clicked, (
             f"button={button.region} page="
@@ -2257,7 +2262,7 @@ async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revisio
             f"screen={app.screen.region}"
         )
         await settle(pilot)
-        assert app.screen is not previous_screen
+        assert app.query_one(SettingsPanel) is not previous_panel
 
     assert backend.plugin_config_updates[-1]["plugin_id"] == "example"
     patch = backend.plugin_config_updates[-1]["patch"]
@@ -2327,7 +2332,9 @@ async def test_plugin_revision_conflict_reloads_and_retries_the_preserved_draft(
         await pilot.press("down", "down", "down", "down", "enter")
         await pilot.pause()
         enabled = app.screen.query_one("#plugin-config-field-0", Checkbox)
-        await pilot.click(enabled)
+        enabled.focus()
+        await pilot.pause()
+        await pilot.press("space")
         await pilot.click("#plugin-config-apply")
         await settle(pilot)
 
@@ -2392,13 +2399,15 @@ async def test_settings_model_actions_are_reachable_by_keyboard_on_a_short_scree
         await pilot.press("down", "enter")
         await pilot.pause()
 
+        agent = app.screen.query_one("#setting-agent", Button)
+        page = app.screen.query_one("#settings-page-content")
         focus_order = []
-        for _ in range(5):
+        for _ in range(12):
             await pilot.press("tab")
             await pilot.pause()
             focus_order.append(app.screen.focused.id if app.screen.focused else None)
-        agent = app.screen.query_one("#setting-agent", Button)
-        page = app.screen.query_one("#settings-page-content")
+            if app.screen.focused is agent:
+                break
         assert app.screen.focused is agent, focus_order
         assert agent.region.y >= page.region.y
         assert agent.region.bottom <= page.region.bottom
@@ -2432,7 +2441,7 @@ async def test_the_model_picker_lists_the_current_provider_only() -> None:
         composer.load_text("/model")
         await pilot.press("enter")
         await settle(pilot)
-        assert isinstance(app.screen, SelectionScreen)
+        assert bool(app.query(SelectionPanel))
         assert "m3" in selection_text(app)
         assert "m2" not in selection_text(app), "another provider's models are not choices"
 
@@ -2446,7 +2455,7 @@ async def test_a_picker_that_cannot_list_its_rows_says_so() -> None:
         composer.load_text("/provider")
         await pilot.press("enter")
         await settle(pilot)
-        assert not isinstance(app.screen, SelectionScreen)
+        assert not bool(app.query(SelectionPanel))
         assert "no catalogue" in transcript_text(app)
 
 
@@ -2560,13 +2569,13 @@ async def test_session_picker_navigates_pages_and_selects_session() -> None:
         composer.load_text("/session")
         await pilot.press("enter")
         await settle(pilot)
-        assert len(app.screen.model.options) == 101
+        assert len(app.query_one(SelectionPanel).model.options) == 101
         await pilot.press("up", "enter")
         await settle(pilot)
-        assert [option.label for option in app.screen.model.options] == ["← Previous page", "item-100"]
+        assert [option.label for option in app.query_one(SelectionPanel).model.options] == ["← Previous page", "item-100"]
         await pilot.press("enter")
         await settle(pilot)
-        assert app.screen.model.options[0].label == "item-000"
+        assert app.query_one(SelectionPanel).model.options[0].label == "item-000"
         await pilot.press("up", "enter")
         await settle(pilot)
         backend.session = snapshot(session_id="item-100")
@@ -2585,10 +2594,10 @@ async def test_thread_picker_navigates_pages_and_opens_read_only_subagent() -> N
         await settle(pilot)
         await pilot.press("up", "enter")
         await settle(pilot)
-        assert [option.value for option in app.screen.model.options] == ["\0previous", "child-099"]
+        assert [option.value for option in app.query_one(SelectionPanel).model.options] == ["\0previous", "child-099"]
         await pilot.press("enter")
         await settle(pilot)
-        assert app.screen.model.options[-1].value == "\0next"
+        assert app.query_one(SelectionPanel).model.options[-1].value == "\0next"
         await pilot.press("up", "enter")
         await settle(pilot)
         backend.session = snapshot(thread_id="child-099")
@@ -2709,3 +2718,69 @@ async def test_copy_reads_complete_reply_instead_of_preview() -> None:
         await app._cmd_copy("")
         assert copied == [text]
         assert offsets == [0, 4096]
+
+
+@pytest.mark.parametrize("opening", ["permission", "question", "settings", "picker"])
+async def test_inline_panels_keep_conversation_and_composer_visible(opening: str) -> None:
+    from XBotv2.tui.impl.view.settings import SettingsPanel
+
+    backend = ScriptedBackend(
+        session=snapshot(history=[human_record("context", "Conversation context")]),
+        threads=(thread(turn_status="running"),),
+        streams=[stream(*frames(("turn_started", {"turn": 1})), hold=True)],
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        composer = app.query_one("#composer", Composer)
+        composer.load_text("draft")
+        if opening in {"permission", "question"}:
+            request = (
+                PermissionRequest(interaction_id="permission-inline", source="permissions",
+                                  subject=NamedPermission(tool="shell"), reason="Run a command")
+                if opening == "permission" else
+                UserInputRequest(interaction_id="question-inline", source="plugin", question="Continue?")
+            )
+            app.controller.dispatch(InteractionOpened(request=request))
+            await app.controller.flush()
+        elif opening == "settings":
+            await pilot.press("f2")
+        else:
+            await pilot.press("ctrl+p")
+        await settle(pilot)
+        panel_type = {"permission": SelectionPanel, "question": InteractionInputPanel,
+                      "settings": SettingsPanel, "picker": SelectionPanel}[opening]
+        panel = app.query_one(panel_type)
+        transcript = app.query_one("#transcript")
+        assert "Conversation context" in transcript_text(app)
+        assert transcript.region.height > 0
+        assert panel.region.height > 0
+        assert transcript.region.bottom <= panel.region.y
+        assert panel.region.bottom <= composer.region.y
+        assert composer.region.height > 0 and composer.region.bottom <= 24
+        await pilot.press("escape")
+        await settle(pilot)
+        assert not app.query(panel_type)
+        assert backend.interrupts == 0
+        assert composer.text == "draft"
+        assert app.screen.focused is composer.input
+
+
+async def test_narrow_picker_keeps_keyboard_selection_visible() -> None:
+    from XBotv2.tui.impl.view.palette import CommandPalette
+
+    app = app_for(ScriptedBackend())
+    async with app.run_test(size=(40, 16)) as pilot:
+        await settle(pilot)
+        await pilot.press("ctrl+p")
+        await settle(pilot)
+        panel = app.query_one(CommandPalette)
+        for _ in range(6):
+            await pilot.press("down")
+        await pilot.pause()
+        selected = panel.query_one(".selection-row.selected")
+        viewport = panel.query_one("#selection")
+        assert selected.region.y >= viewport.region.y
+        assert selected.region.bottom <= viewport.region.bottom
+        assert app.query_one("#transcript").region.height > 0
+        assert app.query_one("#composer").region.bottom <= 16
