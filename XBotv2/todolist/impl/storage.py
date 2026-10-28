@@ -82,10 +82,6 @@ class TaskStorage:
             return None
 
         def read(sql):
-            sql.execute(
-                "SELECT active_count,completed_count FROM todolist_counters WHERE thread_id=?",
-                (self.thread,),
-            )
             rows = sql.execute(
                 "SELECT task_id,subject,description,active_form,owner,status FROM todolist_tasks WHERE thread_id=? AND task_id=?",
                 (self.thread, task_id),
@@ -113,10 +109,6 @@ class TaskStorage:
             return ()
 
         def read(sql):
-            sql.execute(
-                "SELECT active_count,completed_count FROM todolist_counters WHERE thread_id=?",
-                (self.thread,),
-            )
             return tuple(
                 self._task(row)
                 for row in sql.execute(
