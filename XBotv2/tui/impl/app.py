@@ -195,6 +195,7 @@ class TuiApp(App[None]):
     ) -> None:
         # Textual selects its NO_COLOR filter during construction.
         super().__init__(ansi_color=True)
+        self.theme = "ansi-dark"
         self._backend = backend
         self._config = config or TransportConfig()
         self._workspace = workspace

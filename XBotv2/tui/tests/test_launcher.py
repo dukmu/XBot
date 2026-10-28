@@ -79,7 +79,6 @@ async def test_adapter_builds_app_from_launch_and_plugin_config(fake_app) -> Non
     assert app.kwargs["workspace"] == "/workspace"
     assert app.kwargs["render_interval"] == 0.25
     assert app.kwargs["transcript_limit"] == 80
-    assert app.theme == "ansi-dark"
     assert app.run_kwargs == {"inline": True, "inline_no_clear": True}
     transport = app.kwargs["config"]
     assert transport.session_id == "resume-me"
@@ -118,7 +117,6 @@ async def test_adapter_uses_fullscreen_when_requested(fake_app) -> None:
         config=TextualTuiConfig(fullscreen=True),
     )
     await adapter.run()
-    assert fake_app[0].theme == "ansi-dark"
     assert fake_app[0].run_kwargs == {"inline": False, "inline_no_clear": False}
 
 

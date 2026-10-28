@@ -38,7 +38,6 @@ class TextualTerminalClient:
             transcript_limit=config.transcript_limit,
             render_interval=config.render_interval,
         )
-        self.app.theme = "ansi-dark"
         self.fullscreen = config.fullscreen
 
     async def run(self) -> None:
