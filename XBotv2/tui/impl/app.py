@@ -357,7 +357,6 @@ class TuiApp(App[None]):
             self._queue_edit = None
             self.view.composer.set_queue_editing(False)
             self.view.composer.load_text(draft)
-            self._notify("queue", "Queued input updated.")
             return
         parsed = self.commands.parse(text)
         if parsed is None:
@@ -1298,7 +1297,6 @@ class TuiApp(App[None]):
             self.view.composer.load_text(self._queue_edit[3])
             self._queue_edit = None
             self.view.composer.set_queue_editing(False)
-            self._notify("queue", "Queued input edit cancelled.")
             return
         if self.controller is None:
             return
@@ -1343,7 +1341,6 @@ class TuiApp(App[None]):
                     self.view.composer.set_queue_editing(True)
                     self.view.composer.load_text(current.content)
                     self.view.composer.focus()
-                    self._notify("queue", "Editing queued input: Enter saves, Esc cancels; Shift+Enter adds a line.")
                     return
                 try:
                     await self._backend.update_pending_input(*identity, message_id, action=action)

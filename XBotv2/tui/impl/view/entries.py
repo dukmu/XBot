@@ -215,6 +215,8 @@ def entry_header(entry: Entry, *, assistant_label: str = "Assistant") -> str:
     if isinstance(entry, ToolEntry):
         return _tool_call_label(entry)
     if isinstance(entry, NoticeEntry):
+        if entry.notice_kind in _NOTICE_HEADERS:
+            return _interaction_summary(entry)
         return _NOTICE_HEADERS.get(entry.notice_kind, entry.notice_kind)
     if isinstance(entry, ErrorEntry):
         return "error"
@@ -238,12 +240,34 @@ def entry_body(entry: Entry, *, visibility: BlockVisibility | None = None) -> st
             parts.append(f"result: {format_payload(entry.result)}")
         return "\n".join(parts)
     if isinstance(entry, NoticeEntry):
+        if entry.notice_kind in _NOTICE_HEADERS:
+            return ""
         if entry.notice_kind == "context":
             return entry.detail
         return f"{entry.text}\n{entry.detail}".strip() if entry.detail else entry.text
     if isinstance(entry, ErrorEntry):
         return entry.message
     raise TypeError(f"Unsupported entry: {entry!r}")
+
+
+def _interaction_summary(entry: NoticeEntry) -> str:
+    """Keep the prompt details in the interaction panel, then retain its outcome."""
+    title = _NOTICE_HEADERS[entry.notice_kind]
+    lines = entry.text.splitlines()
+    if lines and lines[0].startswith("ID: "):
+        lines = lines[1:]
+    else:
+        return title
+    resolution = lines.pop() if lines and lines[-1].startswith("→ ") else ""
+    if entry.notice_kind == "interaction:permission" and lines:
+        subject, separator, _reason = lines[0].partition(": ")
+        description = " ".join(lines) if resolution or not separator else subject
+    elif resolution:
+        description = " ".join(line for line in lines if not re.match(r"^\d+\. ", line))
+    else:
+        description = ""
+    parts = [title, description, resolution, entry.detail]
+    return " · ".join(part for part in parts if part)
 
 
 def block_label(entry: Entry) -> str:
