@@ -156,8 +156,8 @@ async def test_the_app_boots_and_shows_a_status_line() -> None:
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
         assert app.controller is not None
-        assert status_text(app), "the status line must not be empty on boot"
-        assert "Ready" in status_text(app)
+        assert "p/m" in status_text(app)
+        assert not app.query("#thinking-activity")
 
 
 async def test_session_context_and_runtime_status_share_the_bottom_statusline() -> None:
@@ -166,8 +166,6 @@ async def test_session_context_and_runtime_status_share_the_bottom_statusline() 
         await settle(pilot)
         status = app.query_one("#status", StatusBar)
         shown = status_text(app)
-        assert "Ready" in shown
-        assert "session:s1" in shown
         assert "p/m" in shown
         assert len(app.query("#session")) == 0
         assert app.query_one("#transcript").region.y == 0
@@ -268,12 +266,12 @@ async def test_scrolled_transcript_keeps_its_visible_entry_when_width_changes() 
 
 
 async def test_the_app_reads_the_thread_so_a_running_turn_shows_as_running() -> None:
-    """The reported defect, end to end: attach mid-turn and the line says so."""
+    """Attaching mid-turn shows activity inside the transcript."""
     backend = ScriptedBackend(threads=(thread(turn_status="running"),))
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
-        assert "Running" in status_text(app)
+        assert "Thinking" in str(app.query_one("#thinking-activity", Static).content)
 
 
 async def test_connecting_starts_the_background_tasks() -> None:
@@ -306,7 +304,7 @@ async def test_a_scripted_turn_reaches_the_screen() -> None:
         await settle(pilot)
         rendered = transcript_text(app)
         assert "working on it" in rendered
-        assert "Running" in status_text(app)
+        assert "Thinking" in str(app.query_one("#thinking-activity", Static).content)
 
 
 async def test_open_ended_user_input_uses_a_focused_typed_response_screen() -> None:
@@ -631,12 +629,40 @@ async def test_page_up_moves_the_transcript_window() -> None:
         assert view is not None
         newest = view.transcript.mounted_ids
         assert newest == tuple(f"m{index}" for index in range(20, 30))
+        for _ in range(5):
+            await pilot.press("pageup")
+            await settle(pilot)
+            if view.transcript.mounted_ids != newest:
+                break
+        assert view.transcript.mounted_ids == tuple(f"m{index}" for index in range(15, 25))
+        for _ in range(5):
+            await pilot.press("pagedown")
+            await settle(pilot)
+            if view.transcript.mounted_ids == newest:
+                break
+        assert view.transcript.mounted_ids == newest
+
+
+async def test_pageup_reads_long_message_before_loading_older_entries() -> None:
+    from XBotv2.agentloop.api.outputs import AssistantTextDelta
+
+    app = app_for(ScriptedBackend(), transcript_limit=4)
+    async with app.run_test(size=(80, 12)) as pilot:
+        await settle(pilot)
+        for index in range(4):
+            app.controller.dispatch(human_record(f"m{index}", str(index)))
+        app.controller.dispatch(AssistantTextDelta(text="\n".join(f"line {i}" for i in range(80))))
+        await app.controller.flush()
+        await settle(pilot)
+        scroll = app.view.transcript.container
+        assert scroll.scroll_y > scroll.size.height
+        mounted = app.view.transcript.mounted_ids
+        before = scroll.scroll_y
         await pilot.press("pageup")
         await settle(pilot)
-        assert view.transcript.mounted_ids == tuple(f"m{index}" for index in range(10, 20))
-        await pilot.press("pagedown")
-        await settle(pilot)
-        assert view.transcript.mounted_ids == newest
+        assert 0 < scroll.scroll_y < before
+        assert app.view.transcript.mounted_ids == mounted
+        assert "line 0" in transcript_text(app)
 
 
 # --- lifecycle ------------------------------------------------------------
@@ -745,6 +771,22 @@ async def test_the_app_adopts_the_server_command_catalogue() -> None:
         assert parsed is not None and parsed.name == "status"
 
 
+async def test_discovered_server_command_executes_without_client_registration() -> None:
+    from XBotv2.commands.api.contracts import CommandDescription
+
+    backend = ScriptedBackend(commands=(CommandDescription(
+        name="new-command", slash="/new-command", kind="server",
+        description="New server capability", usage="/new-command <value>", exclusive=False,
+    ),))
+    app = app_for(backend)
+    async with app.run_test(size=(100, 24)) as pilot:
+        await settle(pilot)
+        app.query_one("#composer", Composer).load_text("/new-command example")
+        await pilot.press("enter")
+        await settle(pilot)
+    assert backend.command_calls[-1]["raw"] == "/new-command example"
+
+
 async def test_one_pageup_loads_and_displays_the_previous_server_page() -> None:
     from XBotv2.tui.tests.factories import history_page
 
@@ -765,13 +807,56 @@ async def test_one_pageup_loads_and_displays_the_previous_server_page() -> None:
             f"tail-{index}" for index in range(10)
         )
 
-        await pilot.press("pageup")
-        await settle(pilot)
+        for _ in range(10):
+            await pilot.press("pageup")
+            await settle(pilot)
+            if backend.page_reads:
+                break
 
         assert backend.page_reads[-1]["before_id"] == "tail-0"
-        assert app.view.transcript.mounted_ids == tuple(
-            f"old-{index}" for index in range(10)
+        assert app.view.transcript.mounted_ids == (
+            *[f"old-{index}" for index in range(5, 10)],
+            *[f"tail-{index}" for index in range(5)],
         )
+
+
+async def test_scrolling_loads_adjacent_server_pages_and_keeps_boundary() -> None:
+    from XBotv2.tui.tests.factories import history_page
+
+    backend = ScriptedBackend(
+        session=snapshot(history=[human_record(f"tail-{i}", f"tail {i}") for i in range(10)], history_cursor="older"),
+        pages=[
+            history_page(*[human_record(f"old-{i}", f"old {i}") for i in range(10)], older_cursor="older-again"),
+            history_page(*[human_record(f"earlier-{i}", f"earlier {i}") for i in range(10)]),
+        ],
+    )
+    app = app_for(backend)
+    async with app.run_test(size=(80, 12)) as pilot:
+        await settle(pilot)
+        transcript = app.view.transcript
+        scroll = transcript.container
+        scroll.scroll_home(animate=False, immediate=True)
+        boundary = transcript.widget_for("tail-0")
+        assert boundary is not None
+        await settle(pilot)
+        assert len(backend.page_reads) == 1
+        assert transcript.widget_for("tail-0") is boundary
+        assert abs(boundary.region.y - scroll.region.y) <= 1
+        for _ in range(5):
+            scroll.scroll_home(animate=False, immediate=True)
+            await settle(pilot)
+            if len(backend.page_reads) >= 2:
+                break
+        assert len(backend.page_reads) == 2
+        assert any(name.startswith("earlier-") for name in transcript.mounted_ids)
+        assert transcript.widget_count <= transcript.limit
+        for _ in range(8):
+            scroll.scroll_end(animate=False, immediate=True)
+            await settle(pilot)
+            if app.controller._history_state is None:
+                break
+        assert app.controller._history_state is None
+        assert "tail-9" in transcript.mounted_ids
 
 
 async def test_pageup_reveals_loaded_history_when_both_pages_fit_the_window() -> None:
@@ -795,22 +880,29 @@ async def test_pageup_reveals_loaded_history_when_both_pages_fit_the_window() ->
     async with app.run_test(size=(80, 24)) as pilot:
         await settle(pilot)
 
-        await pilot.press("pageup")
-        await settle(pilot)
+        for _ in range(10):
+            await pilot.press("pageup")
+            await settle(pilot)
+            if backend.page_reads:
+                break
 
         assert backend.page_reads[-1]["before_id"] == "tail-0"
         old = app.view.transcript.widget_for("old-24")
         viewport = app.view.transcript.container.region
         assert old is not None
-        assert old.region.y < viewport.bottom and old.region.bottom > viewport.y, (
-            old.region,
-            viewport,
-            app.view.transcript.container.scroll_y,
-            app.view.transcript.container.max_scroll_y,
-        )
-
-        await pilot.press("pagedown")
+        boundary = app.view.transcript.widget_for("tail-0")
+        assert boundary is not None and boundary.region.y == viewport.y
+        assert old.region.bottom <= boundary.region.y
+        app.view.transcript.container.scroll_relative(y=-3, animate=False, immediate=True)
         await settle(pilot)
+        assert old.region.bottom > viewport.y
+
+        for _ in range(10):
+            await pilot.press("pagedown")
+            await settle(pilot)
+            tail = app.view.transcript.widget_for("tail-24")
+            if tail is not None and tail.region.y < viewport.bottom and tail.region.bottom > viewport.y:
+                break
 
         tail = app.view.transcript.widget_for("tail-24")
         assert tail is not None
@@ -1897,6 +1989,8 @@ async def test_a_folded_think_block_expands_from_the_keyboard() -> None:
         assert block.expanded is False
 
 
+
+
 # --- one chooser for every selection --------------------------------------
 
 
@@ -1917,77 +2011,16 @@ async def test_the_session_picker_goes_through_the_shared_chooser() -> None:
         assert app.controller.state.session_id == "two"
 
 
-async def test_the_provider_picker_switches_the_provider() -> None:
-    backend = ScriptedBackend()
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/provider")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert bool(app.query(SelectionPanel))
-        assert "p1" in selection_text(app) and "p2" in selection_text(app)
-        await pilot.press("down", "enter")
-        await settle(pilot)
-        assert backend.selections[-1]["kind"] == "provider"
-        assert backend.selections[-1]["name"] == "p2"
-        assert "p2" in transcript_text(app), "the choice is confirmed on screen"
 
 
-async def test_the_model_picker_switches_within_the_current_provider() -> None:
-    # The picker lists the *current* provider's models, which the client learns
-    # from the snapshot and the thread read.
-    backend = ScriptedBackend(session=snapshot(provider="p1", model="m1"))
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/model")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert bool(app.query(SelectionPanel))
-        await pilot.press("down", "enter")
-        await settle(pilot)
-        assert backend.selections[-1]["kind"] == "provider"
-        assert backend.selections[-1]["name"] == "p1"
-        assert backend.selections[-1]["model"] == "m2"
 
 
-async def test_the_effort_picker_switches_the_tier() -> None:
-    backend = ScriptedBackend(session=snapshot(provider="p1", model="m1"))
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/effort")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert bool(app.query(SelectionPanel))
-        await pilot.press("down", "enter")
-        await settle(pilot)
-        assert backend.selections[-1]["kind"] == "effort"
-        assert backend.selections[-1]["effort"] == "high"
 
 
-async def test_the_agent_picker_switches_the_agent() -> None:
-    backend = ScriptedBackend()
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/agent")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert bool(app.query(SelectionPanel))
-        await pilot.press("down", "enter")
-        await settle(pilot)
-        assert backend.selections[-1]["kind"] == "agent"
-        assert backend.selections[-1]["name"] == "reviewer"
 
 
 async def test_arguments_still_go_to_the_server_command() -> None:
-    """The picker owns the bare form; everything else is the server's."""
+    """Server command arguments go to the server unchanged."""
     backend = ScriptedBackend(commands=(command("model"),), command_result=execution(message="ok"))
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
@@ -2001,29 +2034,55 @@ async def test_arguments_still_go_to_the_server_command() -> None:
         assert app.screen is not None and not bool(app.query(SelectionPanel))
 
 
-async def test_status_is_rendered_locally() -> None:
-    """The read-only status page uses the attached client state, not a command."""
-    backend = ScriptedBackend(
-        commands=(command("status"),), command_result=execution(message="SERVER TEXT")
-    )
+async def test_status_is_dispatched_from_the_server_catalog() -> None:
+    backend = ScriptedBackend(commands=(command("status"),), command_result=execution(message="SERVER TEXT"))
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/status")
+        app.query_one("#composer", Composer).load_text("/status")
         await pilot.press("enter")
         await settle(pilot)
-        assert backend.command_calls == [], "/status belongs to the client now"
-        content = app.screen.query_one("#settings-status-report", Static)
-        rendered = str(content.content)
-        assert f"ID: {SESSION}" in rendered
-        assert "Thread: agent" in rendered
-        assert "SERVER TEXT" not in rendered
-        assert backend.provider_reads == 0
-        assert backend.agent_reads == 0
-        assert backend.policy_reads == 0
-        assert backend.plugin_config_reads == 0
-        assert not app.screen.query("#settings-nav")
+        assert backend.command_calls[-1]["raw"] == "/status"
+        assert "SERVER TEXT" in transcript_text(app)
+
+
+async def test_settings_uses_server_resources_through_the_client() -> None:
+    from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument, ConfigurationResource
+    from textual.widgets import TextArea
+
+    class ResourceBackend(ScriptedBackend):
+        async def list_configuration(self, session_id, thread_id):
+            return ConfigurationCatalog(resources=(ConfigurationResource(
+                id="fresh:source", title="New source", scopes=("global", "workspace"), format="yaml", description="Restart to apply"
+            ),))
+
+        async def get_configuration(self, session_id, thread_id, resource_id, *, scope):
+            return ConfigurationDocument(id=resource_id, scope=scope, revision="r1", content="original")
+
+        async def save_configuration(self, session_id, thread_id, document):
+            self.saved = document
+            return document
+
+    backend = ResourceBackend()
+    app = app_for(backend)
+    async with app.run_test(size=(80, 24)) as pilot:
+        await settle(pilot)
+        await pilot.press("f2")
+        await settle(pilot)
+        await pilot.press("tab", "tab")
+        editor = app.query_one("#settings-text", TextArea)
+        assert app.focused is editor
+        editor.load_text("line\n" * 30)
+        editor.move_cursor((30, 0))
+        await pilot.press("pageup")
+        assert editor.cursor_location[0] < 30
+        editor.load_text("changed")
+        await pilot.pause()
+        await pilot.press("ctrl+s")
+        await settle(pilot)
+        assert backend.saved.id == "fresh:source"
+        assert backend.saved.content == "changed"
+        assert backend.saved.revision == "r1"
 
 
 async def test_settings_shortcut_preserves_the_composer_draft_on_cancel() -> None:
@@ -2043,468 +2102,50 @@ async def test_settings_shortcut_preserves_the_composer_draft_on_cancel() -> Non
         assert app.screen.focused is composer.input
 
 
-async def test_settings_model_page_reuses_the_provider_catalog_picker() -> None:
-    backend = ScriptedBackend()
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert backend.provider_reads == 1
-        assert backend.agent_reads == 1
-
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "enter")
-        await pilot.pause()
-        assert str(app.screen.query_one("#settings-page-title", Static).content) == "Model"
-        assert app.screen.query_one("#setting-provider", Button).region.height == 1, (
-            "Settings actions should occupy one compact row, not Textual's "
-            "multi-line default button frame"
-        )
-
-        await pilot.click("#setting-provider")
-        await pilot.pause()
-        assert bool(app.query(SelectionPanel))
-        assert "p" in selection_text(app)
-        await pilot.press("p", "2", "enter")
-        await settle(pilot)
-        assert backend.selections[-1] == {
-            "kind": "provider",
-            "name": "p2",
-            "model": None,
-        }
 
 
-async def test_settings_reads_policy_through_the_public_backend() -> None:
-    backend = ScriptedBackend()
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert backend.policy_reads == 1
 
 
-async def test_settings_projects_authoritative_permission_and_sandbox_policy() -> None:
-    from XBotv2.config.api.protocol import SessionPolicyResponse
-    from XBotv2.permissions.api.models import PermissionPolicy, PermissionRule
-    from XBotv2.sandbox.api.models import SandboxConfig
-
-    backend = ScriptedBackend()
-    backend.policy = SessionPolicyResponse(
-        session_id=SESSION,
-        permissions=PermissionPolicy(
-            rules=(PermissionRule(tool_pattern="edit", decision="ask"),),
-            default_decision="deny",
-        ),
-        effective_permissions=PermissionPolicy(
-            rules=(PermissionRule(tool_pattern="edit", decision="allow"),),
-            default_decision="ask",
-        ),
-        sandbox=SandboxConfig(enabled=False, network=False),
-        effective_sandbox=SandboxConfig(enabled=True, network=True),
-    )
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "enter")
-        await pilot.pause()
-        page = app.screen.query_one("#settings-page-content")
-        permissions = "\n".join(str(widget.content) for widget in page.query(Static))
-        assert "Default: deny" in permissions
-        assert "ask: edit" in permissions
-        assert "Effective policy" in permissions
-        assert "Default: ask" in permissions
-
-        await pilot.press("down", "enter")
-        await pilot.pause()
-        sandbox = "\n".join(
-            str(widget.content)
-            for widget in app.screen.query_one("#settings-page-content").query(Static)
-        )
-        assert "enabled: False" in sandbox
-        assert "enabled: True" in sandbox
 
 
-async def test_settings_plugin_page_projects_an_empty_public_catalog() -> None:
-    backend = ScriptedBackend()
-    app = app_for(backend)
-    async with app.run_test(size=(100, 28)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "down", "down", "enter")
-        await pilot.pause()
-
-        page = app.screen.query_one("#settings-page-content")
-        text = "\n".join(str(widget.content) for widget in page.query(Static))
-        assert backend.plugin_config_reads == 1
-        assert "No plugin configuration is declared" in text
-        assert "public client API does not expose" not in text
 
 
-async def test_settings_loads_and_projects_the_public_plugin_config_catalog() -> None:
-    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
-
-    backend = ScriptedBackend(
-        plugin_config=PluginConfigCatalog(
-            scope="workspace",
-            workspace_root="/workspace/project",
-            revision="r1",
-            applies_to="new_sessions",
-            plugins=[
-                PluginConfigDescriptor(
-                    plugin_id="example",
-                    name="Example Plugin",
-                    editable=True,
-                    config_schema={
-                        "type": "object",
-                        "properties": {"limit": {"type": "integer"}},
-                    },
-                    scope_config={"limit": 3},
-                    effective_config={"limit": 5},
-                )
-            ],
-        )
-    )
-    app = app_for(backend)
-    async with app.run_test(size=(100, 28)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-
-        assert backend.plugin_config_reads == 1
-        assert backend.plugin_config_scopes == ["workspace"]
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "down", "down", "enter")
-        await pilot.pause()
-
-        page = app.screen.query_one("#settings-page-content")
-        text = "\n".join(str(widget.content) for widget in page.query(Static))
-        assert "workspace" in text
-        assert "/workspace/project" in text
-        assert "new sessions" in text.lower()
-        assert "Example Plugin" in text
-        assert "example" in text
-        assert "limit" in text.lower()
 
 
-async def test_plugin_schema_form_saves_only_changed_fields_with_catalog_revision() -> None:
-    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
-
-    backend = ScriptedBackend(
-        plugin_config=PluginConfigCatalog(
-            scope="workspace",
-            workspace_root="/workspace/project",
-            revision="rev-1",
-            plugins=[
-                PluginConfigDescriptor(
-                    plugin_id="example",
-                    name="Example",
-                    editable=True,
-                    config_schema={
-                        "type": "object",
-                        "properties": {
-                            "enabled": {"type": "boolean", "default": True},
-                            "workers": {"type": "integer", "default": 4},
-                        },
-                    },
-                    scope_config={"workers": 2},
-                    effective_config={"enabled": True, "workers": 2},
-                )
-            ],
-        )
-    )
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "down", "down", "enter")
-        await pilot.pause()
-
-        enabled = app.screen.query_one("#plugin-config-field-0", Checkbox)
-        assert enabled.value is True
-        enabled.focus()
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.pause()
-        assert enabled.value is False
-        button = app.screen.query_one("#plugin-config-apply", Button)
-        assert not button.disabled
-        assert button.region.bottom <= app.screen.region.bottom
-        previous_panel = app.query_one(SettingsPanel)
-        clicked = await pilot.click("#plugin-config-apply")
-        assert clicked, (
-            f"button={button.region} page="
-            f"{app.screen.query_one('#settings-page-content').region} "
-            f"screen={app.screen.region}"
-        )
-        await settle(pilot)
-        assert app.query_one(SettingsPanel) is not previous_panel
-
-    assert backend.plugin_config_updates[-1]["plugin_id"] == "example"
-    patch = backend.plugin_config_updates[-1]["patch"]
-    assert patch.scope == "workspace"
-    assert patch.revision == "rev-1"
-    assert patch.config == {"workers": 2, "enabled": False}
 
 
-async def test_plugin_revision_conflict_reloads_and_retries_the_preserved_draft() -> None:
-    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigDescriptor
-
-    def catalog(revision: str) -> PluginConfigCatalog:
-        return PluginConfigCatalog(
-            scope="workspace",
-            workspace_root="/workspace/project",
-            revision=revision,
-            plugins=[
-                PluginConfigDescriptor(
-                    plugin_id="example",
-                    name="Example",
-                    editable=True,
-                    config_schema={
-                        "type": "object",
-                        "properties": {"enabled": {"type": "boolean"}},
-                    },
-                    scope_config={"enabled": True},
-                    effective_config={"enabled": True},
-                )
-            ],
-        )
-
-    class ConflictOnceBackend(ScriptedBackend):
-        attempts = 0
-
-        async def update_plugin_config(
-            self, session_id, thread_id, plugin_id, patch
-        ):
-            self.plugin_config_updates.append({
-                "session_id": session_id,
-                "thread_id": thread_id,
-                "plugin_id": plugin_id,
-                "patch": patch,
-            })
-            self.attempts += 1
-            if self.attempts == 1:
-                self.plugin_config = catalog("rev-2")
-                raise XBotClientError(
-                    409,
-                    ErrorResponse(
-                        code="plugin_config_conflict",
-                        message="catalog revision changed",
-                    ),
-                )
-            return await self.list_plugin_config(
-                session_id, thread_id, scope=patch.scope
-            )
-
-    backend = ConflictOnceBackend(plugin_config=catalog("rev-1"))
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("draft survives settings")
-        await pilot.press("f2")
-        await settle(pilot)
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "down", "down", "enter")
-        await pilot.pause()
-        enabled = app.screen.query_one("#plugin-config-field-0", Checkbox)
-        enabled.focus()
-        await pilot.pause()
-        await pilot.press("space")
-        await pilot.click("#plugin-config-apply")
-        await settle(pilot)
-
-        message = app.screen.query_one("#settings-plugin-message", Static)
-        assert "catalog changed" in str(message.content).lower()
-        assert app.screen.query_one("#plugin-config-field-0", Checkbox).value is False
-        assert backend.plugin_config_updates[-1]["patch"].revision == "rev-1"
-        assert backend.plugin_config_reads == 2
-
-        await pilot.click("#plugin-config-apply")
-        await settle(pilot)
-        assert [
-            update["patch"].revision for update in backend.plugin_config_updates
-        ] == ["rev-1", "rev-2"]
-        assert backend.plugin_config_updates[-1]["patch"].config == {"enabled": False}
-        assert "saved" in str(
-            app.screen.query_one("#settings-plugin-message", Static).content
-        ).lower()
-
-        await pilot.press("escape")
-        await pilot.pause()
-        composer = app.query_one("#composer", Composer)
-        assert composer.text == "draft survives settings"
-        assert app.screen.focused is composer.input
 
 
-async def test_settings_keeps_the_agent_catalog_when_provider_catalog_fails() -> None:
-    backend = ScriptedBackend(providers_error=RuntimeError("provider catalog offline"))
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "enter")
-        await pilot.pause()
-
-        provider = app.screen.query_one("#setting-provider", Button)
-        agent = app.screen.query_one("#setting-agent", Button)
-        page = app.screen.query_one("#settings-page-content")
-        page_text = "\n".join(str(widget.content) for widget in page.query(Static))
-        assert provider.disabled
-        assert not agent.disabled
-        assert "provider catalog offline" in page_text
-        assert backend.provider_reads == 1
-        assert backend.agent_reads == 1
 
 
-async def test_settings_model_actions_are_reachable_by_keyboard_on_a_short_screen() -> None:
-    backend = ScriptedBackend(session=snapshot(provider="p1", model="m1", model_mode="low"))
-    app = app_for(backend)
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "enter")
-        await pilot.pause()
-
-        agent = app.screen.query_one("#setting-agent", Button)
-        page = app.screen.query_one("#settings-page-content")
-        focus_order = []
-        for _ in range(12):
-            await pilot.press("tab")
-            await pilot.pause()
-            focus_order.append(app.screen.focused.id if app.screen.focused else None)
-            if app.screen.focused is agent:
-                break
-        assert app.screen.focused is agent, focus_order
-        assert agent.region.y >= page.region.y
-        assert agent.region.bottom <= page.region.bottom
 
 
-async def test_appearance_setting_toggles_the_existing_reader_preference() -> None:
-    app = app_for(ScriptedBackend())
-    async with app.run_test(size=(80, 24)) as pilot:
-        await settle(pilot)
-        app.query_one("#composer", Composer).load_text("/settings")
-        await pilot.press("enter")
-        await settle(pilot)
-
-        nav = app.screen.query_one("#settings-nav", OptionList)
-        nav.focus()
-        await pilot.press("down", "down", "down", "down", "down", "enter")
-        await pilot.pause()
-        await pilot.click("#setting-thinking")
-        await settle(pilot)
-
-        assert app.view is not None
-        assert not app.view.transcript.visibility.reasoning
 
 
-async def test_the_model_picker_lists_the_current_provider_only() -> None:
-    backend = ScriptedBackend(session=snapshot(provider="p2", model="m3"))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+async def test_jobs_command_uses_the_server_catalog() -> None:
+    backend = ScriptedBackend(commands=(command("jobs"),), command_result=execution(message="j1 running"))
     app = app_for(backend)
     async with app.run_test(size=(100, 24)) as pilot:
         await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/model")
+        app.query_one("#composer", Composer).load_text("/jobs")
         await pilot.press("enter")
         await settle(pilot)
-        assert bool(app.query(SelectionPanel))
-        assert "m3" in selection_text(app)
-        assert "m2" not in selection_text(app), "another provider's models are not choices"
-
-
-async def test_a_picker_that_cannot_list_its_rows_says_so() -> None:
-    backend = ScriptedBackend(providers_error=RuntimeError("no catalogue"))
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/provider")
-        await pilot.press("enter")
-        await settle(pilot)
-        assert not bool(app.query(SelectionPanel))
-        assert "no catalogue" in transcript_text(app)
-
-
-async def test_a_refused_selection_is_reported() -> None:
-    backend = ScriptedBackend(selection_error=RuntimeError("unknown provider: p2"))
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/provider")
-        await pilot.press("enter")
-        await settle(pilot)
-        await pilot.press("down", "enter")
-        await settle(pilot)
-        assert "unknown provider: p2" in transcript_text(app)
-
-
-async def test_jobs_are_listed_locally() -> None:
-    backend = ScriptedBackend(
-        streams=[
-            stream(
-                *frames(
-                    (
-                        "job_updated",
-                        {
-                            "job_id": "j1",
-                            "kind": "shell",
-                            "status": "running",
-                            "command": "pytest -q",
-                            "cwd": "/w",
-                            "created_at": 0,
-                            "started_at": 1,
-                            "finished_at": 0,
-                        },
-                    ),
-                ),
-                hold=True,
-            )
-        ]
-    )
-    app = app_for(backend)
-    async with app.run_test(size=(100, 24)) as pilot:
-        await settle(pilot)
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/jobs")
-        await pilot.press("enter")
-        await settle(pilot)
-        rendered = transcript_text(app)
-        assert "j1" in rendered and "pytest -q" in rendered
-        assert backend.command_calls == [], "the list is already on the client"
+        assert backend.command_calls[-1]["raw"] == "/jobs"
+        assert "j1 running" in transcript_text(app)
 
 
 async def test_jobs_arguments_go_to_the_server() -> None:
@@ -2630,10 +2271,7 @@ async def test_display_history_loads_body_only_on_expansion_and_releases_it() ->
         assert not calls and block._text == text[:64]
         block.toggle()
         await settle(pilot)
-        assert block.shown_text == text[:4096]
-        block.action_next_page()
-        await settle(pilot)
-        assert block.shown_text == text[4096:8192]
+        assert block.shown_text == text
         block.toggle()
         await settle(pilot)
         assert block._text == text[:64]
@@ -2655,7 +2293,7 @@ async def test_tool_result_text_artifact_expands_on_demand() -> None:
 
     async def body_page(session_id, thread_id, message_id, *, field, offset=0, limit=4096):
         calls.append((message_id, field, offset))
-        return DisplayBodyPage(content="shell body", offset=offset, total=8192, next_offset=4096)
+        return DisplayBodyPage(content="shell body", offset=offset, total=10, next_offset=None)
 
     backend.list_display_messages = display_page
     backend.read_display_body = body_page

@@ -20,3 +20,16 @@ from XBotv2.config.api.contracts import SETTINGS, PatchPolicy
 user = ctx.require(SETTINGS).user_context()
 await ctx.require(SETTINGS).update_policy(PatchPolicy(permissions={"shell": "ask"}))
 ```
+
+The process-level `CONFIG_RESOURCES` service lets owning plugins register a
+namespace and contribute editable configuration resources. Clients enumerate
+`GET /sessions/{session_id}/threads/{thread_id}/configuration`, then read or
+save a resource at the same path followed by `/{resource_id}?scope=...`.
+Documents carry the resource id, scope, revision, content, and optional JSON
+schema. A stale revision is rejected with 409; unknown resources return 404.
+Owners declare supported scopes, presentation format and when changes apply.
+The configuration owner contributes schema-backed plugin settings, the raw
+plugin overlay (including plugins without a schema), and immediate session
+policy. The Agents owner contributes Agent definition documents. Other plugins
+can add resources without changing the client. Session policy updates use the
+existing policy operation and notify live session scopes.

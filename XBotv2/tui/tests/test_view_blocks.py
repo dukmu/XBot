@@ -132,14 +132,14 @@ async def test_a_collapsed_block_stays_short() -> None:
         assert "line 39" not in block_text(app.block)
 
 
-async def test_toggling_shows_the_content_within_the_fixed_height() -> None:
+async def test_toggling_expands_the_full_content_in_the_transcript() -> None:
     app = Harness()
     async with app.run_test(size=(80, 24)) as pilot:
         await pilot.pause()
         app.block.toggle()
         await pilot.pause()
         assert app.block.expanded is True
-        assert app.block.region.height <= BLOCK_MAX_LINES
+        assert app.block.region.height > BLOCK_MAX_LINES
         assert "line 39" in block_text(app.block)
 
 
@@ -284,7 +284,7 @@ async def test_manual_think_expansion_survives_stream_completion() -> None:
         block.show(many_lines(42), streaming=False)
         await pilot.pause()
         assert block.expanded is True
-        assert block.region.height == BLOCK_MAX_LINES
+        assert block.region.height > BLOCK_MAX_LINES
         assert "line 41" in block_text(block)
 
 async def test_lazy_body_pages_collapse_and_discard_late_response():
@@ -311,9 +311,6 @@ async def test_lazy_body_pages_collapse_and_discard_late_response():
     async with app.run_test() as pilot:
         block = app.query_one("#lazy", LazyBodyBlock)
         block.toggle()
-        await pilot.pause()
-        assert block.shown_text == "A" * 4096
-        block.action_next_page()
         await asyncio.wait_for(requested.wait(), 5)
         block.toggle()
         release.set()
@@ -323,5 +320,5 @@ async def test_lazy_body_pages_collapse_and_discard_late_response():
         assert "B" * 100 not in block.shown_text
         block.toggle()
         await pilot.pause()
-        assert calls == [0, 4096, 0]
-        assert block.shown_text == "A" * 4096
+        assert calls == [0, 4096, 0, 4096]
+        assert block.shown_text == "A" * 4096 + "B" * 4096

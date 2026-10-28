@@ -4,7 +4,8 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from XBotv2.tui.impl.view.interaction import InteractionInputPanel
-from XBotv2.tui.impl.view.settings import SettingsData, SettingsPanel
+from XBotv2.tui.impl.view.settings import SettingsPanel
+from XBotv2.config.api.resources import ConfigurationCatalog
 
 
 class PanelHarness(App):
@@ -30,11 +31,10 @@ async def test_question_accepts_input_and_keeps_conversation_visible():
 
 
 async def test_settings_escape_reports_close():
-    data = SettingsData(
-        status="Ready", provider="p", model="m", effort="", agent="a",
-        providers=(), models=(), efforts=(), agents=(),
-    )
-    panel = SettingsPanel(data)
+    async def read(*args, **kwargs):
+        raise AssertionError("empty catalog must not load a document")
+
+    panel = SettingsPanel(ConfigurationCatalog(resources=()), read=read, save=read)
     app = PanelHarness(panel)
     async with app.run_test(size=(60, 20)) as pilot:
         await pilot.pause()

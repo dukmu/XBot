@@ -696,3 +696,40 @@
 - [x] 额外真实缺陷：空闲会话恢复 20 秒仍显示 Reconnecting（首次失败仅工具终态，无独立日志）。实际 `/tmp/xbot-product-web-idle-observation.json` 表明 session SSE 200、catalog 已连。另一 Terra 直连/代理首帧与空闲探针均 actual0（`...web-proxy-probe.log`、`...web-proxy-idle.log`），排除代理缓冲；原因是前端只有新业务事件才标连接。修复在成功且 body 可读的 HTTP 边界通知连接，保留 generation/abort、cursor gap 与原失败路径，无合成协议帧或额外轮询。提交 `be59b1fd`。
 - [x] 连接相关两文件 7 passed / exit0（`/tmp/xbot-product-web-reconnect-unit.log/.exit`），源码变化后的完整构建 exit0（`...reconnect-build.log/.exit`）。同一真实空闲会话恢复并刷新均 Connected，未发送新消息，actual0（`/tmp/xbot-product-web-idle-final.log/.exit`、`.json`）。主代理看过 `/tmp/xbot-product-web-css-review/desktop-connected-final.png`；最终源码评估点 `be59b1fdc8c3cee4a73f89f94d22f6b402bd45be`，分段证据按各自受影响提交记录，不冒充该提交的一次全业务全套。
 - [x] 生产 Web CLI 已正常退出（工具 actual0）；一次性 API fixture 在 SIGINT 后仍有后台线程，清退本轮自有进程后的工具终态为1，未称其正常退出。临时原始数据库随 fixture 清理，保留的是实际导出 JSON、截图和日志，没有重建历史数据库。用户未跟踪设计稿与 `.worktrees/` 保留；不提交 build/cache/本地证据、不推送、不合并 main。后续只改本日志/用户文档。
+
+## 15. TUI transcript、完整设置与 harness 修正（2026-10-28）
+
+- [x] 从已合并并推送的 `main@2bde73da` 创建 `dev-tui-harness`，本轮仅三名 GPT-6.1 Terra 具体实施，主代理整合、审读、实际终端验收和分组提交。用户设计稿与 `.worktrees/` 不动；本轮不合并、不推送。
+- [x] 默认全屏，移除 inline 固定 24 行及显式旧主题选择；输入区去装饰边框，状态底栏收敛为模型、上下文与必要警示，运行活动放在 transcript。Settings 按终端空间伸缩；其编辑器保留自己的 PageUp/Ctrl+End，避免全局历史快捷键抢占。
+- [x] 实时正文与 reasoning 原先均被客户端截为 512 字符；现保留完整增量和完成正文，删除 `stream_truncated`、Live preview/after completion 文案及拒绝复制分支。归档字段展开时异步按需读全文、折叠释放，取消 Ctrl+左右正文分页；展开块不再限制 12 行，由外层 transcript 连续滚动。
+- [x] 滚到顶/底自动加载相邻历史，有界重叠窗口保留可见边界和偏移，合并后同时按保留数量与估算 8 MiB 文本预算裁剪；特大单条边界与相邻记录可必要超预算。PageUp/PageDown 先逐屏阅读当前长消息，抵边才换窗；程序性恢复位置不触发反复翻页。Ctrl+End 回 live。
+- [x] 工具运行无事件时原先不刷新时间；现基于单调时间仅更新 transcript 活动行，不扫描 timeline 或重绘 jobs/queue/composer。运行时执行循环、标准工具权限和持久消息语义未为界面计时另造路径。
+- [x] 删除 TUI 对 provider/model/effort/agent/jobs/status 的业务命令注册及死分发逻辑；服务端目录动态驱动补全、palette、规范命令执行和 effects 刷新。新增陌生命令不需要 TUI 新 handler；保留真正的本地视图和终端操作。模型选择控件属于设置，而不是拦截服务 slash。
+- [x] 设置可编辑 global/workspace/session 插件覆盖、复杂 JSON/数组、完整即时权限与沙箱策略；原始 YAML Files 页覆盖未挂载插件及 disabled/optional/isolate/profiles 等声明选项。Files 保存校验 loader 结构，插件 config 在下次挂载校验和生效，不宣称热重载。Agent 页编辑 global/workspace 原始 frontmatter 与 prompt、保留变量并刷新当前 session 目录，重选 Agent 应用；其它已挂载 session 重新打开后读取。
+- [x] 配置/Agent 文件读写及校验归各自 owner，通用 Python client 暴露 API；TUI 只编辑和呈现。API/客户端提交 `a8d53575`。主代理发现完整替换权限时空 rules 被删除、错误继承下层 allow 的真实缺陷；修正显式 `rules: []`，后续独立 sandbox patch 及关闭恢复仍保留。修前 HTTP 回归实际失败 `/tmp/xbot-empty-rules-before.log`；修后 1 passed / exit0，`/tmp/xbot-empty-rules-after.log`、`.exit`。
+- [x] `shell-output.txt` 来自 shell 无条件发布完整输出附件。前台 <=8000 bytes 现直接返回文本，不 adopt、不 hash、不存重复短附件；失败/超时保留可读输出。长输出与后台任务仍 lossless 保存并按需读取，长附件显示名为 Shell output，捕获/取消/回收复用同一 spool 路径。提交 `047e1d22`。
+- [x] 按实际官方接口文档修 MiniMax 大小写/中国端点与支持模型、DeepSeek 名称/模态/输出预算及 effort、OpenAI 模态与完成预算字段、Claude 有效示例，LM Studio 不再假定支持某个 effort。OpenAI 兼容适配器通过模型配置选择 `max_tokens` 或 `max_completion_tokens`，不猜模型名。来源及 2026-10-28 核对日期见 llm/doc/design.md；提交 `ac087533`，未调用外部收费 provider。
+- [x] 通用 core prompt 补全任务持续推进、工具结果、上下文/权限边界与证据责任；默认编码 Agent 单独说明工程流程，不把具体插件工具写进通用 core。任务提醒去掉冗余催促与强制工具使用措辞。提交 `b0618491`；没有声称做了提示词效果或模型能力基准。
+
+### 分段验证与实际交互
+
+- [x] Terra 的真实工具会话结果：布局/launcher/status/CLI 151 passed；LLM wire 18 passed、模型选择生命周期受影响节点 1 passed，完整配置解析 5 个 provider；shell 超时/权限/host/bwrap/后台读取 26 passed。相关初版曾有边框/padding、spy 接线失败，修复后上述 exit0；当时未重定向日志，不事后创建历史 log/exit 文件。
+- [x] Transcript Terra 分段定向：state/blocks/plan 133 passed 在后续展开样式改动前；最终相关窗口/scroll/活动等 68 passed，另完整大增量 1 passed；PageUp 长消息/历史/合并预算 5 passed；轻量计时最终 4 passed，断言整帧组件渲染次数不增长。集合有交集，不相加为总覆盖。当时输出仅工具会话，无本地日志；不重复旧压力矩阵。
+- [x] Settings Terra 分段：命令/复杂配置/Agent/Files/policy UI 与 HTTP 56 passed；Agent/config owner 15 passed；HTTP policy 7 passed；40×14 设置保存通过。这些分段未落本地日志。最初 app+commands 17 failed/143 passed；其中 3 registry、8 旧 slash picker/status 断言已迁移，新 8 节点 actual0（`/tmp/xbot-settings-migrated-tests.log`、`.exit`），jobs 原测试仅碰巧看到已有任务，改成实际动态命令执行后 1 passed/actual0（`/tmp/xbot-jobs-command-test.log`、`.exit`）。
+- [x] 主代理仅复验上述剩余 6 节点：2 归档/artifact 通过，4 为旧 Ready/Running 底栏断言失败（`/tmp/xbot-tui-harness-remaining.log/.exit`）。迁移后 2 底栏/布局通过，另 2 因旧 helper 不遍历直接活动节点失败（`...status-contract.log/.exit`）；改为读取实际活动组件，剩余 2 passed/exit0（`...activity-contract.log/.exit`）。没有用测试替身改生产回退。
+- [x] 主代理提示词组合/提醒首轮 7 passed、1 旧文字断言失败（`/tmp/xbot-tui-harness-prompts.log/.exit`）；删除无行为意义的原句断言，仅复验失败节点 1 passed/exit0（`...reminder.log/.exit`）。配置编辑器导航+保存 1 passed/exit0（`...editor-navigation.log/.exit`）；自然滚动/设置提示和背景布局 7 passed/exit0（`...hints.log/.exit`）。
+- [x] 主代理实际查看 Textual App 导出的画面；临时驱动曾误将原始 SSE frame 直接交 reducer，修为既有 Translator；并行展开样式 `max-height:none` 曾产生实际 CSS 解析失败，修为 Textual 支持的样式后成功。错误输出分别保留于 `/tmp/xbot-tui-harness-preview.log`、`...preview-second.log`，成功输出 `...preview-final.log`；不把临时驱动失败当作 provider 或 runtime 缺陷。
+- [x] 新增真实 server + `.venv/bin/xbot tui` + tmux PTY 回归：默认 alternate screen/35行、完成前显示 >512 字符的 reasoning 尾部、shell 执行无新事件时计时前进、短输出无旧附件名、resize 到80×45后输入仍在底部。首轮驱动不合理要求长块首尾同时可见而失败（`/tmp/xbot-tui-harness-pty.log/.exit`）；修正后 actual0（`...pty-second.log/.exit`）。计时改成轻量路径后仅复验此受影响真实交互，1 passed/exit0（`...pty-lightweight.log/.exit`），实际逐屏文本在 `/tmp/xbot-tui-harness-pty-lightweight/`。
+- [x] 最终集成：迁移旧真实 TUI 测试中的底栏文案等待，完成受影响的实际交互并记录最终源码提交。其余旧真实场景仅迁移、未复跑；未运行旧全套或外部收费 provider，不将分段证据表述为该提交的一次全套评估。
+
+### 15.1 用户纠正：设置必须由服务声明驱动
+
+- [x] 用户指出设置页不能是特制/硬编码页面。审查确认初版仍有固定 Model/Permissions/Sandbox/Agent/Files 等页面，因此上节设置相关内容仅是初版实施和当时验证记录，不作为最终交付设计或最终验收结论。
+- [x] 删除 TUI 业务页面、业务字段分发和仅为这些页面存在的 pickers；通用界面消费服务端配置资源目录、作用域、schema/原文和保存说明。配置与 Agent owner 发布各自资源，通用 client 统一读取/保存，新增资源或字段不改 TUI。
+- [x] 仅验证新增通用配置路径、实际界面与受影响键盘流程；复用已完成的 transcript/工具计时/模型/shell 证据，不重跑它们。
+- [x] 最终配置架构：`CONFIG_RESOURCES` 接受 owner 按 namespace 贡献目录、读写和 scope/schema/format/说明；Config owner 提供插件 schema、原始 overlay 与即时 policy，Agents owner 提供原始 Markdown 定义。通用 SDK 只有 list/get/save 三入口；TUI 无 PAGES、SettingName、插件 ID 或模型/权限专页分支，新增陌生 owner/schema 字段无需修改界面。去掉本轮初版新加的专用 Agent/overlay HTTP 与 SDK 路径，不保留兼容包装；既有 Web policy/plugin-config API 保留。提交 `cc92bd1e`。
+- [x] Terra 只读边界审查确认目录/界面可消费陌生 owner，并指出三处具体问题后实施修正：policy revision 比较进入 ConfigService 同步写入边界；UI 冲突禁用保存，不给旧草稿换新 revision，显式 Discard 才重载；各资源由 owner 说明即时或下次挂载生效。Agent 同时检查目标/继承文件版本，改用 stat 标识和一次原文读取，不重复 hash/解析。资源 HTTP 2 passed/exit0（`/tmp/xbot-config-resources.log/.exit`）；最后含 Agent 保存/继承冲突的受影响 HTTP 节点 1 passed/exit0（`/tmp/xbot-config-agent-final.log/.exit`）。
+- [x] 通用界面 18 项定向检查通过（`/tmp/xbot-generic-settings-tests.log/.exit`），覆盖陌生资源、scope、表单/JSON/原文、冲突与错误草稿、只读、窄屏；保存后按服务返回内容重绘的 3 项后续复验通过，仅工具输出，无独立日志。删除已无消费者的旧状态报告及专用测试，不为旧页面保留死逻辑。
+- [x] 主代理实际画面确认配置编辑应占满原 transcript 区域，改为非 Modal 的内嵌工作区，关闭恢复聊天；不再固定 60vh。去掉编辑容器多余 Tab 停点，增加通用 Ctrl+S 保存。未知 namespace 的实际 App/client 调用、多个 scope 的 Tab、长文本 PageUp 与键盘保存 1 passed/exit0（`/tmp/xbot-generic-settings-multiscope-keyboard.log/.exit`；先前单 scope 导航记录在 `...settings-keyboard.log/.exit`）。
+- [x] 最终真实 CLI + HTTP + tmux 通用设置流程通过：按实际服务器目录定位资源、原文粘贴、Ctrl+S、GET 返回内容与所编辑 YAML 完全一致、关闭后 unsent composer draft 保留。实际源码结果 1 passed/exit0（`/tmp/xbot-generic-settings-pty-sixth.log/.exit`），实际屏幕文本在同名前缀目录 `settings-pty-captures/`。首轮错误假定首资源为 overlay；第二至四轮临时粘贴驱动错误/焦点及屏幕条件未完成保存，第五轮 YAML 前导 `-` 被 tmux 当选项；各失败原始 `...pty{,-second,-third,-fourth,-fifth}.log/.exit` 保留。修为动态目录和仓库既有 tmux 粘贴机制、正确参数终止符，没有为驱动修改业务配置。另审读修正通用 SDK 保存遗漏 scope query 的接线，最终实际全局文档保存已覆盖该路径。
+- [x] 最终源码评估点 `bf71c7e52fc06ef2a3cc6c527c3128667463a70f`，TUI 与相关测试提交 `bf71c7e5`；上述测试按源码受影响部分分段执行，没有在提交后重跑已通过的 transcript、模型、shell 或无关大套。最终只再提交本日志。所有本轮自有终端/测试进程已结束，工作分支保留，用户未跟踪文件保留，不合并、不推送。

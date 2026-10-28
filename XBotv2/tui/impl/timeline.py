@@ -92,7 +92,6 @@ class AssistantEntry(Entry):
     content: str = ""
     reasoning: str = ""
     streaming: bool = False
-    stream_truncated: bool = False
     body_ref: DisplayBody | None = None
     reasoning_ref: DisplayBody | None = None
 

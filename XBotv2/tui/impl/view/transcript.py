@@ -21,6 +21,8 @@ from typing import Sequence
 from rich.markdown import Markdown
 from rich.text import Text
 from textual.containers import VerticalScroll
+from textual.events import MouseScrollDown, MouseScrollUp
+from textual.message import Message
 from textual.widget import Widget
 from textual.widgets import Static
 
@@ -52,9 +54,25 @@ class TranscriptScroll(VerticalScroll):
 
     can_focus = True
 
+    class HistoryEdge(Message):
+        def __init__(self, *, older: bool) -> None:
+            super().__init__()
+            self.older = older
+
+    def on_mouse_scroll_up(self, event: MouseScrollUp) -> None:
+        if self.scroll_y <= 0:
+            self.post_message(self.HistoryEdge(older=True))
+
+    def on_mouse_scroll_down(self, event: MouseScrollDown) -> None:
+        if self.is_vertical_scroll_end:
+            self.post_message(self.HistoryEdge(older=False))
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._reader_anchor: Widget | None = None
+        self._reader_anchor_y: int | None = None
+        self._navigation_generation = 0
+        self._navigating = False
         self._tail_follow_pending = False
         self._tail_follow_remaining = 0
         self._tail_follow_generation = 0
@@ -69,6 +87,10 @@ class TranscriptScroll(VerticalScroll):
         super().watch_scroll_y(old_value, new_value)
         if old_value == new_value:
             return
+        if not self._navigating and new_value <= 0 and old_value > new_value:
+            self.post_message(self.HistoryEdge(older=True))
+        elif not self._navigating and self.is_vertical_scroll_end and new_value > old_value:
+            self.post_message(self.HistoryEdge(older=False))
         if self.is_vertical_scroll_end:
             self._reader_anchor = None
         else:
@@ -76,12 +98,11 @@ class TranscriptScroll(VerticalScroll):
 
     def on_resize(self) -> None:
         anchor = self._reader_anchor
-        if anchor is not None and anchor.parent is self:
-            self.call_after_refresh(
-                lambda: self.scroll_to_widget(
-                    anchor, top=True, animate=False, immediate=True
-                )
-            )
+        y = self._reader_anchor_y
+        if anchor is not None and anchor.parent is self and y is not None:
+            self.call_after_refresh(lambda: self.scroll_relative(
+                y=anchor.region.y - self.region.y - y, animate=False, immediate=True
+            ))
         else:
             self.call_after_refresh(self.scroll_to_tail)
 
@@ -93,7 +114,18 @@ class TranscriptScroll(VerticalScroll):
             region = child.region
             if region.y < viewport.bottom and region.bottom > viewport.y:
                 self._reader_anchor = child
+                self._reader_anchor_y = region.y - viewport.y
                 return
+
+    def suppress_navigation_edges(self) -> None:
+        """Ignore scroll changes caused by restoring a navigation position."""
+        self._navigation_generation += 1
+        generation = self._navigation_generation
+        self._navigating = True
+        def finish() -> None:
+            if generation == self._navigation_generation:
+                self._navigating = False
+        self.call_after_refresh(lambda: self.call_after_refresh(finish))
 
     def preserve_reader_position(self) -> None:
         """Keep the same transcript row at the same screen coordinate."""
@@ -103,14 +135,14 @@ class TranscriptScroll(VerticalScroll):
         anchor = self._reader_anchor
         if anchor is None or anchor.parent is not self:
             return
-        visible_y = anchor.region.y - self.scroll_y
+        visible_y = anchor.region.y
 
         def restore() -> None:
             if generation != self._reader_restore_generation:
                 return
             if anchor.parent is not self:
                 return
-            delta = anchor.region.y - self.scroll_y - visible_y
+            delta = anchor.region.y - visible_y
             if delta:
                 self.scroll_relative(y=delta, animate=False, immediate=True)
 
@@ -167,14 +199,13 @@ class ThinkingActivity(Static):
         width: 1fr;
         margin-bottom: 0;
         padding-left: 1;
-        border-left: thick $secondary;
         color: $text-muted;
         text-style: italic;
     }
     """
 
-    def __init__(self) -> None:
-        super().__init__("✳ Thinking…", id="thinking-activity")
+    def __init__(self, text: str = "✳ Thinking…") -> None:
+        super().__init__(text, id="thinking-activity")
 
 
 def older_history_label(older: OlderHistory) -> str | None:
@@ -183,7 +214,7 @@ def older_history_label(older: OlderHistory) -> str | None:
     Tell the reader when earlier archived messages are available.
     """
     if isinstance(older, HistoryAvailable):
-        return "Earlier messages are available — press PageUp to load them"
+        return "Scroll up for earlier messages"
     return None
 
 
@@ -270,13 +301,19 @@ class TranscriptView:
 
     # --- rendering ----------------------------------------------------
 
-    async def render(self, state: SessionState, *, thinking: bool = False) -> bool:
+    async def render(self, state: SessionState, *, thinking: str | bool = False) -> bool:
         """Bring the mounted window in line with ``state``; report if it moved."""
         async with self._lock:
             return await self._render_locked(state, thinking=thinking)
 
+    async def render_activity(self, text: str | bool) -> None:
+        """Update the transient activity without rebuilding the transcript."""
+        async with self._lock:
+            if self._thinking_activity is not None:
+                await self._sync_thinking_activity(text)
+
     async def _render_locked(
-        self, state: SessionState, *, thinking: bool | None = None
+        self, state: SessionState, *, thinking: str | bool | None = None
     ) -> bool:
         identity = (state.session_id, state.thread_id)
         if self._identity != identity:
@@ -312,6 +349,8 @@ class TranscriptView:
         # taller than the viewport, "is at the end" is false by definition, and
         # asking afterwards would silently stop following the tail.
         following = self.reader_at_end
+        if not following:
+            self.container.preserve_reader_position()
         # A page or bounded-tail transition can remove and mount many widgets.
         # Every individual DOM operation is awaited; without one Textual repaint
         # batch the terminal may draw those intermediate, incomplete trees as a
@@ -327,15 +366,13 @@ class TranscriptView:
             # laid out. Recompute from the post-layout range: a block collapse
             # may leave the transcript shorter than its viewport.
             self.container.follow_tail_after_refresh()
-        elif changed:
-            self.container.preserve_reader_position()
         return changed
 
     async def _render_older_notice(self, state: SessionState) -> bool:
         """Show, above the window, what the client knows about older messages."""
         label = older_history_label(state.older)
         if state.viewing_history:
-            label = "History · PageUp older · PageDown newer · Ctrl+End live" + (f" · {label}" if label else "")
+            label = "History · scroll to read · Ctrl+End live" + (f" · {label}" if label else "")
         if label is None:
             if self._notice_mounted:
                 await self.older_notice.remove()
@@ -390,7 +427,7 @@ class TranscriptView:
         self._mounted = plan.mounted
         return changed
 
-    async def _sync_thinking_activity(self, thinking: bool | None) -> bool:
+    async def _sync_thinking_activity(self, thinking: str | bool | None) -> bool:
         """Mount the controller's transient activity after the timeline tail."""
         if thinking is None:
             return False
@@ -399,8 +436,11 @@ class TranscriptView:
                 self._thinking_activity is not None
                 and self._thinking_activity.parent is not None
             ):
+                text = thinking if isinstance(thinking, str) else "✳ Thinking…"
+                if str(self._thinking_activity.content) != text:
+                    self._thinking_activity.update(text)
                 return False
-            self._thinking_activity = ThinkingActivity()
+            self._thinking_activity = ThinkingActivity(thinking if isinstance(thinking, str) else "✳ Thinking…")
             await self.container.mount(self._thinking_activity)
             return True
         if self._thinking_activity is None:
@@ -538,10 +578,15 @@ class TranscriptView:
         if anchor is None:
             return False
         previous_first = current[0]
+        widget = self._widgets.get(previous_first)
+        screen_y = widget.region.y if widget is not None else None
+        self.container.suppress_navigation_edges()
+        self.container.cancel_tail_follow()
         self._anchor = anchor
         async with self._lock:
             await self._render_locked(state)
-        self._keep_reader_place(state, previous_first)
+        self._keep_reader_place(state, previous_first, screen_y)
+        self.container.suppress_navigation_edges()
         return True
 
     async def page_newer(self, state: SessionState) -> bool:
@@ -557,8 +602,20 @@ class TranscriptView:
             self._anchor = None
         else:
             self._anchor = anchor
+        previous_last = current[-1]
+        self.container.suppress_navigation_edges()
+        self.container.cancel_tail_follow()
         async with self._lock:
             await self._render_locked(state)
+        widget = self._widgets.get(previous_last)
+        if widget is not None:
+            self.container.cancel_tail_follow()
+            self.container.cancel_reader_restore()
+            self._schedule(lambda: self.container.scroll_to(
+                y=max(0, widget.virtual_region.bottom - self.container.size.height),
+                animate=False, immediate=True,
+            ))
+        self.container.suppress_navigation_edges()
         return True
 
     def reveal_loaded_older(self, state: SessionState, boundary_id: str) -> None:
@@ -576,8 +633,9 @@ class TranscriptView:
             return
         if boundary == 0:
             return
-        target = self._widgets.get(ids[0])
+        target = self._widgets.get(boundary_id)
         if target is not None:
+            self.container.suppress_navigation_edges()
             self.container.cancel_tail_follow()
             self.container.cancel_reader_restore()
             self._schedule(
@@ -599,7 +657,7 @@ class TranscriptView:
             self.container.scroll_to_tail
         )
 
-    def _keep_reader_place(self, state: SessionState, anchor_entry: str) -> None:
+    def _keep_reader_place(self, state: SessionState, anchor_entry: str, screen_y: int | None) -> None:
         """After paging up, hold the entry that was at the top of the viewport.
 
         Anchoring that entry to the top needs no height arithmetic, so it cannot
@@ -608,11 +666,11 @@ class TranscriptView:
         widget = self._widgets.get(anchor_entry)
         if widget is None:
             return
-        self._schedule(
-            lambda: self.container.scroll_to_widget(
-                widget, top=True, animate=False, immediate=True
-            )
-        )
+        if screen_y is not None:
+            self.container.cancel_reader_restore()
+            self._schedule(lambda: self.container.scroll_relative(
+                y=widget.region.y - screen_y, animate=False, immediate=True
+            ))
 
     def _schedule(self, callback) -> None:
         app = getattr(self.container, "app", None)

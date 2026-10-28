@@ -39,15 +39,9 @@ def server_command(name: str, **overrides) -> CommandDescription:
 def test_the_builtins_are_declared_in_their_search_order() -> None:
     assert registry().names() == (
         "help",
-        "status",
         "settings",
         "session",
         "thread",
-        "jobs",
-        "provider",
-        "model",
-        "effort",
-        "agent",
         "thinking",
         "details",
         "attach",
@@ -67,16 +61,12 @@ def test_settings_documents_the_overlay_entry_point() -> None:
     assert spec.slash == "/settings"
 
 
-def test_the_runtime_selections_document_their_argument_forms() -> None:
-    for name, fragment in (
-        ("provider", "use"),
-        ("model", "use"),
-        ("effort", "<level>"),
-        ("agent", "use"),
-        ("jobs", "stop"),
-    ):
-        spec = registry().get(name)
-        assert spec is not None and fragment in spec.usage, name
+def test_runtime_commands_come_from_the_server_catalog() -> None:
+    reg = registry()
+    for name in ("provider", "model", "effort", "agent", "jobs", "status"):
+        assert reg.get(name) is None
+    reg.merge(tuple(server_command(name) for name in ("provider", "model", "effort", "agent", "jobs")))
+    assert all(reg.get(name).kind == "server" for name in ("provider", "model", "effort", "agent", "jobs"))
 
 
 def test_thinking_documents_how_it_is_used() -> None:
@@ -239,14 +229,12 @@ def test_server_commands_follow_the_client_ones() -> None:
 
 
 def test_a_server_command_cannot_take_over_a_client_one() -> None:
-    """``/status`` is rendered from local state now, so the server's copy must
-    not replace it -- that precedence is what makes the move possible."""
     reg = registry()
-    reg.merge((server_command("status", description="the server's own status"),))
-    spec = reg.get("status")
+    reg.merge((server_command("settings", description="server settings"),))
+    spec = reg.get("settings")
     assert spec is not None
     assert spec.kind == "client"
-    assert spec.description != "the server's own status"
+    assert spec.description != "server settings"
 
 
 def test_merging_replaces_the_previous_catalogue() -> None:

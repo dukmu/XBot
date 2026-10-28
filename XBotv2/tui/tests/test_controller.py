@@ -126,14 +126,14 @@ async def test_thinking_activity_requires_running_turn_before_output(
     control.dispatch(human_record("u1", "hello"))
     control.dispatch(_turn(1))
     await control.flush()
-    assert view.thinking_activity == [True]
+    assert "Thinking" in view.thinking_activity[-1]
 
     control.dispatch(AssistantTextDelta(text="partial"))
     await control.flush()
-    assert view.thinking_activity == [True, False]
+    assert "Thinking" in view.thinking_activity[-1]
 
 
-async def test_thinking_activity_yields_to_active_tool_then_returns_after_result(
+async def test_thinking_activity_tracks_active_tool_then_returns_after_result(
     backend: ScriptedBackend,
 ) -> None:
     from XBotv2.agentloop.api.outputs import (
@@ -148,16 +148,37 @@ async def test_thinking_activity_yields_to_active_tool_then_returns_after_result
     control.dispatch(human_record("u1", "hello"))
     control.dispatch(_turn(1))
     await control.flush()
-    assert view.thinking_activity[-1] is True
+    assert "Thinking" in view.thinking_activity[-1]
 
     call = ToolCall(id="c1", name="lookup", args={})
     control.dispatch(LoopToolCallsStarted(calls=(StartedToolCall(call=call, category="execute"),)))
     await control.flush()
-    assert view.thinking_activity[-1] is False
+    assert "Tool" in view.thinking_activity[-1]
 
     control.dispatch(ToolRecord.model_validate(tool_record("c1", "lookup", "found it")))
     await control.flush()
-    assert view.thinking_activity[-1] is True
+    assert "Thinking" in view.thinking_activity[-1]
+
+
+async def test_activity_clock_advances_without_new_events(backend: ScriptedBackend) -> None:
+    clock = FakeClock()
+    sleep = FakeSleep()
+    control, view = controller(backend, clock=clock, sleep=sleep)
+    control.dispatch(ConnectionChanged(Connection.CONNECTED))
+    control.dispatch(_turn(1))
+    await control.flush()
+    counts = tuple(map(len, (view.transcripts, view.statuses, view.job_lists, view.queues, view.composers)))
+
+    def tick() -> None:
+        clock.advance(1)
+        if sleep.ticks == 3:
+            control.stop()
+
+    sleep.on_tick = tick
+    await control.flush_loop()
+    assert "1.0s" in view.thinking_activity[-2]
+    assert "2.0s" in view.thinking_activity[-1]
+    assert tuple(map(len, (view.transcripts, view.statuses, view.job_lists, view.queues, view.composers))) == counts
 
 
 async def test_a_burst_of_events_costs_one_render(backend: ScriptedBackend) -> None:
@@ -204,7 +225,7 @@ async def test_connecting_reads_the_thread_so_a_running_turn_is_visible(
     control, view = controller(backend)
     await control.connect()
     assert derive(control.state.facts) is Status.RUNNING
-    assert "Running" in _plain(view.last_status)
+    assert "Thinking" in view.thinking_activity[-1]
 
 
 async def test_idle_watchdog_does_not_issue_periodic_http_reads(
@@ -655,7 +676,7 @@ async def test_history_failure_keeps_view_and_allows_retry(backend: ScriptedBack
     backend.page_error = None
     backend.pages = [history_page(human_record("u1", "older"))]
     assert await control.page_older()
-    assert control._history_state.timeline.ids() == ("u1",)
+    assert control._history_state.timeline.ids()[:2] == ("u1", "u9")
 
 
 async def test_paging_up_at_the_beginning_does_not_request_history(backend: ScriptedBackend) -> None:
@@ -679,6 +700,22 @@ async def test_live_history_is_bounded_without_loading_older_pages(backend: Scri
     assert next(iter(control.state.timeline)).text == "x" * (3 * 1024 * 1024)
 
 
+async def test_merged_archive_respects_text_budget_and_retains_boundary(backend: ScriptedBackend, monkeypatch) -> None:
+    from XBotv2.tui.impl import controller as controller_module
+
+    monkeypatch.setattr(controller_module, "_HISTORY_TEXT_BUDGET", 4000)
+    backend.session = snapshot(history=[human_record("live", "l" * 200)], history_cursor="older")
+    backend.pages = [history_page(*(human_record(f"old-{i}", "x" * 200) for i in range(3)))]
+    control, _ = controller(backend, view=RecordingView(can_move_older=False))
+    await control.connect()
+    assert await control.page_older()
+    entries = list(control._history_state.timeline)
+    assert entries[-1].id == "live"
+    assert any(entry.id.startswith("old-") for entry in entries)
+    assert sum(controller_module._entry_bytes(entry) for entry in entries) <= 4000
+    assert control._history_before_id == entries[0].id
+
+
 async def test_retention_keeps_in_flight_entries(backend: ScriptedBackend) -> None:
     from XBotv2.agentloop.api.outputs import AssistantTextDelta, StartedToolCall, ToolCallsStarted as LoopToolCallsStarted
     from XBotv2.core.api.tools import ToolCall
@@ -696,7 +733,7 @@ async def test_retention_keeps_in_flight_entries(backend: ScriptedBackend) -> No
     assert set(control.state.timeline.ids()) == {"pending", stream_id, "tool"}
 
 
-async def test_history_pages_replace_old_view_while_live_events_continue(backend: ScriptedBackend) -> None:
+async def test_history_pages_merge_while_live_events_continue(backend: ScriptedBackend) -> None:
     from XBotv2.core.api.history import HistoryPage
     backend.session = snapshot(history=[human_record("u9", "live")], history_cursor="older")
     backend.pages = [
@@ -710,17 +747,13 @@ async def test_history_pages_replace_old_view_while_live_events_continue(backend
     await control.connect()
     assert await control.page_older()
     assert backend.page_reads[-1]["before_id"] == "u9"
-    assert control._history_state.timeline.ids() == ("u5",)
+    assert control._history_state.timeline.ids() == ("u5", "u9")
     assert await control.page_older()
-    assert control._history_state.timeline.ids() == ("u3",)
+    assert control._history_state.timeline.ids() == ("u3", "u5", "u9")
     control.dispatch(human_record("u10", "new live"))
     await control.flush()
-    assert control._history_state.timeline.ids() == ("u3",)
+    assert control._history_state.timeline.ids() == ("u3", "u5", "u9")
     assert control.state.timeline.ids() == ("u9", "u10")
-    assert await control.page_newer()
-    assert control._history_state.timeline.ids() == ("u5",)
-    assert await control.page_newer()
-    assert control._history_state.timeline.ids() == ("u8",)
     assert await control.page_newer()
     assert control._history_state is None
     assert control.state.timeline.ids() == ("u9", "u10")
@@ -734,8 +767,9 @@ async def test_large_history_page_holds_previews_and_returns_to_live(backend: Sc
     control, _ = controller(backend, view=view)
     await control.connect()
     assert await control.page_older()
-    assert control._history_state.timeline.ids() == ("old", "new")
-    for entry in control._history_state.timeline:
+    assert control._history_state.timeline.ids() == ("old", "new", "live")
+    for entry_id in ("old", "new"):
+        entry = control._history_state.timeline.get(entry_id)
         assert len(entry.content) == 512 and entry.body_ref.length == len(large)
     assert await control.page_newer()
     assert control._history_state is None

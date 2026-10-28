@@ -396,6 +396,16 @@ class ScriptedBackend:
             raise self.agents_error
         return self.agents if self.agents is not None else agent_list()
 
+    async def list_configuration(self, session_id: str, thread_id: str):
+        from XBotv2.config.api.resources import ConfigurationCatalog
+        return ConfigurationCatalog(resources=())
+
+    async def get_configuration(self, session_id: str, thread_id: str, resource_id: str, *, scope: str):
+        raise ValueError("Unknown configuration resource")
+
+    async def save_configuration(self, session_id: str, thread_id: str, document):
+        raise ValueError("Unknown configuration resource")
+
     async def get_session_policy(self, session_id: str) -> Any:
         self.policy_reads += 1
         if self.policy_error is not None:
@@ -717,7 +727,7 @@ class RecordingView:
     queues: list[Any] = field(default_factory=list)
     composers: list[Any] = field(default_factory=list)
     interactions: list[Any] = field(default_factory=list)
-    thinking_activity: list[bool] = field(default_factory=list)
+    thinking_activity: list[str | bool] = field(default_factory=list)
     pages: list[str] = field(default_factory=list)
     tail_calls: int = 0
     #: Whether the reader is following the tail; tests flip it to stand in for a
@@ -732,10 +742,13 @@ class RecordingView:
     def reader_at_end(self) -> bool:
         return self.at_end
 
-    async def render_transcript(self, state: Any, *, thinking: bool) -> bool:
+    async def render_transcript(self, state: Any, *, thinking: str | bool) -> bool:
         self.transcripts.append(state)
         self.thinking_activity.append(thinking)
         return True
+
+    async def render_activity(self, text: str | bool) -> None:
+        self.thinking_activity.append(text)
 
     def render_status(self, model: Any) -> None:
         self.statuses.append(model)

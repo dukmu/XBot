@@ -18,11 +18,12 @@ from XBotv2.config.api.contracts import (
 from XBotv2.core.api.errors import OperationError
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.core.api.paths import RuntimePaths
-from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config
+from XBotv2.config.impl.plugin_catalog import plugin_config_catalog, update_plugin_config, read_overlay_document, write_overlay_document
 from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.session.api.contracts import SessionsPort
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument, ConfigurationResourceNotFound
 from XBotv2.config.api.protocol import (
     PluginConfigPatchRequest, SessionPolicyPatch, SessionPolicyResponse,
 )
@@ -44,8 +45,37 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIRouter:
+def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader, resources) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/configuration", operation_id="list_configuration")
+    async def list_configuration(session_id: str, thread_id: str) -> ConfigurationCatalog:
+        ctx = await sessions.locate(session_id, thread_id)
+        return await resources.catalog(ctx)
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}", operation_id="read_configuration")
+    async def read_configuration(session_id: str, thread_id: str, resource_id: str, scope: PluginConfigScope = Query(default="workspace")) -> ConfigurationDocument:
+        ctx = await sessions.locate(session_id, thread_id)
+        try:
+            return await resources.read(ctx, resource_id, scope)
+        except ConfigurationResourceNotFound as exc:
+            raise HttpServerError("configuration_not_found", str(exc), status=404) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_configuration", str(exc), status=400) from exc
+
+    @router.put("/sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}", operation_id="save_configuration")
+    async def save_configuration(session_id: str, thread_id: str, resource_id: str, payload: ConfigurationDocument, scope: PluginConfigScope = Query(default="workspace")) -> ConfigurationDocument:
+        if payload.id != resource_id or payload.scope != scope:
+            raise HttpServerError("invalid_configuration", "Resource id or scope does not match request", status=400)
+        ctx = await sessions.locate(session_id, thread_id)
+        try:
+            return await resources.save(ctx, payload)
+        except (PluginConfigConflict, FileExistsError) as exc:
+            raise HttpServerError("configuration_conflict", str(exc), status=409) from exc
+        except ConfigurationResourceNotFound as exc:
+            raise HttpServerError("configuration_not_found", str(exc), status=404) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_configuration", str(exc), status=400) from exc
 
     async def _main_thread_id(session_id: str) -> str:
         """Find the main thread without scanning child-thread pages."""
@@ -76,7 +106,7 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIR
         payload: SessionPolicyPatch,
     ) -> SessionPolicyResponse:
         thread_id = await _main_thread_id(session_id)
-        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(UPDATE_POLICY, PatchPolicy(permissions=dict(payload.permissions) or None, remove_permissions=tuple(payload.remove_permissions), sandbox=dict(payload.sandbox) or None, remove_sandbox=tuple(payload.remove_sandbox)))
+        snapshot = await (await sessions.locate(session_id, thread_id)).require(AGENT_LOOP).invoke(UPDATE_POLICY, PatchPolicy(replace_permissions=payload.replace_permissions.model_dump(mode="json") if payload.replace_permissions is not None else None, replace_sandbox=payload.replace_sandbox.model_dump(mode="json") if payload.replace_sandbox is not None else None, permissions=dict(payload.permissions) or None, remove_permissions=tuple(payload.remove_permissions), sandbox=dict(payload.sandbox) or None, remove_sandbox=tuple(payload.remove_sandbox)))
         return _policy_response(session_id, snapshot)
 
     @router.get(

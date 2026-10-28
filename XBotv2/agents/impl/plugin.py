@@ -29,6 +29,8 @@ from XBotv2.agents.impl.router import build_router
 from XBotv2.agents.impl.service import AgentsService
 from XBotv2.core.api.operations import EmptyRequest
 from XBotv2.config.api.contracts import SETTINGS
+from XBotv2.config.api.resources import CONFIG_RESOURCES
+from XBotv2.agents.impl.resources import AgentResources
 from XBotv2.llm.api.contracts import LLM, MODEL
 from XBotv2.llm.api.contracts import (
     EffortSelection,
@@ -170,10 +172,15 @@ mount_thread.inject = tuple(_CATALOG_DEPENDENCIES)
 mount_thread.provide = (AGENT_CATALOG, AGENT_RUNTIME)
 
 
+def mount_resources(ctx: Context) -> None:
+    ctx.require(CONFIG_RESOURCES).register("agent", AgentResources(ctx.sessions))
+
+
 def mount_process(ctx, config):
     sources = AgentSources()
     ctx.set(_AGENT_SOURCES, sources)
     ctx.dispose(sources.close)
+    ctx.inject([CONFIG_RESOURCES, "sessions"], mount_resources)
     ctx.inject(["server", "sessions"], mount_http)
 
 

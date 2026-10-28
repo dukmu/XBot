@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
 import yaml
 from pydantic import BaseModel, JsonValue
@@ -20,6 +21,13 @@ from XBotv2.config.api.contracts import (
 from XBotv2.persistence.api.files import write_text_atomic
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader.api.contracts import PluginEntry, PluginOverlay
+
+
+@dataclass(frozen=True)
+class PluginOverlayDocument:
+    scope: PluginConfigScope
+    revision: str
+    text: str
 
 
 def plugin_config_catalog(
@@ -88,9 +96,23 @@ def update_plugin_config(
         include_workspace=patch.scope == "session",
         include_session=False,
     )
-    entry = _entry(lower_tree.entries, plugin_id)
+    try:
+        entry = _entry(lower_tree.entries, plugin_id)
+        base_config = entry.config
+    except PluginConfigUnavailable:
+        # A plugin may first be declared in the layer being edited.
+        current_tree = resolve_agent_tree(
+            paths=paths, workspace_root=workspace, no_plugins=False,
+            plugin_dirs=None, extra_plugins=None,
+            session_id=session_id if patch.scope == "session" else None,
+            include_global=True,
+            include_workspace=patch.scope in {"workspace", "session"},
+            include_session=patch.scope == "session",
+        )
+        entry = _entry(current_tree.entries, plugin_id)
+        base_config = {}
     schema = _declared_schema(entry, loader)
-    effective = _merge_config(entry.config, patch.config)
+    effective = _merge_config(base_config, patch.config)
     try:
         validate_plugin_config(schema, effective)
     except ValueError as exc:
@@ -105,6 +127,24 @@ def update_plugin_config(
         yaml.safe_dump(document, allow_unicode=True, sort_keys=False),
     )
     return plugin_config_catalog(paths, workspace, patch.scope, session_id, loader=loader)
+
+
+def read_overlay_document(paths: RuntimePaths, workspace_root: Path | str, scope: PluginConfigScope, session_id: str | None) -> PluginOverlayDocument:
+    path = _overlay_path(paths, Path(workspace_root).resolve(), scope, session_id)
+    return PluginOverlayDocument(scope=scope, revision=_revision(path), text=path.read_text(encoding="utf-8") if path.exists() else "plugins: []\n")
+
+
+def write_overlay_document(paths: RuntimePaths, workspace_root: Path | str, document: PluginOverlayDocument, session_id: str | None) -> PluginOverlayDocument:
+    path = _overlay_path(paths, Path(workspace_root).resolve(), document.scope, session_id)
+    if _revision(path) != document.revision:
+        raise PluginConfigConflict("Plugin overlay changed on disk; reload before saving.")
+    try:
+        value = yaml.safe_load(document.text)
+        PluginOverlay.parse(value)
+    except (TypeError, ValueError, yaml.YAMLError) as exc:
+        raise ValueError(f"Invalid plugin overlay: {exc}") from exc
+    write_text_atomic(path, document.text)
+    return read_overlay_document(paths, workspace_root, document.scope, session_id)
 
 
 def _descriptor(

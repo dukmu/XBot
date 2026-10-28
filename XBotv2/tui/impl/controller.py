@@ -11,6 +11,8 @@ tells the views to redraw. Two properties it is responsible for:
 
 from __future__ import annotations
 
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument
+
 import asyncio
 import time
 from dataclasses import replace
@@ -43,6 +45,8 @@ from XBotv2.tui.impl.transport import TransportConfig, TransportSession
 from XBotv2.tui.impl.view.composer import ComposerModel
 from XBotv2.tui.impl.view.status_bar import StatusLine, status_line_for
 
+_HISTORY_TEXT_BUDGET = 8 * 1024 * 1024
+
 if TYPE_CHECKING:
     from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
     from XBotv2.config.api.protocol import SessionPolicyResponse
@@ -57,8 +61,10 @@ class ViewPort(Protocol):
     """
 
     async def render_transcript(
-        self, state: SessionState, *, thinking: bool
+        self, state: SessionState, *, thinking: str | bool
     ) -> bool: ...
+
+    async def render_activity(self, text: str | bool) -> None: ...
 
     @property
     def reader_at_end(self) -> bool: ...
@@ -152,11 +158,11 @@ class TuiController:
             return False
         self._trim_live_timeline()
         self._dirty = False
+        self._view.render_status(self.status_model())
         await self._view.render_transcript(
             self._history_state or self.state,
-            thinking=self._history_state is None and self.thinking_activity_visible()
+            thinking=self._activity_text() if self._history_state is None else False
         )
-        self._view.render_status(self.status_model())
         self._view.render_jobs(tuple(self.state.jobs.values()))
         self._view.render_queue(self.state.queue)
         self._view.render_composer(self.composer_model())
@@ -171,7 +177,7 @@ class TuiController:
         for entry in entries:
             if len(self.state.timeline) <= 1:
                 break
-            if len(self.state.timeline) <= self._config.history_retention and total <= 8 * 1024 * 1024:
+            if len(self.state.timeline) <= self._config.history_retention and total <= _HISTORY_TEXT_BUDGET:
                 break
             if entry.id == self.state.stream_entry_id:
                 continue
@@ -193,7 +199,8 @@ class TuiController:
             await self._sleep(interval)
             if self._stopped:
                 return
-            await self.flush()
+            if not await self.flush() and self._history_state is None and self.thinking_activity_visible():
+                await self._view.render_activity(self._activity_text())
 
     # --- models -------------------------------------------------------
 
@@ -240,14 +247,14 @@ class TuiController:
         This is only a projection of the authoritative turn status and latest
         timeline phase. It is not provider reasoning and never enters history.
         """
-        if derive(self.state.facts) is not Status.RUNNING:
+        return derive(self.state.facts) is Status.RUNNING
+
+    def _activity_text(self) -> str | bool:
+        if not self.thinking_activity_visible():
             return False
         latest = self.state.timeline.get(self.state.timeline.tail_id())
-        if latest is None or isinstance(latest, UserEntry):
-            return True
-        if isinstance(latest, ToolEntry):
-            return latest.status not in {"pending", "running"}
-        return False
+        label = "Tool" if isinstance(latest, ToolEntry) and latest.status in {"pending", "running"} else "Thinking"
+        return f"✳ {label} · {self.activity()}"
 
     # --- actions ------------------------------------------------------
 
@@ -336,6 +343,15 @@ class TuiController:
             ))
             return
         self.dispatch(response)
+
+    async def configuration(self) -> ConfigurationCatalog:
+        return await self.transport.configuration()
+
+    async def configuration_document(self, resource_id: str, *, scope: str) -> ConfigurationDocument:
+        return await self.transport.configuration_document(resource_id, scope=scope)
+
+    async def save_configuration(self, document: ConfigurationDocument) -> ConfigurationDocument:
+        return await self.transport.save_configuration(document)
 
     async def providers(self) -> Any:
         """The provider/model catalogue, for the pickers."""
@@ -429,25 +445,59 @@ class TuiController:
         size = 0
         for item in (page.items if newer else reversed(page.items)):
             item_size = _value_bytes(item)
-            if kept and size + item_size > 8 * 1024 * 1024:
+            if kept and size + item_size > _HISTORY_TEXT_BUDGET:
                 break
             kept.append(item)
             size += item_size
         if not newer:
             kept.reverse()
         truncated = len(kept) < len(page.items)
-        self._history_before_id = kept[0].id if truncated and not newer else None
-        self._history_after_id = kept[-1].id if truncated and newer else None
+        previous = self._history_state or self.state
+        previous_entries = list(previous.timeline)
         view = replace(self.state, viewing_history=True)
         _rebuild_display_items(view, tuple(kept))
-        view.older = _older_from_cursor(page.older_cursor)
+        incoming = list(view.timeline)
+        from XBotv2.tui.impl.timeline import Timeline
+        view.timeline = Timeline()
+        ordered = previous_entries + incoming if newer else incoming + previous_entries
+        unique = list({entry.id: entry for entry in ordered}.values())
+        capacity = max(self._config.history_retention, 2 * self._config.history_window)
+        boundary_id = (previous_entries[-1 if newer else 0].id if previous_entries else None)
+        total = sum(_entry_bytes(entry) for entry in unique)
+        removed_before = removed_after = False
+        while len(unique) > 2 and (len(unique) > capacity or total > _HISTORY_TEXT_BUDGET):
+            # Retain the visible boundary and at least one adjacent new entry.
+            from_start = newer
+            if unique[0 if from_start else -1].id == boundary_id:
+                from_start = not from_start
+            removed = unique.pop(0 if from_start else -1)
+            total -= _entry_bytes(removed)
+            removed_before |= from_start
+            removed_after |= not from_start
+        for entry in unique:
+            view.timeline.upsert(entry)
+        if newer:
+            view.older = previous.older
+            self._history_before_id = unique[0].id if removed_before else self._history_before_id
+            self._history_after_id = unique[-1].id if removed_after or truncated else None
+            self._history_newer = page.newer_cursor
+        else:
+            view.older = _older_from_cursor(page.older_cursor)
+            self._history_before_id = unique[0].id if removed_before or truncated else None
+            if removed_after:
+                self._history_after_id = unique[-1].id
+            elif self._history_state is None:
+                self._history_newer = None
         self._history_state = view
-        self._history_newer = page.newer_cursor
         self._dirty = True
         await self.flush()
         if generation != self._history_generation:
             return False
-        await self._view.go_to_tail(view)
+        if newer:
+            await self._view.page_newer(view)
+        else:
+            if not await self._view.page_older(view) and previous_entries:
+                self._view.reveal_loaded_older(view, previous_entries[0].id)
         return True
 
     async def page_older(self) -> bool:

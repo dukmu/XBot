@@ -45,18 +45,12 @@ _STALE_TURNS_KEY = "stale_turns"
 _COMPACT_OPERATION = "compact:"
 #: Nudge injected as a persisted turn when the list has not moved for a while.
 _STALE_NAG = (
-    "The task tools haven't been used recently. If you're working on tasks that "
-    "would benefit from tracking progress, consider using task_create to add new "
-    "tasks and task_update to update task status (set to in_progress when "
-    "starting, completed when done). Also consider cleaning up the task list if "
-    "it has become stale. Only use these if relevant to the current work. This "
-    "is just a gentle reminder - ignore if not applicable. Make sure that you "
-    "NEVER mention this reminder to the user"
+    "If the task list still applies to the current work, update it to reflect "
+    "actual progress. Do not create tasks solely to acknowledge this reminder."
 )
 _VERIFICATION_NUDGE = (
-    "Before reporting completion, check the observed evidence against the "
-    "acceptance criteria. A completed checklist is not proof that the goal "
-    "was achieved. Reopen any task whose result remains unverified."
+    "The task list is complete. Confirm the requested outcome against the "
+    "available evidence; reopen any unfinished task."
 )
 
 

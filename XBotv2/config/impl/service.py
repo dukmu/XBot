@@ -113,9 +113,17 @@ class ConfigService(SettingsPort):
         )
 
     async def update_policy(self, patch: PatchPolicy) -> PolicySnapshot:
+        if patch.revision_key is not None:
+            from XBotv2.config.api.contracts import PluginConfigConflict
+            from XBotv2.config.impl.policy import policy_revision
+            current = load_session_policy(self.paths, self.session_id).get(patch.revision_key, {})
+            if policy_revision(current) != patch.expected_revision:
+                raise PluginConfigConflict("Session policy changed; reload before saving")
         policy = patch_session_policy(
             paths=self.paths,
             session_id=self.session_id,
+            replace_permissions=patch.replace_permissions,
+            replace_sandbox=patch.replace_sandbox,
             permissions=patch.permissions,
             remove_permissions=patch.remove_permissions,
             sandbox=patch.sandbox,

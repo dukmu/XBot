@@ -62,6 +62,29 @@ async def test_foreground_accepts_exact_configured_maximum(runtime):
     assert result.output.parts[0].text == "ok"
 
 
+@pytest.mark.parametrize("command,timeout,expected_error", [
+    ("printf short", 0.15, None),
+    ("printf short; exit 7", 0.15, "command_failed"),
+    ("printf short; sleep 2", 0.1, "tool_timeout"),
+])
+async def test_short_foreground_output_is_returned_without_artifact(
+    runtime, monkeypatch, command, timeout, expected_error,
+):
+    registry, _ = runtime
+    async def unexpected_adoption(*args, **kwargs):
+        pytest.fail("short output must not be adopted")
+
+    monkeypatch.setattr(ArtifactStore, "adopt_file", unexpected_adoption)
+    result = await invoke(registry, command=command, timeout_seconds=timeout)
+    assert result.output.parts[0].text == "short"
+    assert not result.output.artifacts
+    if expected_error:
+        assert isinstance(result, ToolFailed)
+        assert result.error.code == expected_error
+    else:
+        assert isinstance(result, ToolSucceeded)
+
+
 async def test_negative_background_timeout_does_not_create_job(runtime):
     registry, jobs = runtime
     result = await invoke(registry, command="printf unexpected", background=True, timeout_seconds=-1)

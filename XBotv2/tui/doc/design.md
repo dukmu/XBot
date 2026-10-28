@@ -6,15 +6,21 @@ The implementation depends on the HTTP client capability, command registry, shar
 
 `TextualTuiConfig` configures the workspace, session and thread, optional Agent, refresh interval and history display/retention limits. For example, a client profile with `workspace: .` and `thread_id: agent` opens the default workspace and Agent thread. `session_id` selects an existing session for resume; without one the client starts a new session.
 
-The TUI runs inline by default, leaving the terminal's earlier content and the final TUI display in place. It uses up to 24 rows, capped by the terminal height. Set `fullscreen: true` in the client profile or pass `--fullscreen` to use the alternate screen; `--inline` overrides a fullscreen profile. Textual's native inline driver is not available on Windows: use `--fullscreen` there. See the [Textual inline guide](https://textual.textualize.io/guide/app/#run-inline).
+The TUI uses the full terminal by default and adapts when the terminal is resized. Set `fullscreen: false` in the client profile or pass `--inline` to retain the display in terminal scrollback. Textual’s inline driver is unavailable on Windows.
 
-The interface follows the terminal's foreground and background colors. Conversation turns use compact markers, tools and reasoning remain foldable, and the composer has a single separator. Markdown code uses ANSI syntax colors without a contrasting background block.
+Conversation turns use compact markers, tools and reasoning remain foldable, and the composer stays compact. Markdown code uses ANSI syntax colors without a contrasting background block.
 
 Approvals, questions, and selection lists appear inline in the TUI. Ctrl+Q opens queued inputs: choose an input to edit its text in the composer, remove it, or steer it. While editing, Enter saves and Esc cancels; the prior composer draft is restored. Inputs reporting artifacts cannot be edited because the queue does not expose their original text and file identities. Ctrl+R recalls a loaded, accepted user message into a new draft; history is unchanged and files must be reattached. If the full text is externalized, recall reads it before replacing the draft. A change of thread or draft during that read cancels recall.
 
 The `/session` and `/thread` pickers load one page at a time. Its previous and next page rows navigate the catalogue; the filter applies to the current page.
 
-History reading keeps one archive page separate from the live timeline. PageUp and PageDown read earlier and later pages, and PageDown at the newest page or Ctrl+End returns to live output. Completed entries outside `history_retention` or an initial 8 MiB estimated text budget are released, and older entries remain available through the archive. Archived message fields use bounded previews. Expanding a long block fetches one 4,096-character page; use Ctrl+Left and Ctrl+Right for adjacent pages. Collapsing or removing it releases the loaded page. A live stream is previewed until its canonical record is available.
+The command palette and completion consume the server's published command
+catalog. Business commands, aliases, and prompt commands dispatch through the
+generic client contract; adding a server command requires no TUI handler. The
+TUI registers only its local view and terminal actions. Model, provider and
+Agent selection use commands published by their respective owners.
+
+Scrolling to either end loads adjacent history as needed while retaining the visible boundary; Ctrl+End returns to live output. The mounted window and archive residency are bounded, and older entries remain available through the archive. An estimated 8 MiB text budget applies to retained entries, with room for the boundary and an adjacent entry when either is unusually large. Archived fields use bounded previews; expanding a field reads its full content on demand and collapsing or removing it releases that content. Live assistant text and reasoning are retained in full. Expanded blocks scroll with the transcript.
 
 Text tool-result artifacts appear as separate expandable blocks. Their pages use byte offsets, while conversation text fields use character offsets. Text artifacts decode as UTF-8 with replacement for invalid bytes; the original artifact remains available unchanged for download. Non-text artifacts remain metadata.
 
@@ -22,13 +28,4 @@ The transcript identifies image and non-text artifact references even when an in
 
 Images can be attached to a draft via `/attach <path>`; recall restores text only. The client does not provide an external-editor command or an atomic operation to replace a message that may already have been consumed. Queue edits remain subject to the server's current queue state.
 
-The following comparison describes only features established by the cited sources, not overall equivalence:
-
-| Area | XBot Textual client | Local C++ client / Maya | Official Codex CLI |
-| --- | --- | --- | --- |
-| Terminal display | Inline by default; optional fullscreen | Config selects Maya inline or fullscreen mode ([loop.cpp](../../../../XBot_cpp/xbot/tui/src/loop.cpp), [api.hpp](../../../../XBot_cpp/xbot/tui/include/xbot/tui/api.hpp)) | `/tui` switches between scrollback and fullscreen ([commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)) |
-| Appearance | Terminal colors and ANSI code highlighting | Not compared here | `/theme` selects a syntax highlighting theme ([commands](https://learn.chatgpt.com/docs/developer-commands?surface=cli)) |
-| Editing | Inline queue editing and loaded-history recall as a new draft; artifact-bearing queue edits are unavailable | Model includes a queue editor and draft history ([app.hpp](../../../../XBot_cpp/xbot/tui/include/xbot/tui/app.hpp)) | Ctrl+G opens the current prompt in an external editor ([customization](https://learn.chatgpt.com/docs/cli-customization)) |
-| History | Archive pages and on-demand body pages | Not compared here | Not compared here |
-
-The C++ references were inspected at `851b9367f5c09136477691f723fa1d2a43a204f8`. Maya is a C++ library used by that client; using it as another native client for Python XBot would require adapting the Python wire contracts and providing build artifacts. This client uses Textual's native inline and theme support and adds no Maya binding.
+The settings panel discovers configuration resources and available scopes from the server. JSON resources with object schemas use field controls, with a full JSON editor available for other shapes and unknown fields; YAML and Markdown resources use a text editor. The resource description explains when changes take effect. Saves use the server's revision and validation; on conflict the draft remains visible until the user explicitly discards it and reloads. Read-only thread views cannot save.

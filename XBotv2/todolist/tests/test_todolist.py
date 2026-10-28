@@ -469,7 +469,6 @@ async def test_stale_reminder_queues_folds_into_one_turn_and_resets_on_use(
         assert _prompt(request).count(
             '<system_reminder source="todo" event="reminder">'
         ) == 1
-    assert "task tools haven't been used recently" in _prompt(reminder_requests[0])
     # Exactly one todo notice was persisted, folded before that turn's input.
     notices = [
         message for message in messages

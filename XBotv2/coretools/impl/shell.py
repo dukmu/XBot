@@ -19,6 +19,7 @@ import signal
 import subprocess
 import sys
 from collections.abc import Callable
+from contextlib import asynccontextmanager
 from dataclasses import asdict, dataclass, replace
 from functools import partial
 from typing import Literal
@@ -188,8 +189,9 @@ async def shell(
 ) -> ToolSucceeded | ToolFailed:
     """Run a shell command in the foreground, or start one in the background.
 
-    Foreground (default) commands must be non-interactive and return their
-    bounded preview and a complete output artifact. Tool status follows the final exit code; if a nonzero
+    Foreground (default) commands must be non-interactive. Short output is
+    returned directly; long output includes a bounded preview and complete artifact.
+    Tool status follows the final exit code; if a nonzero
     exit is an expected result, the command must verify that condition and
     then exit zero.
 
@@ -264,27 +266,27 @@ async def shell(
         None if sandbox_permissions == "require_escalated" else sandbox
     )
     try:
-        result = await run_shell_command(
-            command, cwd=cwd, sandbox=active_sandbox,
-            timeout_seconds=effective_timeout, artifacts=artifacts,
-        )
-    except ShellTimeoutError as exc:
-        if exc.result is None:
-            return _failure(exc.code, str(exc))
-        preview = await _preview(artifacts, exc.result.output_ref)
-        return ToolFailed(error=ToolError(code=exc.code, message=str(exc)), output=ToolOutput(
-            parts=(TextPart(text=preview),), artifacts=(exc.result.output_ref,),
-        ))
+        async with _capture_shell_command(
+            command, artifacts=artifacts, cwd=cwd, sandbox=active_sandbox,
+            timeout_seconds=effective_timeout,
+        ) as (path, exit_code, timed_out):
+            if path.stat().st_size <= 8000:
+                text = path.read_bytes().decode("utf-8", errors="replace") or "(no output)"
+                output = ToolOutput(parts=(TextPart(text=text),))
+            else:
+                ref = await _adopt_output(artifacts, path)
+                preview = await _preview(artifacts, ref)
+                output = ToolOutput(parts=(TextPart(text=preview),), artifacts=(ref,))
     except Exception as exc:
         return _failure("command_failed", str(exc))
-    preview = await _preview(artifacts, result.output_ref)
-    output = ToolOutput(parts=(TextPart(text=preview),), artifacts=(result.output_ref,))
-    if result.exit_code:
+    if timed_out:
+        exc = ShellTimeoutError(effective_timeout)
+        return ToolFailed(error=ToolError(code=exc.code, message=str(exc)), output=output)
+    if exit_code:
         return ToolFailed(error=ToolError(code="command_failed", message=(
-            f"Command failed with exit code {result.exit_code}"
+            f"Command failed with exit code {exit_code}"
         )), output=output)
     return ToolSucceeded(output=output)
-
 
 
 async def start_shell(
@@ -584,6 +586,28 @@ def _wait_payload(result: WaitResult) -> dict[str, JsonValue]:
     }
 
 
+@asynccontextmanager
+async def _capture_shell_command(command, *, artifacts, cwd, sandbox, timeout_seconds):
+    """Keep the spool alive until its reaped output has been consumed."""
+    deadline = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
+    async with artifacts.spool_file() as output:
+        timed_out = False
+        try:
+            async with asyncio.timeout(deadline):
+                exit_code = await _run_shell_process(command, output, cwd=cwd, sandbox=sandbox)
+        except TimeoutError:
+            timed_out = True
+            exit_code = -signal.SIGKILL
+        yield output, exit_code, timed_out
+
+
+async def _adopt_output(artifacts, output):
+    return await artifacts.adopt_file(
+        ArtifactKind.TOOL_RESULT, output, media_type="text/plain; charset=utf-8",
+        name="Shell output", suffix=".txt",
+    )
+
+
 async def run_shell_command(
     command: str,
     *,
@@ -592,22 +616,12 @@ async def run_shell_command(
     sandbox: SandboxPort | None = None,
     timeout_seconds: float | None = 0,
 ) -> ShellJobResult:
-    """Spool from launch; reap the producer before adopting or removing bytes."""
-    deadline = timeout_seconds if timeout_seconds and timeout_seconds > 0 else None
-    async with artifacts.spool_file() as output:
-        timed_out = False
-        try:
-            async with asyncio.timeout(deadline):
-                exit_code = await _run_shell_process(
-                    command, output, cwd=cwd, sandbox=sandbox,
-                )
-        except TimeoutError:
-            timed_out = True
-            exit_code = -signal.SIGKILL
-        ref = await artifacts.adopt_file(
-            ArtifactKind.TOOL_RESULT, output, media_type="text/plain; charset=utf-8",
-            name="shell-output.txt", suffix=".txt",
-        )
+    """Run a background command and retain its complete output."""
+    async with _capture_shell_command(
+        command, artifacts=artifacts, cwd=cwd, sandbox=sandbox,
+        timeout_seconds=timeout_seconds,
+    ) as (output, exit_code, timed_out):
+        ref = await _adopt_output(artifacts, output)
         result = ShellJobResult(output_ref=ref, exit_code=exit_code)
         if timed_out:
             raise ShellTimeoutError(timeout_seconds, result=result)

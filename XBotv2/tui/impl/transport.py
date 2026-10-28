@@ -21,6 +21,8 @@ tests can script the server without re-implementing the client.
 
 from __future__ import annotations
 
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument
+
 import asyncio
 import uuid
 from dataclasses import dataclass
@@ -107,6 +109,10 @@ class SessionBackend(Protocol):
         history_limit: int | None,
         include_history: bool,
     ) -> OpenSessionResponse: ...
+
+    async def list_configuration(self, session_id: str, thread_id: str) -> ConfigurationCatalog: ...
+    async def get_configuration(self, session_id: str, thread_id: str, resource_id: str, *, scope: PluginConfigScope) -> ConfigurationDocument: ...
+    async def save_configuration(self, session_id: str, thread_id: str, document: ConfigurationDocument) -> ConfigurationDocument: ...
 
     async def get_session_policy(self, session_id: str) -> SessionPolicyResponse: ...
 
@@ -392,6 +398,15 @@ class TransportSession:
     async def list_jobs(self) -> JobListResponse:
         """The authoritative background jobs for the attached thread."""
         return await self._backend.list_jobs(self._session_id, self._thread_id)
+
+    async def configuration(self) -> ConfigurationCatalog:
+        return await self._backend.list_configuration(self._session_id, self._thread_id)
+
+    async def configuration_document(self, resource_id: str, *, scope: PluginConfigScope) -> ConfigurationDocument:
+        return await self._backend.get_configuration(self._session_id, self._thread_id, resource_id, scope=scope)
+
+    async def save_configuration(self, document: ConfigurationDocument) -> ConfigurationDocument:
+        return await self._backend.save_configuration(self._session_id, self._thread_id, document)
 
     async def get_session_policy(self) -> SessionPolicyResponse:
         """Read the server-owned session policy projection."""

@@ -13,7 +13,7 @@ from __future__ import annotations
 import asyncio
 from dataclasses import replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Awaitable, Callable, Literal, Sequence
+from typing import Awaitable, Callable, Literal, Sequence
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
@@ -35,39 +35,24 @@ from XBotv2.tui.impl.state import SessionState
 from XBotv2.tui.impl.transport import (
     SessionBackend,
     TransportConfig,
-    XBotClientError,
 )
 from XBotv2.tui.impl.view.completion import CompletionPopup, CompletionPresenter
 from XBotv2.tui.impl.view.palette import CommandPalette
 from XBotv2.tui.impl.view.pickers import (
-    agent_options,
     filter_options,
-    effort_options,
-    effort_tiers,
-    model_options,
-    provider_options,
     session_options,
     thread_options,
 )
 from XBotv2.tui.impl.view.selection import Option, SelectionPanel
-from XBotv2.tui.impl.view.settings import (
-    PluginConfigDraft,
-    PluginConfigSaveAction,
-    SettingsAction,
-    SettingsData,
-    SettingsPanel,
-)
+from XBotv2.tui.impl.view.settings import SettingsPanel
 from XBotv2.tui.impl.view.composer import Composer, ComposerModel, composer_can_submit
 from XBotv2.tui.impl.view.entries import BlockVisibility, block_choice
 from XBotv2.tui.impl.view.footer import FooterBar
 from XBotv2.tui.impl.view.jobs import JobPanel
 from XBotv2.tui.impl.view.interaction import InteractionInputPanel
 from XBotv2.tui.impl.view.queue import QueuePanel
-from XBotv2.tui.impl.view.status_bar import StatusBar, StatusLine, status_report
+from XBotv2.tui.impl.view.status_bar import StatusBar, StatusLine
 from XBotv2.tui.impl.view.transcript import TranscriptScroll, TranscriptView
-
-if TYPE_CHECKING:
-    from XBotv2.config.api.contracts import PluginConfigCatalog
 
 class TextualViewAdapter:
     """Renders the controller's models into the mounted widgets."""
@@ -96,9 +81,12 @@ class TextualViewAdapter:
         self.present_interaction = present_interaction
 
     async def render_transcript(
-        self, state: SessionState, *, thinking: bool
+        self, state: SessionState, *, thinking: str | bool
     ) -> bool:
         return await self.transcript.render(state, thinking=thinking)
+
+    async def render_activity(self, text: str | bool) -> None:
+        await self.transcript.render_activity(text)
 
     @property
     def reader_at_end(self) -> bool:
@@ -177,8 +165,6 @@ class TuiApp(App[None]):
         Binding("ctrl+r", "recall_input", "Recall message", priority=True),
         Binding("f2", "settings", "Settings", priority=True),
         Binding("ctrl+o", "expand_blocks", "Expand folded content", priority=True),
-        Binding("ctrl+right", "body_next", "Next body page", show=False, priority=True),
-        Binding("ctrl+left", "body_previous", "Previous body page", show=False, priority=True),
     ]
 
     def __init__(
@@ -195,7 +181,6 @@ class TuiApp(App[None]):
     ) -> None:
         # Textual selects its NO_COLOR filter during construction.
         super().__init__(ansi_color=True)
-        self.theme = "ansi-dark"
         self._backend = backend
         self._config = config or TransportConfig()
         self._workspace = workspace
@@ -216,6 +201,14 @@ class TuiApp(App[None]):
         ) = None
         self._queue_edit: tuple[str, str, str, str] | None = None
         self._active_panel = None
+        self._history_loading = False
+
+    def check_action(self, action: str, parameters: tuple[object, ...]) -> bool | None:
+        if self._active_panel is not None and action in {
+            "older", "newer", "live", "expand_blocks",
+        }:
+            return False
+        return super().check_action(action, parameters)
 
     @property
     def workspace(self) -> str:
@@ -409,10 +402,12 @@ class TuiApp(App[None]):
     async def _run_server_command(self, parsed) -> None:
         assert self.controller is not None
         try:
-            result = await self.controller.run_command(parsed.raw)
+            result = await self.controller.run_command(f"/{parsed.name} {parsed.args}".strip())
         except Exception as exc:  # noqa: BLE001 — a failed command must be visible
             self._notify(parsed.name, f"/{parsed.name} failed: {exc}")
             return
+        if result.status == "ok" and {"commands", "thread", "agents"} & set(result.effects):
+            await self._adopt_commands()
         message = result.message.strip()
         if not message:
             message = f"/{parsed.name}: no output"
@@ -453,6 +448,7 @@ class TuiApp(App[None]):
             panel.on_result = None
             await panel.remove()
             self.query_one("#inline-panel", Vertical).display = False
+            self.screen.remove_class("editing-configuration")
             self.query_one("#composer", Composer).focus()
 
     async def _show_panel(self, panel, callback) -> None:
@@ -465,6 +461,7 @@ class TuiApp(App[None]):
             await self._close_panel(self._active_panel)
         container = self.query_one("#inline-panel", Vertical)
         self._active_panel = panel
+        self.screen.set_class(isinstance(panel, SettingsPanel), "editing-configuration")
         container.display = True
 
         def finish(value) -> None:
@@ -707,206 +704,29 @@ class TuiApp(App[None]):
 
         await show_page()
 
-    async def _cmd_status(self, args: str) -> None:
-        """Open the read-only status page from what the client already holds.
-
-        The server publishes a ``/status`` for clients that have none of this;
-        this one is local, so it costs no round trip and can include what the
-        client knows (the running turn's elapsed time, the queue, the tasks).
-        """
-        if args.strip():
-            await self._delegate("status", args)
-            return
-        await self._open_settings(read_only=True)
-
     async def _cmd_settings(self, args: str) -> None:
         if args.strip():
             self._notify("settings", "Usage: /settings")
             return
         await self._open_settings()
 
-    async def _open_settings(
-        self,
-        *,
-        initial_page: str = "Status",
-        read_only: bool = False,
-        plugin_config_catalog: PluginConfigCatalog | None = None,
-        plugin_draft: PluginConfigDraft | None = None,
-        plugin_status: str = "",
-    ) -> None:
-        """Read the settings inputs concurrently through the public client port."""
-        if self.controller is None or self.view is None:
-            return
-        provider_result = agent_result = policy_result = plugin_config_result = None
-        if not read_only:
-            requests = [
-                self.controller.providers(),
-                self.controller.agents(),
-                self.controller.session_policy(),
-            ]
-            if plugin_config_catalog is None:
-                requests.append(self.controller.plugin_config())
-            provider_result, agent_result, policy_result, *plugin_results = await asyncio.gather(
-                *requests, return_exceptions=True
-            )
-            if plugin_results:
-                plugin_config_result = plugin_results[0]
-            else:
-                plugin_config_result = plugin_config_catalog
-        state = self.controller.state
-        provider_error = (
-            str(provider_result)
-            if isinstance(provider_result, BaseException)
-            else ""
-        )
-        agent_error = (
-            str(agent_result) if isinstance(agent_result, BaseException) else ""
-        )
-        policy_error = (
-            str(policy_result) if isinstance(policy_result, BaseException) else ""
-        )
-        plugin_config_error = (
-            str(plugin_config_result)
-            if isinstance(plugin_config_result, BaseException)
-            else ""
-        )
-        providers = models = efforts = agents = ()
-        if not read_only and not isinstance(provider_result, BaseException):
-            providers = provider_options(provider_result, current=state.provider)
-            models = model_options(provider_result, provider=state.provider)
-            efforts = effort_options(
-                effort_tiers(provider_result, provider=state.provider, model=state.model),
-                current=state.model_mode,
-            )
-        if not read_only and not isinstance(agent_result, BaseException):
-            agents = agent_options(agent_result)
-        visibility = self.view.transcript.visibility
-        data = SettingsData(
-            status=status_report(
-                state,
-                workspace=self.workspace,
-                activity=self.controller.activity(),
-            ),
-            provider=state.provider,
-            model=state.model,
-            effort=state.model_mode,
-            agent=state.agent_name,
-            providers=providers,
-            models=models,
-            efforts=efforts,
-            agents=agents,
-            provider_error=provider_error,
-            agent_error=agent_error,
-            policy_error=policy_error,
-            session_policy=(
-                None if isinstance(policy_result, BaseException) else policy_result
-            ),
-            plugin_config_error=plugin_config_error,
-            plugin_config=(
-                None
-                if isinstance(plugin_config_result, BaseException)
-                else plugin_config_result
-            ),
-            plugin_draft=plugin_draft,
-            plugin_status=plugin_status,
-            reasoning_visible=visibility.reasoning,
-            tool_details_visible=visibility.details,
-        )
-        await self._show_panel(
-            SettingsPanel(
-                data,
-                initial_page=initial_page,
-                read_only=read_only,
-            ),
-            callback=self._settings_action_chosen,
-        )
-
-    def _settings_action_chosen(
-        self, action: SettingsAction | PluginConfigSaveAction | None
-    ) -> None:
-        if action is None:
-            self._restore_composer_focus()
-            return
-        if isinstance(action, PluginConfigSaveAction):
-            self.run_worker(
-                self._save_plugin_config(action),
-                exclusive=False,
-                name="tui-plugin-config-save",
-            )
-            return
-        if action.name in {"thinking", "details"}:
-            self.run_worker(
-                self._apply_settings_visibility(action.name),
-                exclusive=False,
-                name="tui-settings-appearance",
-            )
-            return
-
-        titles = {
-            "provider": ("Providers", self._apply_provider),
-            "model": ("Models", self._apply_model),
-            "effort": ("Reasoning effort", self._apply_effort),
-            "agent": ("Agents", self._apply_agent),
-        }
-        title, apply = titles[action.name]
-        if not action.choices:
-            self._notify("settings", f"No {title.lower()} are available.")
-            self._restore_composer_focus()
-            return
-        self.run_worker(self._show_panel(
-            self._selection_screen(title, action.choices),
-            callback=lambda value: self._settings_value_chosen(value, apply),
-        ), exclusive=False, name="tui-settings-choices")
-
-    async def _save_plugin_config(self, action: PluginConfigSaveAction) -> None:
+    async def _open_settings(self) -> None:
         if self.controller is None:
             return
         try:
-            catalog = await self.controller.update_plugin_config(
-                action.plugin_id, action.patch
-            )
+            catalog = await self.controller.configuration()
         except Exception as exc:
-            if isinstance(exc, XBotClientError) and exc.code == "plugin_config_conflict":
-                message = (
-                    "The catalog changed. Your draft is preserved; review the "
-                    "latest values and press Apply again to confirm."
-                )
-            else:
-                message = (
-                    f"Save failed: {exc}. Your draft is preserved; review it "
-                    "and retry when ready."
-                )
-            await self._open_settings(
-                initial_page="Plugins",
-                plugin_draft=action.draft,
-                plugin_status=message,
-            )
+            self._notify("settings", f"Could not load configuration resources: {exc}")
             return
-        await self._open_settings(
-            initial_page="Plugins",
-            plugin_config_catalog=catalog,
-            plugin_status="Plugin configuration saved.",
+        await self._show_panel(
+            SettingsPanel(
+                catalog,
+                read=self.controller.configuration_document,
+                save=self.controller.save_configuration,
+                read_only=self.controller.state.read_only,
+            ),
+            callback=lambda _: self._restore_composer_focus(),
         )
-
-    def _settings_value_chosen(self, value: str | None, apply) -> None:
-        if value is None:
-            self._restore_composer_focus()
-            return
-        self.run_worker(
-            self._apply_setting_and_restore_focus(value, apply),
-            exclusive=False,
-            name="tui-settings-selection",
-        )
-
-    async def _apply_setting_and_restore_focus(self, value: str, apply) -> None:
-        try:
-            await apply(value)
-        finally:
-            self._restore_composer_focus()
-
-    async def _apply_settings_visibility(self, name: str) -> None:
-        await (self._cmd_thinking("toggle") if name == "thinking" else self._cmd_details("toggle"))
-        self._restore_composer_focus()
 
     def _restore_composer_focus(self) -> None:
         if self.is_mounted:
@@ -919,120 +739,11 @@ class TuiApp(App[None]):
         """Inspect the server's subagent threads through the shared picker."""
         await self._choose_threads()
 
-    async def _cmd_jobs(self, args: str) -> None:
-        """Show the tasks this client is tracking; anything else is the server's."""
-        if args.strip():
-            await self._delegate("jobs", args)
-            return
-        assert self.controller is not None
-        jobs = tuple(self.controller.state.jobs.values())
-        if not jobs:
-            self._notify("jobs", "No background tasks.")
-            return
-        from XBotv2.tui.impl.view.jobs import order_jobs, job_row
-
-        width = self.size.width or 80
-        self._notify(
-            "jobs",
-            "\n".join(job_row(job, width=width) for job in order_jobs(jobs)),
-        )
-
-    async def _cmd_provider(self, args: str) -> None:
-        if args.strip():
-            await self._delegate("provider", args)
-            return
-        await self._choose(
-            title="Providers", load=self._load_providers, apply=self._apply_provider
-        )
-
-    async def _cmd_model(self, args: str) -> None:
-        if args.strip():
-            await self._delegate("model", args)
-            return
-        await self._choose(title="Models", load=self._load_models, apply=self._apply_model)
-
-    async def _cmd_effort(self, args: str) -> None:
-        if args.strip():
-            await self._delegate("effort", args)
-            return
-        await self._choose(
-            title="Reasoning effort", load=self._load_efforts, apply=self._apply_effort
-        )
-
-    async def _cmd_agent(self, args: str) -> None:
-        if args.strip():
-            await self._delegate("agent", args)
-            return
-        await self._choose(title="Agents", load=self._load_agents, apply=self._apply_agent)
-
-    # --- rows, and what choosing one does ---------------------------------
-    async def _load_providers(self):
-        assert self.controller is not None
-        return provider_options(
-            await self.controller.providers(), current=self.controller.state.provider
-        )
-
-    async def _load_models(self):
-        assert self.controller is not None
-        return model_options(
-            await self.controller.providers(), provider=self.controller.state.provider
-        )
-
-    async def _load_agents(self):
-        assert self.controller is not None
-        return agent_options(await self.controller.agents())
-
-    async def _load_efforts(self):
-        assert self.controller is not None
-        state = self.controller.state
-        catalog = await self.controller.providers()
-        tiers = effort_tiers(catalog, provider=state.provider, model=state.model)
-        return effort_options(tiers, current=state.model_mode)
-
     async def _apply_session(self, value: str) -> None:
         await self._switch_session(value)
 
     async def _apply_thread(self, value: str) -> None:
         await self._switch_thread(value)
-
-    async def _apply_provider(self, value: str) -> None:
-        await self._select(lambda: self.controller.select_provider(value), f"Provider: {value}")
-
-    async def _apply_model(self, value: str) -> None:
-        assert self.controller is not None
-        provider = self.controller.state.provider
-        await self._select(
-            lambda: self.controller.select_provider(provider, value), f"Model: {value}"
-        )
-
-    async def _apply_effort(self, value: str) -> None:
-        await self._select(lambda: self.controller.select_effort(value), f"Effort: {value}")
-
-    async def _apply_agent(self, value: str) -> None:
-        await self._select(lambda: self.controller.select_agent(value), f"Agent: {value}")
-
-    async def _select(self, call, label: str) -> None:
-        """Apply a server-side selection and say so; a refusal must be visible."""
-        assert self.controller is not None
-        try:
-            await call()
-        except Exception as exc:  # noqa: BLE001 — a refused selection must be visible
-            self._notify("select", f"{label} failed: {exc}")
-            return
-        # A different provider or agent can offer different commands.
-        await self._adopt_commands()
-        self._notify("select", label)
-
-    async def _delegate(self, name: str, args: str) -> None:
-        """Run a command the server owns, with the arguments as typed."""
-        assert self.controller is not None
-        try:
-            result = await self.controller.run_command(f"/{name} {args}".strip())
-        except Exception as exc:  # noqa: BLE001 — a failed command must be visible
-            self._notify(name, f"/{name} failed: {exc}")
-            return
-        message = result.message.strip() or f"/{name}: no output"
-        self._notify(name, message)
 
     async def _cmd_thread(self, args: str) -> None:
         """Show what a session thread holds; a subagent thread is read-only.
@@ -1239,9 +950,6 @@ class TuiApp(App[None]):
             except Exception as exc:  # noqa: BLE001 — clipboard failures must be visible
                 self._notify("copy", f"Could not read complete reply: {exc}")
                 return
-        elif reply.stream_truncated:
-            self._notify("copy", "The full reply is not available until it completes.")
-            return
         if identity != (self.controller.state.session_id, self.controller.state.thread_id):
             self._notify("copy", "The session changed before the reply was copied.")
             return
@@ -1383,33 +1091,48 @@ class TuiApp(App[None]):
             self._notify("history", "Recalled as a new draft; history is unchanged. Reattach any files before sending.")
         await self._show_panel(SelectionPanel("Recall a message as a new draft", options, description="The selected message replaces the current draft.", hint="Up/Down select · Enter recall · Esc cancel"), callback=lambda value: self._chosen(value, selected))
 
+    @on(TranscriptScroll.HistoryEdge)
+    def _history_edge(self, event: TranscriptScroll.HistoryEdge) -> None:
+        event.stop()
+        if self.controller is None or self.view is None or self._history_loading:
+            return
+        if not event.older and not (
+            self.view.transcript.anchor is not None
+            or self.controller.composer_model().viewing_history
+        ):
+            return
+        self._history_loading = True
+
+        async def load() -> None:
+            try:
+                if event.older:
+                    await self.controller.page_older()
+                else:
+                    await self.controller.page_newer()
+            finally:
+                self._history_loading = False
+
+        self.run_worker(load(), name="history-scroll")
+
     async def action_older(self) -> None:
-        if self.controller is not None:
-            await self.controller.page_older()
+        if self.view is not None:
+            scroll = self.view.transcript.container
+            if scroll.scroll_y > 0:
+                scroll.scroll_page_up(animate=False)
+                return
+        self._history_edge(TranscriptScroll.HistoryEdge(older=True))
 
     async def action_newer(self) -> None:
-        if self.controller is not None:
-            await self.controller.page_newer()
+        if self.view is not None:
+            scroll = self.view.transcript.container
+            if not scroll.is_vertical_scroll_end:
+                scroll.scroll_page_down(animate=False)
+                return
+        self._history_edge(TranscriptScroll.HistoryEdge(older=False))
 
     async def action_live(self) -> None:
         if self.controller is not None:
             await self.controller.go_to_tail()
-
-    def _focused_body_block(self):
-        from XBotv2.tui.impl.view.blocks import LazyBodyBlock
-        if isinstance(self.focused, LazyBodyBlock) and self.focused.expanded:
-            return self.focused
-        return next((block for block in reversed(list(self.query(LazyBodyBlock))) if block.expanded), None)
-
-    def action_body_next(self) -> None:
-        block = self._focused_body_block()
-        if block is not None:
-            block.action_next_page()
-
-    def action_body_previous(self) -> None:
-        block = self._focused_body_block()
-        if block is not None:
-            block.action_previous_page()
 
     async def action_expand_blocks(self) -> None:
         """Fold content open (or closed again) without leaving the composer.

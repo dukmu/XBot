@@ -63,83 +63,74 @@
     providers:
       minimax:
         protocol: anthropic
-        base_url: https://api.minimaxi.com/anthropic
+        base_url: https://api.minimax.cn/anthropic
         api_key: $${env:MINIMAX_API_TOKEN}
-        default_model: Minimax-M3
+        default_model: MiniMax-M3
         models:
-          - model: Minimax-M3
-            temperature: 0.2
+          - model: MiniMax-M3
             max_context_tokens: 1000000
             max_output_tokens: 32768
-            # MiniMax-M3: temperature range [0, 2]; thinking modes are
-            # "adaptive" / "disabled" (adapter-owned, serialized to
-            # extra_body.thinking). MiniMax has no reasoning_effort.
             thinking: adaptive
-            input_modalities:
-              - text
-              - image
-          - model: Minimax-M2.7
-            temperature: 0.2
-            max_context_tokens: 204800
+            input_modalities: [text, image]
+          - model: MiniMax-M3.1-Flash
+            max_context_tokens: 1000000
             max_output_tokens: 32768
             thinking: adaptive
-            input_modalities:
-              - text
+            input_modalities: [text, image]
       deepseek:
         protocol: openai
-        base_url: https://api.deepseek.com/v1
+        base_url: https://api.deepseek.com
         api_key: $${env:DEEPSEEK_API_KEY}
-        default_model: deepseek-v4-flash
+        default_model: deepseek-flash
         models:
-          - model: deepseek-v4-flash
-            temperature: 0.7
+          - model: deepseek-flash
             max_context_tokens: 1048576
+            max_output_tokens: 393216
             reasoning_effort: high
-            # Official DeepSeek thinking-mode effort values: low/high/max.
-            effort: [low, high, max]
-            thinking: enabled
-            input_modalities:
-              - text
+            effort: [none, low, high, max]
+            input_modalities: [text, image]
           - model: deepseek-v4-pro
-            temperature: 0.7
             max_context_tokens: 1048576
+            max_output_tokens: 393216
             reasoning_effort: high
-            # Official DeepSeek thinking-mode effort values: low/high/max.
-            effort: [low, high, max]
-            thinking: enabled
-            input_modalities:
-              - text
+            effort: [none, low, high, max]
       openai:
         protocol: openai
         base_url: https://api.openai.com/v1
         api_key: ""
         default_model: gpt-5.6-luna
         models:
-          # Official GPT-5.6 family effort values: none/low/medium/high/
-          # xhigh/max; default is medium when omitted.  Context 1,050,000,
-          # max output 128,000 (official model pages).
           - model: gpt-5.6-luna
-            temperature: 0.7
             max_context_tokens: 1050000
             max_output_tokens: 128000
+            output_token_parameter: max_completion_tokens
             reasoning_effort: high
             effort: [none, low, medium, high, xhigh, max]
+            input_modalities: [text, image]
           - model: gpt-5.6-sol
-            temperature: 0.7
             max_context_tokens: 1050000
             max_output_tokens: 128000
+            output_token_parameter: max_completion_tokens
             reasoning_effort: high
             effort: [none, low, medium, high, xhigh, max]
+            input_modalities: [text, image]
+          - model: gpt-5.6-terra
+            max_context_tokens: 1050000
+            max_output_tokens: 128000
+            output_token_parameter: max_completion_tokens
+            reasoning_effort: high
+            effort: [none, low, medium, high, xhigh, max]
+            input_modalities: [text, image]
       anthropic:
         protocol: anthropic
         base_url: https://api.anthropic.com
         api_key: ""
-        default_model: claude-sonnet-4-20250514
+        default_model: claude-sonnet-5-5
         models:
-          - model: claude-sonnet-4-20250514
-            temperature: 0.7
-            max_context_tokens: 200000
-            max_output_tokens: 64000
+          - model: claude-sonnet-5-5
+            max_context_tokens: 1000000
+            max_output_tokens: 128000
+            input_modalities: [text, image]
       lmstudio:
         protocol: openai
         base_url: http://localhost:1234/v1
@@ -147,10 +138,8 @@
         default_model: qwen/qwen3-1.7b
         models:
           - model: qwen/qwen3-1.7b
-            temperature: 0.2
+            # Set limits and capabilities to match the locally loaded model.
             max_context_tokens: 32768
-            reasoning_effort: high
-            thinking: enabled
 
 - id: agentloop
   name: agentloop

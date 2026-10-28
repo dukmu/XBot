@@ -7,13 +7,8 @@ value it carries when chosen. No terminal is needed for any of that.
 
 from __future__ import annotations
 
-from XBotv2.tui.tests.factories import agent_list, catalog, thread
+from XBotv2.tui.tests.factories import thread
 from XBotv2.tui.impl.view.pickers import (
-    agent_options,
-    effort_options,
-    effort_tiers,
-    model_options,
-    provider_options,
     session_options,
     thread_options,
 )
@@ -100,72 +95,13 @@ def test_thread_rows_do_not_repeat_an_id_as_the_title() -> None:
     assert options[0].label == "Main · agent"
 
 
-# --- providers and models -------------------------------------------------
-
-
-def test_provider_rows_mark_the_current_and_default_ones() -> None:
-    options = provider_options(catalog(), current="p2")
-    assert [option.value for option in options] == ["p1", "p2"]
-    assert "default" in options[0].detail
-    assert "current" in options[1].detail
-
-
-def test_model_rows_are_the_models_of_one_provider() -> None:
-    options = model_options(catalog(), provider="p1")
-    assert [option.value for option in options] == ["m1", "m2"]
-    assert "default for p1" in options[0].detail
-    assert "4096 ctx" in options[0].detail
-
-
-def test_model_rows_are_empty_for_an_unknown_provider() -> None:
-    assert model_options(catalog(), provider="nope") == ()
-
-
-def test_effort_tiers_come_from_the_current_model() -> None:
-    assert effort_tiers(catalog(), provider="p1", model="m1") == ("low", "high")
-    assert effort_tiers(catalog(), provider="p1", model="m2") == ("low",)
-    assert effort_tiers(catalog(), provider="p1", model="unknown") == ()
-
-
-def test_effort_rows_mark_the_current_tier() -> None:
-    options = effort_options(("low", "high"), current="high")
-    assert [option.value for option in options] == ["low", "high"]
-    assert options[1].detail == "current"
-
-
-# --- agents ---------------------------------------------------------------
-
-
-def test_agent_rows_mark_the_active_agent() -> None:
-    options = agent_options(agent_list())
-    assert [option.value for option in options] == ["default", "reviewer"]
-    assert "active" in options[0].detail
-    assert "reviews diffs" in options[1].detail
-
-
 # --- filtering: the one chooser offers it, so long lists stay usable ------
 
 
 def test_a_query_keeps_only_matching_rows() -> None:
     from XBotv2.tui.impl.view.pickers import filter_options
-
-    rows = provider_options(catalog())
-    assert [row.value for row in filter_options(rows, "p2")] == ["p2"]
-    assert [row.value for row in filter_options(rows, "anthropic")] == ["p2"], (
-        "the detail is searched too: the protocol is what the user may remember"
-    )
-
-
-def test_every_term_must_match() -> None:
-    from XBotv2.tui.impl.view.pickers import filter_options
-
-    rows = model_options(catalog(), provider="p1")
-    assert [row.value for row in filter_options(rows, "m1 4096")] == ["m1"]
-    assert filter_options(rows, "m1 8192") == ()
-
-
-def test_an_empty_query_keeps_everything() -> None:
-    from XBotv2.tui.impl.view.pickers import filter_options
-
-    rows = provider_options(catalog())
+    rows = session_options([summary("first", title="alpha"), summary("second", title="beta")])
+    assert [row.value for row in filter_options(rows, "beta")] == ["second"]
+    assert [row.value for row in filter_options(rows, "first active")] == ["first"]
+    assert filter_options(rows, "first beta") == ()
     assert filter_options(rows, "") == rows

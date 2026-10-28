@@ -33,13 +33,13 @@ and `mkdir`; `search` supports content and filename search.
 The `shell` Tool runs a command in the session workspace by default. A
 foreground call returns its result; `background=True` starts a session-owned
 job. The four `*_shell` helpers list, wait for, read, or cancel those jobs.
-Job identities are runtime-owned and do not survive session shutdown. Captured
-bytes are immutable artifacts. Commands write combined stdout/stderr directly
-to a controlled spool from process launch, including sandboxed commands.
-Completion adopts and hashes that file without a full read/decode/encode copy.
-Foreground results carry the complete logical artifact reference and at most
-6000 head bytes plus 2000 tail bytes of preview. Invalid UTF-8 is replaced only
-for display; artifact bytes are unchanged.
+Job identities are runtime-owned and do not survive session shutdown. Commands
+write combined stdout/stderr to a controlled spool from process launch, including
+sandboxed commands. Foreground output of at most 8000 bytes is returned directly.
+Larger foreground output is stored as an immutable artifact and returned with a
+preview of up to 6000 head bytes and 2000 tail bytes. Background output is always
+stored as an artifact. Invalid UTF-8 is replaced only for display; artifact bytes
+are unchanged.
 
 Background terminal results retain only the artifact reference and exit code.
 Nonzero exits remain failures; foreground failures and failed background jobs

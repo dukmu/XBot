@@ -11,10 +11,13 @@ from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionRequest,
 from XBotv2.agentloop.api.protocol import ToolListResponse
 from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
 from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument
 from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
 from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
 from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
 from XBotv2.llm.api.contracts import ProviderCatalog
+from XBotv2.permissions.api.models import PermissionPolicy
+from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.permissions.api.protocol import PermissionResponseRequest
 from XBotv2.protocol.api.models import ErrorResponse, HealthResponse, HelloRequest, HelloResponse, ServerEvent, WireModel
 from XBotv2.agentloop.api.models import AttachmentInput, HistoryMutation, MediaInput
@@ -193,6 +196,27 @@ class XBotClient:
             "GET", f"/sessions/{_segment(session_id)}", SessionSummary
         )
 
+    async def list_configuration(self, session_id: str, thread_id: str) -> ConfigurationCatalog:
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/configuration", ConfigurationCatalog,
+        )
+
+    async def get_configuration(
+        self, session_id: str, thread_id: str, resource_id: str, *, scope: PluginConfigScope,
+    ) -> ConfigurationDocument:
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/configuration/{_segment(resource_id)}",
+            ConfigurationDocument, params={"scope": scope},
+        )
+
+    async def save_configuration(
+        self, session_id: str, thread_id: str, document: ConfigurationDocument,
+    ) -> ConfigurationDocument:
+        return await self._request(
+            "PUT", f"{thread_path(session_id, thread_id)}/configuration/{_segment(document.id)}",
+            ConfigurationDocument, document, params={"scope": document.scope},
+        )
+
     async def get_session_policy(self, session_id: str) -> SessionPolicyResponse:
         return await self._request(
             "GET",
@@ -208,12 +232,16 @@ class XBotClient:
         remove_permissions: list[str] | None = None,
         sandbox: dict[SandboxKey, SandboxValue] | None = None,
         remove_sandbox: list[SandboxKey] | None = None,
+        replace_permissions: PermissionPolicy | None = None,
+        replace_sandbox: SandboxConfig | None = None,
     ) -> SessionPolicyResponse:
         return await self._request(
             "PATCH",
             f"/sessions/{_segment(session_id)}/policy",
             SessionPolicyResponse,
             SessionPolicyPatch(
+                replace_permissions=replace_permissions,
+                replace_sandbox=replace_sandbox,
                 permissions=permissions or {},
                 remove_permissions=remove_permissions or [],
                 sandbox=sandbox or {},

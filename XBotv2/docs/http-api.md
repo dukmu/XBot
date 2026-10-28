@@ -251,6 +251,8 @@ name or declaration alone.
 | PUT | `/sessions/{session_id}/threads/{thread_id}/provider` | `select_provider` | `ProviderSelectionResponse` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/effort` | `select_effort` | `EffortSelectionResponse` |
 
+Agent source documents select global or workspace scope and include raw frontmatter, prompt text, and a revision. Saves validate the definition, reject stale revisions, and refresh the current session's Agent catalogs; an active Agent must be selected again to use the new definition. Other existing sessions retain their mounted catalogs.
+
 ## Policy, Todo, and jobs
 
 | Method | Path | Operation | Result |
@@ -262,7 +264,11 @@ name or declaration alone.
 | POST | `/sessions/{session_id}/threads/{thread_id}/jobs/{job_id}/stop` | `stop_job` | `JobStopResponse` |
 | POST | `/sessions/{session_id}/threads/{thread_id}/jobs/stop` | `stop_all_jobs` | `JobStopResponse` |
 
+The policy PATCH accepts `replace_permissions` and `replace_sandbox` for complete validated session policy replacements. A replacement cannot be combined with a partial patch for the same policy. Successful changes are persisted and propagated to active session threads.
+
 ## Plugin configuration
+
+Configuration resource owners publish a catalog at `GET /sessions/{session_id}/threads/{thread_id}/configuration`. Each resource supplies its id, title, supported scopes, format, and a description of when changes apply. Read and replace a document using `GET` and `PUT /sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}?scope=...`. A document contains `id`, `scope`, `revision`, `content`, and optional `config_schema`. The PUT body is the document returned by GET with edited content. Stale revisions return 409; unknown resources return 404. The raw plugin overlay resource validates loader structure before an atomic write; plugin-specific configuration is validated when its plugin next mounts.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|

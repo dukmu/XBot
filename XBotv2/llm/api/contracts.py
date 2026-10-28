@@ -22,6 +22,7 @@ class ModelConfig(BaseModel):
     temperature: float | None = None
     max_context_tokens: int = Field(default=32_000, ge=1)
     max_output_tokens: int | None = Field(default=None, ge=1)
+    output_token_parameter: Literal["max_tokens", "max_completion_tokens"] = "max_tokens"
     reasoning_effort: str | None = None
     effort: list[str] | None = None
     thinking: str | None = Field(default=None, min_length=1)
