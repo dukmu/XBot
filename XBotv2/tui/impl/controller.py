@@ -21,15 +21,13 @@ from XBotv2.jobs.api.contracts import JobView
 from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.interactions.api.models import UserInputRequest
 from XBotv2.permissions.api.models import PermissionRequest
-from XBotv2.agentloop.api.models import PendingInputData
-from XBotv2.agentloop.api.models import MediaInput
+from XBotv2.agentloop.api.models import PendingInputData, MediaInput
+from XBotv2.session.api.events import HistoryUpdatedEvent
+from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
     InteractionRequest,
-    JobsReplaced,
     LocalNotice,
     TranscriptCleared,
-    SnapshotAdopted,
-    HistoryReplaced,
     UiEvent,
 )
 from XBotv2.tui.impl.state import (
@@ -132,7 +130,7 @@ class TuiController:
 
     def dispatch(self, event: UiEvent) -> None:
         """Apply one event and mark the views stale. Never renders."""
-        if isinstance(event, (SnapshotAdopted, HistoryReplaced, TranscriptCleared)):
+        if isinstance(event, (OpenSessionResponse, HistoryUpdatedEvent, TranscriptCleared)):
             self._history_generation += 1
             self._history_state = None
             self._history_newer = None
@@ -327,17 +325,17 @@ class TuiController:
         try:
             response = await self.transport.list_jobs()
         except Exception as exc:  # noqa: BLE001 — the missing state must be visible
-            self.dispatch(JobsReplaced(payload=JobListResponse(
+            self.dispatch(JobListResponse(
                 session_id=self.state.session_id,
                 thread_id=self.state.thread_id,
-            )))
+            ))
             self.dispatch(LocalNotice(
                 notice_kind="jobs",
                 text=f"Could not load background tasks: {exc}",
                 level="warning",
             ))
             return
-        self.dispatch(JobsReplaced(payload=response))
+        self.dispatch(response)
 
     async def providers(self) -> Any:
         """The provider/model catalogue, for the pickers."""

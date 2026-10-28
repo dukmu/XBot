@@ -8,11 +8,30 @@ the real code.
 from __future__ import annotations
 
 import asyncio
-import pytest
 
+import pytest
 from textual.events import Paste
+from textual.screen import Screen
 from textual.widgets import Button, Checkbox, OptionList, Static
 
+from XBotv2.client import XBotClientError
+from XBotv2.interactions.api.models import Answered, UserInputRecorded, UserInputRequest
+from XBotv2.permissions.api.models import NamedPermission, PermissionRequest
+from XBotv2.protocol.api.models import ErrorResponse
+from XBotv2.session.api.records import AssistantRecord
+from XBotv2.tui.impl.app import TuiApp
+from XBotv2.tui.impl.events import InteractionOpened, InteractionResolved
+from XBotv2.tui.impl.transport import TransportConfig
+from XBotv2.tui.impl.view.completion import CompletionPopup
+from XBotv2.tui.impl.view.composer import Composer
+from XBotv2.tui.impl.view.footer import FooterBar
+from XBotv2.tui.impl.view.interaction import InteractionInputPanel
+from XBotv2.tui.impl.view.jobs import JobPanel
+from XBotv2.tui.impl.view.queue import QueuePanel
+from XBotv2.tui.impl.view.selection import SelectionPanel
+from XBotv2.tui.impl.view.settings import SettingsPanel
+from XBotv2.tui.impl.view.status_bar import StatusBar
+from XBotv2.tui.impl.view.transcript import TranscriptScroll
 from XBotv2.tui.tests.factories import (
     PNG_BYTES,
     SESSION,
@@ -29,26 +48,6 @@ from XBotv2.tui.tests.factories import (
     thread,
     tui_app,
 )
-from XBotv2.client import XBotClientError
-from XBotv2.protocol.api.models import ErrorResponse
-from XBotv2.session.api.records import AssistantRecord
-from textual.screen import Screen
-
-from XBotv2.interactions.api.models import Answered, UserInputRecorded, UserInputRequest
-from XBotv2.permissions.api.models import NamedPermission, PermissionRequest
-from XBotv2.tui.impl.app import TuiApp
-from XBotv2.tui.impl.view.interaction import InteractionInputPanel
-from XBotv2.tui.impl.view.selection import SelectionPanel
-from XBotv2.tui.impl.view.settings import SettingsPanel
-from XBotv2.tui.impl.transport import TransportConfig
-from XBotv2.tui.impl.view.completion import CompletionPopup
-from XBotv2.tui.impl.view.composer import Composer
-from XBotv2.tui.impl.view.footer import FooterBar
-from XBotv2.tui.impl.view.jobs import JobPanel
-from XBotv2.tui.impl.view.queue import QueuePanel
-from XBotv2.tui.impl.view.status_bar import StatusBar
-from XBotv2.tui.impl.view.transcript import TranscriptScroll
-from XBotv2.tui.impl.events import InteractionOpened, InteractionResolved, SnapshotAdopted
 
 
 def app_for(
@@ -139,7 +138,7 @@ async def test_ctrl_c_copies_rendered_markdown_without_exiting(text: str, select
     async with app.run_test(size=(80, 24)) as pilot:
         await settle(pilot)
         assert app.controller is not None
-        app.controller.dispatch(SnapshotAdopted(backend.session))
+        app.controller.dispatch(backend.session)
         await settle(pilot)
         body = app.query_one(TranscriptBody)
         await pilot.mouse_down(body, offset=(2, 0))
@@ -207,7 +206,7 @@ async def test_scrolled_transcript_keeps_its_visible_entry_when_width_changes() 
     async with app.run_test(size=(80, 24)) as pilot:
         await settle(pilot)
         assert app.controller is not None
-        app.controller.dispatch(SnapshotAdopted(snapshot(
+        app.controller.dispatch(snapshot(
             history=[
                 human_record(
                     f"m{index}",
@@ -215,7 +214,7 @@ async def test_scrolled_transcript_keeps_its_visible_entry_when_width_changes() 
                 )
                 for index in range(20)
             ]
-        )))
+        ))
         await app.controller.flush()
         await settle(pilot)
         scroll = app.query_one("#transcript", TranscriptScroll)

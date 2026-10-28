@@ -11,9 +11,17 @@ Written before the transport grew a ``switch``.
 from __future__ import annotations
 
 import asyncio
+
 import pytest
+
+from XBotv2.agentloop.api.outputs import LoopTurnStarted, LoopError
 from XBotv2.core.api.tools import ToolCall
 from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.tui.impl.controller import TuiController
+from XBotv2.tui.impl.events import ConnectionChanged
+from XBotv2.tui.impl.status import Connection, Status, derive
+from XBotv2.tui.impl.transport import TransportConfig, TransportSession
 from XBotv2.tui.tests.factories import (
     SESSION,
     THREAD,
@@ -27,10 +35,6 @@ from XBotv2.tui.tests.factories import (
     stream,
     thread,
 )
-from XBotv2.tui.impl.controller import TuiController
-from XBotv2.tui.impl.events import ConnectionChanged, ErrorFrame, SnapshotAdopted, TurnStarted
-from XBotv2.tui.impl.status import Connection, Status, derive
-from XBotv2.tui.impl.transport import TransportConfig, TransportSession
 
 OTHER_SESSION = "s2"
 OTHER_THREAD = "agent"
@@ -98,8 +102,8 @@ async def test_switching_opens_the_new_session_and_adopts_it(backend: ScriptedBa
 
     await transport.switch(session_id=OTHER_SESSION, thread_id=OTHER_THREAD)
 
-    adopted = recorder.of(SnapshotAdopted)
-    assert adopted and adopted[-1].snapshot.data.key.session_id == OTHER_SESSION
+    adopted = recorder.of(OpenSessionResponse)
+    assert adopted and adopted[-1].data.key.session_id == OTHER_SESSION
     assert transport.session_id == OTHER_SESSION
     assert transport.thread_id == OTHER_THREAD
 
@@ -132,7 +136,7 @@ async def test_switching_resets_the_cursor_to_the_new_snapshot(backend: Scripted
     try:
         await transport.switch(session_id=OTHER_SESSION, thread_id=OTHER_THREAD)
         for _ in range(50):
-            if recorder.of(TurnStarted):
+            if recorder.of(LoopTurnStarted):
                 break
             await asyncio.sleep(0.01)
         assert backend.subscriptions[1].after == 17, "resume from the adopted cursor"
@@ -162,7 +166,7 @@ async def test_switching_is_not_a_reconnect(backend: ScriptedBackend) -> None:
                 break
             await asyncio.sleep(0.01)
         assert backend.stream_opens >= 2, "the switch must resubscribe"
-        assert not recorder.of(ErrorFrame)
+        assert not recorder.of(LoopError)
         assert not [
             event
             for event in recorder.of(ConnectionChanged)
@@ -191,12 +195,12 @@ async def test_a_frame_for_the_old_thread_is_rejected_after_switching(
     try:
         await transport.switch(session_id=OTHER_SESSION, thread_id="other")
         for _ in range(50):
-            if recorder.of(TurnStarted):
+            if recorder.of(LoopTurnStarted):
                 break
             await asyncio.sleep(0.01)
-        started = recorder.of(TurnStarted)
-        assert [event.payload.turn for event in started] == [2], "only the new thread's frames apply"
-        assert recorder.of(ErrorFrame), "the foreign frame is reported, not ignored"
+        started = recorder.of(LoopTurnStarted)
+        assert [event.turn for event in started] == [2], "only the new thread's frames apply"
+        assert recorder.of(LoopError), "the foreign frame is reported, not ignored"
     finally:
         await finish(transport, task)
 
@@ -214,7 +218,7 @@ async def test_a_failed_switch_leaves_the_client_where_it_was(
         await transport.switch(session_id="missing", thread_id=THREAD)
 
     assert transport.session_id == SESSION
-    assert not recorder.of(SnapshotAdopted), "nothing was adopted"
+    assert not recorder.of(OpenSessionResponse), "nothing was adopted"
 
 
 async def test_switching_replays_the_new_sessions_pending_prompts(
@@ -285,10 +289,9 @@ async def test_the_controller_switch_clears_the_previous_transcript(
         sleep=no_sleep,
     )
     await controller.connect()
-    from XBotv2.tui.impl.events import UserMessagePublished
 
     controller.dispatch(
-        UserMessagePublished(payload=human_record("m1", "old session"))
+        human_record("m1", "old session")
     )
     await controller.flush()
     assert controller.state.timeline.get("m1") is not None

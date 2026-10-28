@@ -5,11 +5,10 @@ by ``protocol.py``), local submissions, interrupt results, watchdog readings.
 
 Two rules keep this module from re-declaring the protocol:
 
-* a frame-shaped event **carries the producer's payload model** (loop events,
-  ``AssistantRecord``, ``ToolRecord``, ``CompactionCompleted``, ...)
-  instead of restating its fields. The wire shape is defined once, by its owner.
+* validated producer models enter the reducer directly where they uniquely
+  describe the transition. The wire shape is defined once, by its owner.
 * only genuinely client-side events declare their own fields: a submission, an
-  interrupt request, a watchdog reading, a gap, a connection change.
+  interrupt request, a gap, or a connection change.
 
 Nothing here imports Textual or performs IO, so the whole reducer is testable in
 isolation.
@@ -20,21 +19,25 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Union
 from XBotv2.core.api.history import HistoryPage
-from XBotv2.session.api.records import DisplayRecord
+from XBotv2.session.api.records import (
+    DisplayRecord,
+    AssistantRecord,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
 from XBotv2.agentloop.api.outputs import (
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,
     LoopTurnEnded,
     LoopTurnStarted,
-    StartedToolCall,
     ToolCallsStarted as LoopToolCallsStarted,
 )
 from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
 from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.interactions.api.models import ClientNotice, UserInputRequest, UserInputRecorded
-from XBotv2.jobs.api.contracts import JobView
-from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse
+from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse, JobUpdatedEvent
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.session.api.contracts import ThreadSummary
@@ -47,18 +50,9 @@ from XBotv2.session.api.events import (
     QueueReplacedEvent,
 )
 from XBotv2.session.api.protocol import OpenSessionResponse
-from XBotv2.session.api.records import (
-    AssistantRecord,
-    HumanInputRecord,
-    RuntimeNoticeRecord,
-    ToolRecord,
-)
 from XBotv2.tui.impl.status import Connection, ServerTurn
 
 InteractionRequest = Union[PermissionRequest, UserInputRequest]
-CompactionPayload = Union[
-    CompactionStarted, CompactionCompleted, CompactionFailed
-]
 
 
 # --- transport and session lifecycle --------------------------------------
@@ -76,42 +70,6 @@ class DisplayHistoryLoaded:
 
 
 @dataclass(frozen=True)
-class SnapshotAdopted:
-    """The session descriptor, adopted as a fresh baseline.
-
-    The descriptor carries no turn answer, so adopting one never changes what
-    the client believes about a running turn. Turn facts come from the turn
-    frames and from ``WatchdogRead``.
-    """
-
-    snapshot: OpenSessionResponse
-
-
-@dataclass(frozen=True)
-class JobsReplaced:
-    """Authoritative jobs returned for the newly attached thread."""
-
-    payload: JobListResponse
-
-
-@dataclass(frozen=True)
-class SessionConfigured:
-    payload: AgentConfiguredEvent
-
-
-@dataclass(frozen=True)
-class ThreadRead:
-    """An authoritative read of the attached thread.
-
-    It carries the server's own thread model rather than a restatement of it, so
-    the turn status *and* the thread's kind (main or subagent) come from the same
-    authoritative answer.
-    """
-
-    payload: ThreadSummary
-
-
-@dataclass(frozen=True)
 class StreamGapDetected:
     """The frame sequence skipped; the user must be told."""
 
@@ -120,11 +78,6 @@ class StreamGapDetected:
 
 
 # --- turn lifecycle -------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class TurnStarted:
-    payload: LoopTurnStarted
 
 
 @dataclass(frozen=True)
@@ -151,43 +104,6 @@ class InterruptSettled:
 
 
 @dataclass(frozen=True)
-class AssistantDelta:
-    payload: AssistantTextDelta | AssistantReasoningDelta
-
-
-@dataclass(frozen=True)
-class AssistantCompleted:
-    payload: AssistantRecord
-
-
-@dataclass(frozen=True)
-class HistoryReplaced:
-    payload: HistoryUpdatedEvent
-
-
-@dataclass(frozen=True)
-class ToolCallsStarted:
-    payload: LoopToolCallsStarted
-
-
-@dataclass(frozen=True)
-class ToolRecordReceived:
-    payload: ToolRecord
-
-
-@dataclass(frozen=True)
-class ErrorFrame:
-    payload: LoopError
-
-
-@dataclass(frozen=True)
-class ClientNoticeReceived:
-    """A server-authored line for the transcript (``client_message``)."""
-
-    payload: ClientNotice
-
-
-@dataclass(frozen=True)
 class TranscriptCleared:
     """The user asked to stop looking at what is already rendered.
 
@@ -209,47 +125,6 @@ class LocalNotice:
     level: str = "info"
 
 
-@dataclass(frozen=True)
-class JobCompletionNotice:
-    """A background job finished.
-
-    Deliberately a notice and not a turn event: a completion must never open or
-    extend a turn.
-    """
-
-    payload: JobCompletedEvent
-
-
-@dataclass(frozen=True)
-class GoalChangedReceived:
-    payload: GoalChanged
-
-
-@dataclass(frozen=True)
-class TaskChangedReceived:
-    payload: TaskChanged
-
-
-# --- usage, compaction, queue --------------------------------------------
-
-
-@dataclass(frozen=True)
-class UsageSnapshotReceived:
-    payload: UsageUpdated
-
-
-@dataclass(frozen=True)
-class CompactionChanged:
-    """One compaction transition; the active state is derived from the payload."""
-
-    payload: CompactionPayload
-
-
-@dataclass(frozen=True)
-class QueueReplaced:
-    payload: QueueReplacedEvent
-
-
 # --- interactions ---------------------------------------------------------
 
 
@@ -266,11 +141,6 @@ class InteractionResolved:
 
 
 # --- local input ----------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class InputsConsumed:
-    payload: InputConsumedEvent
 
 
 @dataclass(frozen=True)
@@ -291,111 +161,43 @@ class UserInputFailed:
     error: str
 
 
-@dataclass(frozen=True)
-class UserMessagePublished:
-    """The server accepted a user message.
-
-    ``UserEntry.delivery`` is the client's view of where that message stands;
-    whether the inbox targeted the next step or the next turn is *queue* state
-    and arrives through ``QueueReplaced``, not through this frame.
-    """
-
-    payload: HumanInputRecord
-
-
-@dataclass(frozen=True)
-class RuntimeNoticePublished:
-    payload: RuntimeNoticeRecord
-
-
-# --- background work ------------------------------------------------------
-
-
-@dataclass(frozen=True)
-class JobUpdated:
-    """One job snapshot. The server publishes jobs one at a time."""
-
-    payload: JobView
-
-
 UiEvent = Union[
     DisplayHistoryLoaded,
     ConnectionChanged,
-    SnapshotAdopted,
-    SessionConfigured,
-    ThreadRead,
+    OpenSessionResponse,
+    AgentConfiguredEvent,
+    ThreadSummary,
     StreamGapDetected,
-    TurnStarted,
+    LoopTurnStarted,
     TurnFinished,
     TurnCancelled,
     InterruptAsked,
     InterruptSettled,
-    AssistantDelta,
-    AssistantCompleted,
-    HistoryReplaced,
-    ToolCallsStarted,
-    ToolRecordReceived,
-    ErrorFrame,
-    ClientNoticeReceived,
-    JobCompletionNotice,
-    GoalChangedReceived,
-    TaskChangedReceived,
+    AssistantTextDelta | AssistantReasoningDelta,
+    AssistantRecord,
+    HistoryUpdatedEvent,
+    LoopToolCallsStarted,
+    ToolRecord,
+    LoopError,
+    ClientNotice,
+    JobCompletedEvent,
+    GoalChanged,
+    TaskChanged,
     LocalNotice,
     TranscriptCleared,
-    UsageSnapshotReceived,
-    CompactionChanged,
-    QueueReplaced,
+    UsageUpdated,
+    CompactionStarted,
+    CompactionCompleted,
+    CompactionFailed,
+    QueueReplacedEvent,
     InteractionOpened,
     InteractionResolved,
     UserInputSubmitted,
     UserInputAccepted,
-    InputsConsumed,
+    InputConsumedEvent,
     UserInputFailed,
-    UserMessagePublished,
-    RuntimeNoticePublished,
-    JobUpdated,
-    JobsReplaced,
-]
-
-
-__all__ = [
-    "InputsConsumed",
-    "AssistantCompleted",
-    "AssistantDelta",
-    "ClientNoticeReceived",
-    "CompactionChanged",
-    "CompactionPayload",
-    "ConnectionChanged",
-    "ErrorFrame",
-    "HistoryReplaced",
-    "InteractionOpened",
-    "InteractionRequest",
-    "InteractionResolved",
-    "InterruptAsked",
-    "InterruptSettled",
-    "JobCompletionNotice",
-    "GoalChangedReceived",
-    "TaskChangedReceived",
-    "LocalNotice",
-    "TranscriptCleared",
-    "JobUpdated",
-    "JobsReplaced",
-    "QueueReplaced",
-    "SessionConfigured",
-    "SnapshotAdopted",
-    "StreamGapDetected",
-    "StartedToolCall",
-    "ToolCallsStarted",
-    "ToolRecordReceived",
-    "TurnCancelled",
-    "TurnFinished",
-    "TurnStarted",
-    "UiEvent",
-    "UsageSnapshotReceived",
-    "UserInputFailed",
-    "UserInputSubmitted",
-    "UserInputAccepted",
-    "UserMessagePublished",
-    "RuntimeNoticePublished",
-    "ThreadRead",
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    JobUpdatedEvent,
+    JobListResponse,
 ]

@@ -14,6 +14,7 @@ import asyncio
 import base64
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Iterable
+
 from XBotv2.commands.api.contracts import CommandDescription, CommandExecution
 from XBotv2.commands.api.protocol import CommandListResponse, CommandResponse
 from XBotv2.core.api.domain import (
@@ -34,10 +35,11 @@ from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.metadata import ThreadMetadata
 from XBotv2.core.api.tools import ToolCallRef, ToolSucceeded, text_output
 from XBotv2.interactions.api.protocol import InteractionResponse
+from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.protocol.api.models import ServerEvent, server_event
 from XBotv2.session.api.contracts import OpenedThread, SessionKey, ThreadSummary
-from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
 from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, ToolRecord
 
 
 SESSION = "s1"
@@ -571,11 +573,7 @@ class ScriptedBackend:
         self.job_reads.append((session_id, thread_id))
         if self.jobs_error is not None:
             raise self.jobs_error
-        return type(
-            "Jobs",
-            (),
-            {"session_id": session_id, "thread_id": thread_id, "jobs": list(self.jobs)},
-        )()
+        return JobListResponse(session_id=session_id, thread_id=thread_id, jobs=list(self.jobs))
 
     # --- writes -------------------------------------------------------
     async def send_message(

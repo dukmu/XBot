@@ -11,6 +11,10 @@ from __future__ import annotations
 import pytest
 
 from XBotv2.jobs.api.contracts import JobView
+from XBotv2.tui.impl.controller import TuiController
+from XBotv2.tui.impl.events import ConnectionChanged, LocalNotice
+from XBotv2.tui.impl.status import Connection, ServerTurn, Status, derive
+from XBotv2.tui.impl.transport import TransportConfig
 from XBotv2.tui.tests.factories import (
     SESSION,
     THREAD,
@@ -26,17 +30,6 @@ from XBotv2.tui.tests.factories import (
     tool_record,
     thread,
 )
-from XBotv2.tui.impl.controller import TuiController
-from XBotv2.tui.impl.events import (
-    AssistantDelta,
-    ConnectionChanged,
-    LocalNotice,
-    ThreadRead,
-    TurnStarted,
-    UserMessagePublished,
-)
-from XBotv2.tui.impl.status import Connection, ServerTurn, Status, derive
-from XBotv2.tui.impl.transport import TransportConfig
 
 
 class FakeSleep:
@@ -130,12 +123,12 @@ async def test_thinking_activity_requires_running_turn_before_output(
 
     control, view = controller(backend)
     control.dispatch(ConnectionChanged(Connection.CONNECTED))
-    control.dispatch(UserMessagePublished(payload=human_record("u1", "hello")))
-    control.dispatch(TurnStarted(payload=_turn(1)))
+    control.dispatch(human_record("u1", "hello"))
+    control.dispatch(_turn(1))
     await control.flush()
     assert view.thinking_activity == [True]
 
-    control.dispatch(AssistantDelta(payload=AssistantTextDelta(text="partial")))
+    control.dispatch(AssistantTextDelta(text="partial"))
     await control.flush()
     assert view.thinking_activity == [True, False]
 
@@ -149,25 +142,20 @@ async def test_thinking_activity_yields_to_active_tool_then_returns_after_result
     )
     from XBotv2.core.api.tools import ToolCall
     from XBotv2.session.api.records import ToolRecord
-    from XBotv2.tui.impl.events import ToolCallsStarted, ToolRecordReceived
 
     control, view = controller(backend)
     control.dispatch(ConnectionChanged(Connection.CONNECTED))
-    control.dispatch(UserMessagePublished(payload=human_record("u1", "hello")))
-    control.dispatch(TurnStarted(payload=_turn(1)))
+    control.dispatch(human_record("u1", "hello"))
+    control.dispatch(_turn(1))
     await control.flush()
     assert view.thinking_activity[-1] is True
 
     call = ToolCall(id="c1", name="lookup", args={})
-    control.dispatch(ToolCallsStarted(
-        payload=LoopToolCallsStarted(calls=(StartedToolCall(call=call, category="execute"),))
-    ))
+    control.dispatch(LoopToolCallsStarted(calls=(StartedToolCall(call=call, category="execute"),)))
     await control.flush()
     assert view.thinking_activity[-1] is False
 
-    control.dispatch(ToolRecordReceived(
-        payload=ToolRecord.model_validate(tool_record("c1", "lookup", "found it"))
-    ))
+    control.dispatch(ToolRecord.model_validate(tool_record("c1", "lookup", "found it")))
     await control.flush()
     assert view.thinking_activity[-1] is True
 
@@ -176,7 +164,7 @@ async def test_a_burst_of_events_costs_one_render(backend: ScriptedBackend) -> N
     control, view = controller(backend)
     control.dispatch(ConnectionChanged(Connection.CONNECTED))
     for _ in range(50):
-        control.dispatch(TurnStarted(payload=_turn(1)))
+        control.dispatch(_turn(1))
     await control.flush()
     assert view.renders == 1
 
@@ -328,7 +316,7 @@ async def test_running_the_stream_renders_the_result(backend: ScriptedBackend) -
 async def test_the_status_model_reflects_a_running_turn(backend: ScriptedBackend) -> None:
     control, _view = controller(backend)
     await control.connect()
-    control.dispatch(TurnStarted(payload=_turn(3)))
+    control.dispatch(_turn(3))
     model = control.status_model()
     assert derive(model.facts) is Status.RUNNING
 
@@ -337,7 +325,7 @@ def test_the_activity_text_reports_the_turn_duration(backend: ScriptedBackend) -
     """Progress lives in the status line, from the turn's recorded start time."""
     clock = FakeClock(100.0)
     control, _view = controller(backend, clock=clock)
-    control.dispatch(TurnStarted(payload=_turn(2)))
+    control.dispatch(_turn(2))
     clock.advance(4.25)
     assert control.activity() == "turn:2 4.2s"
 
@@ -349,7 +337,7 @@ def test_there_is_no_activity_before_a_turn(backend: ScriptedBackend) -> None:
 
 def test_running_delivery_help_is_not_duplicated_inside_the_composer(backend: ScriptedBackend) -> None:
     control, _view = controller(backend)
-    control.dispatch(TurnStarted(payload=_turn(1)))
+    control.dispatch(_turn(1))
     hint = _composer_hint(control.composer_model())
     assert hint == ""
 
@@ -541,7 +529,7 @@ async def test_the_composer_is_read_only_on_a_subagent_thread(
     await control.connect()
     assert control.composer_model().read_only is False
     control.dispatch(
-        ThreadRead(payload=thread(kind="subagent", thread_id="child")),
+        thread(kind="subagent", thread_id="child"),
     )
     assert control.composer_model().read_only is True
     assert "read-only" in _composer_hint(control.composer_model()).lower()
@@ -596,14 +584,12 @@ async def test_the_thread_list_comes_from_the_server(backend: ScriptedBackend) -
 
 
 async def test_the_queue_is_rendered_from_state(backend: ScriptedBackend) -> None:
-    from XBotv2.tui.impl.events import QueueReplaced
     from XBotv2.session.api.events import QueueReplacedEvent
 
     control, view = controller(backend)
     await control.connect()
     control.dispatch(
-        QueueReplaced(
-            payload=QueueReplacedEvent(
+        QueueReplacedEvent(
                 items=[
                     {
                         "message_id": "q1",
@@ -612,7 +598,6 @@ async def test_the_queue_is_rendered_from_state(backend: ScriptedBackend) -> Non
                     }
                 ]
             )
-        )
     )
     await control.flush()
     assert [item.message_id for item in view.queues[-1]] == ["q1"]
@@ -685,7 +670,7 @@ async def test_paging_up_at_the_beginning_does_not_request_history(backend: Scri
 async def test_live_history_is_bounded_without_loading_older_pages(backend: ScriptedBackend) -> None:
     control, _ = controller(backend, history_retention=3)
     for index in range(10):
-        control.dispatch(UserMessagePublished(payload=human_record(f"u{index}", "old")))
+        control.dispatch(human_record(f"u{index}", "old"))
     await control.flush()
     assert control.state.timeline.ids() == ("u7", "u8", "u9")
     control.dispatch(LocalNotice(notice_kind="test", text="x" * (3 * 1024 * 1024)))
@@ -697,16 +682,16 @@ async def test_live_history_is_bounded_without_loading_older_pages(backend: Scri
 async def test_retention_keeps_in_flight_entries(backend: ScriptedBackend) -> None:
     from XBotv2.agentloop.api.outputs import AssistantTextDelta, StartedToolCall, ToolCallsStarted as LoopToolCallsStarted
     from XBotv2.core.api.tools import ToolCall
-    from XBotv2.tui.impl.events import ToolCallsStarted, UserInputSubmitted
+    from XBotv2.tui.impl.events import UserInputSubmitted
 
     control, _ = controller(backend, history_retention=1)
-    control.dispatch(UserMessagePublished(payload=human_record("old", "old")))
+    control.dispatch(human_record("old", "old"))
     control.dispatch(UserInputSubmitted(input_id="pending", content="waiting"))
-    control.dispatch(AssistantDelta(payload=AssistantTextDelta(text="streaming")))
+    control.dispatch(AssistantTextDelta(text="streaming"))
     stream_id = control.state.stream_entry_id
-    control.dispatch(ToolCallsStarted(payload=LoopToolCallsStarted(calls=(
+    control.dispatch(LoopToolCallsStarted(calls=(
         StartedToolCall(call=ToolCall(id="tool", name="test", args={}), category="execute"),
-    ))))
+    )))
     await control.flush()
     assert set(control.state.timeline.ids()) == {"pending", stream_id, "tool"}
 
@@ -728,7 +713,7 @@ async def test_history_pages_replace_old_view_while_live_events_continue(backend
     assert control._history_state.timeline.ids() == ("u5",)
     assert await control.page_older()
     assert control._history_state.timeline.ids() == ("u3",)
-    control.dispatch(UserMessagePublished(payload=human_record("u10", "new live")))
+    control.dispatch(human_record("u10", "new live"))
     await control.flush()
     assert control._history_state.timeline.ids() == ("u3",)
     assert control.state.timeline.ids() == ("u9", "u10")
@@ -761,7 +746,6 @@ async def test_large_history_page_holds_previews_and_returns_to_live(backend: Sc
 async def test_late_history_page_does_not_reverse_navigation(backend: ScriptedBackend, reset: str) -> None:
     import asyncio
     from XBotv2.core.api.history import HistoryPage
-    from XBotv2.tui.impl.events import SnapshotAdopted
 
     backend.session = snapshot(history=[human_record("current", "current")], history_cursor="older")
     control, view = controller(backend, view=RecordingView(can_move_older=False))
@@ -779,7 +763,7 @@ async def test_late_history_page_does_not_reverse_navigation(backend: ScriptedBa
     try:
         await asyncio.wait_for(requested.wait(), 5)
         if reset == "session":
-            control.dispatch(SnapshotAdopted(snapshot(session_id="other", history=[human_record("other", "new session")])))
+            control.dispatch(snapshot(session_id="other", history=[human_record("other", "new session")]))
         else:
             await control.go_to_tail()
         release.set()

@@ -11,84 +11,93 @@ server's ``Literal`` types, so the two cannot drift apart.
 from __future__ import annotations
 
 from typing import get_args, get_type_hints
-import pytest
+
 from pydantic import BaseModel
+import pytest
+
+from XBotv2.agentloop.api.outputs import (
+    LoopTurnStarted,
+    AssistantTextDelta,
+    AssistantReasoningDelta,
+    LoopError,
+    ToolCallsStarted as DomainToolCallsStarted,
+)
+from XBotv2.compact.api.protocol import CompactionStarted, CompactionCompleted, CompactionFailed
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.interactions.api.models import ClientNotice
+from XBotv2.jobs.api.protocol import JobUpdatedEvent, JobListResponse, JobCompletedEvent
 from XBotv2.session.api.contracts import ThreadSummary
+from XBotv2.session.api.events import (
+    HistoryUpdatedEvent,
+    InputConsumedEvent,
+    QueueReplacedEvent,
+    AgentConfiguredEvent,
+)
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.session.api.records import (
+    RuntimeNoticeRecord,
+    HumanInputRecord,
+    AssistantRecord,
+    ToolRecord,
+)
+from XBotv2.todolist.api.events import TaskChanged
 from XBotv2.tui.impl import events, protocol
 from XBotv2.tui.impl.events import (
-    AssistantCompleted,
-    AssistantDelta,
-    ClientNoticeReceived,
-    CompactionChanged,
     ConnectionChanged,
     DisplayHistoryLoaded,
-    ErrorFrame,
-    HistoryReplaced,
-    GoalChangedReceived,
     InteractionOpened,
     InteractionResolved,
-    InputsConsumed,
     InterruptAsked,
     InterruptSettled,
-    JobCompletionNotice,
-    JobUpdated,
-    JobsReplaced,
     LocalNotice,
     TranscriptCleared,
-    QueueReplaced,
-    RuntimeNoticePublished,
-    SessionConfigured,
-    SnapshotAdopted,
     StreamGapDetected,
-    ThreadRead,
-    ToolCallsStarted,
-    ToolRecordReceived,
-    TaskChangedReceived,
     TurnCancelled,
     TurnFinished,
-    TurnStarted,
     UiEvent,
-    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     UserInputAccepted,
-    UserMessagePublished,
 )
 from XBotv2.tui.impl.state import MAIN_THREAD_KIND, SUBAGENT_THREAD_KIND
 from XBotv2.tui.impl.status import ServerTurn
 from XBotv2.tui.impl.timeline import ToolStatus
+from XBotv2.usage.api.events import UsageUpdated
 
 # Events that carry a protocol payload, and events the client originates itself.
 # Every member of the union must be in exactly one of these sets.
 SERVER_SHAPED = {
     DisplayHistoryLoaded,
-    SnapshotAdopted,
-    SessionConfigured,
-    TurnStarted,
+    OpenSessionResponse,
+    AgentConfiguredEvent,
+    LoopTurnStarted,
     TurnFinished,
     TurnCancelled,
-    AssistantDelta,
-    AssistantCompleted,
-    HistoryReplaced,
-    ToolCallsStarted,
-    ToolRecordReceived,
-    ErrorFrame,
-    ClientNoticeReceived,
-    JobCompletionNotice,
-    UsageSnapshotReceived,
-    CompactionChanged,
-    QueueReplaced,
+    AssistantTextDelta,
+    AssistantReasoningDelta,
+    AssistantRecord,
+    HistoryUpdatedEvent,
+    DomainToolCallsStarted,
+    ToolRecord,
+    LoopError,
+    ClientNotice,
+    JobCompletedEvent,
+    UsageUpdated,
+    CompactionStarted,
+    CompactionCompleted,
+    CompactionFailed,
+    QueueReplacedEvent,
     InteractionOpened,
     InteractionResolved,
-    InputsConsumed,
-    UserMessagePublished,
-    RuntimeNoticePublished,
-    GoalChangedReceived,
-    TaskChangedReceived,
-    JobUpdated,
-    JobsReplaced,
-    ThreadRead,
+    InputConsumedEvent,
+    HumanInputRecord,
+    RuntimeNoticeRecord,
+    GoalChanged,
+    TaskChanged,
+    JobUpdatedEvent,
+    JobListResponse,
+    ThreadSummary,
 }
 
 CLIENT_SIDE = {
@@ -106,6 +115,8 @@ CLIENT_SIDE = {
 
 def carried_models(cls: type) -> set[type]:
     """Protocol models this event holds, however it names the field."""
+    if issubclass(cls, BaseModel):
+        return {cls}
     found: set[type] = set()
     for hint in get_type_hints(cls).values():
         for member in get_args(hint) or (hint,):

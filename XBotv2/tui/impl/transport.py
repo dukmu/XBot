@@ -37,26 +37,26 @@ from XBotv2.interactions.api.protocol import InteractionResponse
 from XBotv2.jobs.api.protocol import JobListResponse
 from XBotv2.llm.api.protocol import EffortSelectionResponse, ProviderSelectionResponse
 from XBotv2.llm.api.contracts import ProviderCatalog
-from XBotv2.protocol.api.models import ServerEvent
-from XBotv2.protocol.api.models import HelloResponse
+from XBotv2.protocol.api.models import ServerEvent, HelloResponse
 from XBotv2.agentloop.api.models import AttachmentInput, MediaInput
 from XBotv2.session.api.contracts import SessionMode, SessionSummary, ThreadSummary
-from XBotv2.session.api.protocol import OpenSessionResponse, SessionListResponse, ThreadListResponse
-from XBotv2.session.api.protocol import InterruptResponse
+from XBotv2.session.api.protocol import (
+    OpenSessionResponse,
+    SessionListResponse,
+    ThreadListResponse,
+    InterruptResponse,
+)
 from XBotv2.session.api.records import ConversationRecord, DisplayRecord, DisplayBodyPage
 from XBotv2.tui.impl.events import (
     ConnectionChanged,
     DisplayHistoryLoaded,
-    ErrorFrame,
     InterruptAsked,
     InterruptSettled,
-    SnapshotAdopted,
     StreamGapDetected,
     UiEvent,
     UserInputFailed,
     UserInputSubmitted,
     UserInputAccepted,
-    ThreadRead,
 )
 from XBotv2.tui.impl.protocol import FrameRejected, FrameTranslator, replay_pending_interactions
 from XBotv2.tui.impl.status import Connection
@@ -320,7 +320,7 @@ class TransportSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._emit(ErrorFrame(payload=LoopError(code="connect_failed", message=str(exc))))
+            self._emit(LoopError(code="connect_failed", message=str(exc)))
             self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
             raise
         # The descriptor carries no turn answer, so the thread read is what
@@ -344,7 +344,7 @@ class TransportSession:
         key = opened.data.key
         page = await self._backend.list_display_messages(key.session_id, key.thread_id, limit=self._config.history_window)
         self._attached_to(opened)
-        self._emit(SnapshotAdopted(opened))
+        self._emit(opened)
         self._emit(DisplayHistoryLoaded(page))
         for event in replay_pending_interactions(opened.data.pending_interactions):
             self._emit(event)
@@ -572,7 +572,7 @@ class TransportSession:
         except FrameRejected as exc:
             # A frame this client cannot apply is a visible failure, never a
             # skip: the cursor still advances, because the frame was consumed.
-            self._emit(ErrorFrame(payload=LoopError(code="rejected_frame", message=str(exc))))
+            self._emit(LoopError(code="rejected_frame", message=str(exc)))
             events = ()
         for event in events:
             self._emit(event)
@@ -650,7 +650,7 @@ class TransportSession:
         )
 
     def _fail(self, exc: BaseException) -> None:
-        self._emit(ErrorFrame(payload=LoopError(code="stream_failed", message=str(exc))))
+        self._emit(LoopError(code="stream_failed", message=str(exc)))
         self._emit(ConnectionChanged(Connection.DISCONNECTED, str(exc)))
 
     # --- watchdog -----------------------------------------------------
@@ -669,7 +669,7 @@ class TransportSession:
             self._note_watchdog_failure(str(exc))
             return False
         self._watchdog_failed = False
-        self._emit(ThreadRead(payload=summary))
+        self._emit(summary)
         return True
 
     async def watch(self, should_poll: Callable[[], bool]) -> None:
@@ -683,7 +683,7 @@ class TransportSession:
 
     def _note_watchdog_failure(self, message: str) -> None:
         if not self._watchdog_failed:
-            self._emit(ErrorFrame(payload=LoopError(code="watchdog_failed", message=message)))
+            self._emit(LoopError(code="watchdog_failed", message=message))
         self._watchdog_failed = True
 
     # --- writes -------------------------------------------------------
@@ -727,7 +727,7 @@ class TransportSession:
         except asyncio.CancelledError:
             raise
         except Exception as exc:
-            self._emit(ErrorFrame(payload=LoopError(code="interrupt_failed", message=str(exc))))
+            self._emit(LoopError(code="interrupt_failed", message=str(exc)))
             self._emit(InterruptSettled(cancelled=False))
             return
         self._emit(InterruptSettled(cancelled=result.cancelled))

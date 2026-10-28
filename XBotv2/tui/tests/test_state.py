@@ -17,19 +17,27 @@ Invariants under test:
 from __future__ import annotations
 
 import itertools
+
 import pytest
+
+from XBotv2.agentloop.api.models import HistoryMutation, PendingInputData
 from XBotv2.agentloop.api.outputs import (
+    LoopTurnStarted,
     AssistantReasoningDelta,
     AssistantTextDelta,
     LoopError,
     LoopTurnEnded,
-    LoopTurnStarted,
     StartedToolCall,
     ToolCallsStarted as LoopToolCallsStarted,
     TurnCancelled as CancelledOutcome,
     TurnFinished as FinishedOutcome,
 )
-from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionMetrics, CompactionStarted
+from XBotv2.compact.api.protocol import (
+    CompactionCompleted,
+    CompactionFailed,
+    CompactionMetrics,
+    CompactionStarted,
+)
 from XBotv2.core.api.domain import (
     ToolTiming,
     AgentExecutionLimits,
@@ -48,8 +56,10 @@ from XBotv2.core.api.domain import (
     TurnRequest,
     UsageSnapshot,
 )
+from XBotv2.core.api.history import HistoryPage
 from XBotv2.core.api.messages import CompactionSummaryMessage
 from XBotv2.core.api.parts import TextPart
+from XBotv2.core.api.timing import SessionStats
 from XBotv2.core.api.tools import (
     ToolCall,
     ToolCallRef,
@@ -59,50 +69,39 @@ from XBotv2.core.api.tools import (
     ToolOutput,
     ToolSucceeded,
 )
-from XBotv2.core.api.history import HistoryPage
-from XBotv2.core.api.timing import SessionStats
-from XBotv2.interactions.api.models import Answered, ClientNotice as ClientNoticeModel, UserInputOption, UserInputRecorded, UserInputRequest
-from XBotv2.jobs.api.contracts import JobView
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import ActiveGoal, CompleteGoal, GoalSnapshot, GoalStats
+from XBotv2.interactions.api.models import (
+    Answered,
+    ClientNotice as ClientNoticeModel,
+    UserInputOption,
+    UserInputRecorded,
+    UserInputRequest,
+)
+from XBotv2.jobs.api.contracts import JobView
+from XBotv2.jobs.api.protocol import JobUpdatedEvent
 from XBotv2.permissions.api.models import Allowed, PermissionRequest, ToolPermission
 from XBotv2.permissions.api.protocol import PermissionResponseRecorded
-from XBotv2.agentloop.api.models import HistoryMutation, PendingInputData
 from XBotv2.session.api.contracts import ThreadSummary
-from XBotv2.session.api.records import AssistantRecord, HumanInputRecord, RuntimeNoticeRecord, ToolRecord
-from XBotv2.usage.api.events import UsageUpdated
 from XBotv2.session.api.events import AgentConfiguredEvent, HistoryUpdatedEvent, QueueReplacedEvent
 from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.session.api.records import (
+    HumanInputRecord,
+    AssistantRecord,
+    RuntimeNoticeRecord,
+    ToolRecord,
+)
 from XBotv2.tui.impl.events import (
-    AssistantCompleted,
-    AssistantDelta,
-    ClientNoticeReceived,
-    CompactionChanged,
     ConnectionChanged,
-    ErrorFrame,
-    GoalChangedReceived,
-    HistoryReplaced,
     InteractionOpened,
     InteractionResolved,
     InterruptAsked,
     InterruptSettled,
-    JobUpdated,
-    JobsReplaced,
-    QueueReplaced,
-    RuntimeNoticePublished,
-    SessionConfigured,
-    SnapshotAdopted,
     StreamGapDetected,
-    ToolCallsStarted,
-    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
-    TurnStarted,
-    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
-    UserMessagePublished,
-    ThreadRead,
 )
 from XBotv2.tui.impl.state import (
     HistoryAvailable,
@@ -119,6 +118,7 @@ from XBotv2.tui.impl.timeline import (
     ToolEntry,
     UserEntry,
 )
+from XBotv2.usage.api.events import UsageUpdated
 
 
 # --- builders -------------------------------------------------------------
@@ -135,8 +135,8 @@ def connected() -> ConnectionChanged:
     return ConnectionChanged(Connection.CONNECTED)
 
 
-def turn_started(turn: int = 1, slots: dict | None = None) -> TurnStarted:
-    return TurnStarted(payload=LoopTurnStarted(turn=turn))
+def turn_started(turn: int = 1, slots: dict | None = None) -> LoopTurnStarted:
+    return LoopTurnStarted(turn=turn)
 
 
 def turn_finished(turn: int = 1) -> TurnFinished:
@@ -151,24 +151,24 @@ def turn_cancelled(turn: int = 1, reason: str = "client_interrupt") -> TurnCance
     ))
 
 
-def delta(*, content: str | None = None, reasoning: str | None = None) -> AssistantDelta:
+def delta(*, content: str | None = None, reasoning: str | None = None) -> AssistantTextDelta | AssistantReasoningDelta:
     if reasoning is not None:
-        return AssistantDelta(payload=AssistantReasoningDelta(text=reasoning))
-    return AssistantDelta(payload=AssistantTextDelta(text=content or ""))
+        return AssistantReasoningDelta(text=reasoning)
+    return AssistantTextDelta(text=content or "")
 
 
 def completed(
     message_id: str = "a1", content: str = "", *, reasoning: str = ""
-) -> AssistantCompleted:
-    return AssistantCompleted(payload=AssistantRecord(
+) -> AssistantRecord:
+    return AssistantRecord(
         id=message_id, content=content, reasoning=reasoning,
         timing=ModelTiming(total_ms=0),
         stop=CompletedStop(),
-    ))
+    )
 
 
-def tool_started(*calls: StartedToolCall) -> ToolCallsStarted:
-    return ToolCallsStarted(payload=LoopToolCallsStarted(calls=tuple(calls)))
+def tool_started(*calls: StartedToolCall) -> LoopToolCallsStarted:
+    return LoopToolCallsStarted(calls=tuple(calls))
 
 
 def tool_result(
@@ -178,7 +178,7 @@ def tool_result(
     outcome_kind: str = "succeeded",
     content: object = "",
     error: dict | None = None,
-) -> ToolRecordReceived:
+) -> ToolRecord:
     text = content if isinstance(content, str) else __import__("json").dumps(content, ensure_ascii=False)
     output = ToolOutput(parts=(TextPart(text=text),))
     if outcome_kind == "succeeded":
@@ -195,19 +195,19 @@ def tool_result(
         outcome = ToolDenied(reason=text or "denied")
     else:
         raise ValueError(f"unsupported tool outcome in test: {outcome_kind}")
-    return ToolRecordReceived(payload=ToolRecord(
+    return ToolRecord(
         id=call_id,
         call=ToolCallRef(id=call_id, name=name),
         outcome=outcome,
         timing=ToolTiming(duration_ms=0),
-    ))
+    )
 
 
-def error_frame(code: str = "engine_error", message: str = "boom") -> ErrorFrame:
-    return ErrorFrame(payload=LoopError(code=code, message=message))
+def error_frame(code: str = "engine_error", message: str = "boom") -> LoopError:
+    return LoopError(code=code, message=message)
 
 
-def usage(**counters) -> UsageSnapshotReceived:
+def usage(**counters) -> UsageUpdated:
     observed_context = counters.pop("observed_context", None)
     observation = None
     if observed_context is not None:
@@ -224,20 +224,20 @@ def usage(**counters) -> UsageSnapshotReceived:
             estimated_input_tokens=0,
             observed_context=ProviderMeasured(tokens=observed_context),
         )
-    return UsageSnapshotReceived(payload=UsageUpdated(
+    return UsageUpdated(
         snapshot=UsageSnapshot(
             total_counters=TokenCounters(**counters),
             latest_turn_observation=observation,
         ),
-    ))
+    )
 
 
-def user_message(message_id: str = "m1", content: str = "hi") -> UserMessagePublished:
-    return UserMessagePublished(payload=HumanInputRecord(id=message_id, content=content))
+def user_message(message_id: str = "m1", content: str = "hi") -> HumanInputRecord:
+    return HumanInputRecord(id=message_id, content=content)
 
 
-def queue(*items: PendingInputData) -> QueueReplaced:
-    return QueueReplaced(payload=QueueReplacedEvent(items=list(items)))
+def queue(*items: PendingInputData) -> QueueReplacedEvent:
+    return QueueReplacedEvent(items=list(items))
 
 
 def history(
@@ -246,18 +246,18 @@ def history(
     removed_turns: int = 0,
     turns: int = 0,
     older_cursor: str | None = None,
-) -> HistoryReplaced:
-    return HistoryReplaced(payload=HistoryUpdatedEvent(
+) -> HistoryUpdatedEvent:
+    return HistoryUpdatedEvent(
         operation=operation,
         mutation=HistoryMutation(
             removed_turns=removed_turns,
             history=HistoryPage(items=items, older_cursor=older_cursor),
             stats=SessionStats(turns=turns),
         ),
-    ))
+    )
 
 
-def configured(*, agent_name: str = "XBotv2", provider: str = "p", model: str = "m", model_mode: str = "", context_window: int = 4096) -> SessionConfigured:
+def configured(*, agent_name: str = "XBotv2", provider: str = "p", model: str = "m", model_mode: str = "", context_window: int = 4096) -> AgentConfiguredEvent:
     selection = ResolvedRuntimeSelection(
         agent_name=agent_name,
         prompt="",
@@ -276,27 +276,27 @@ def configured(*, agent_name: str = "XBotv2", provider: str = "p", model: str = 
             context_window=context_window,
         ),
     )
-    return SessionConfigured(payload=AgentConfiguredEvent(runtime_selection=selection))
+    return AgentConfiguredEvent(runtime_selection=selection)
 
 
 def notice(text: str = "heads up", level: str = "info") -> ClientNotice:
-    return ClientNoticeReceived(payload=ClientNoticeModel(message=text, level=level, source="test"))
+    return ClientNoticeModel(message=text, level=level, source="test")
 
 
-def compaction_started() -> CompactionChanged:
-    return CompactionChanged(payload=CompactionStarted(
+def compaction_started() -> CompactionStarted:
+    return CompactionStarted(
         reason="manual", messages_before=1, history_chars_before=1, context_tokens_before=1
-    ))
+    )
 
 
-def compaction_completed(summary: str = "") -> CompactionChanged:
-    return CompactionChanged(payload=CompactionCompleted(
+def compaction_completed(summary: str = "") -> CompactionCompleted:
+    return CompactionCompleted(
         reason="manual", summary=CompactionSummaryMessage(id="summary", summary=summary), metrics=_metrics()
-    ))
+    )
 
 
-def compaction_failed(message: str = "no budget") -> CompactionChanged:
-    return CompactionChanged(payload=CompactionFailed(reason="manual", message=message))
+def compaction_failed(message: str = "no budget") -> CompactionFailed:
+    return CompactionFailed(reason="manual", message=message)
 
 
 def snapshot(**overrides) -> OpenSessionResponse:
@@ -501,14 +501,14 @@ def test_a_new_turn_clears_the_previous_error() -> None:
 def test_snapshot_does_not_change_what_the_client_knows_about_the_turn() -> None:
     """The descriptor the protocol returns carries no turn answer, so adopting
     one must never settle a turn the client believes is running."""
-    state = session(connected(), turn_started(), SnapshotAdopted(snapshot()))
+    state = session(connected(), turn_started(), snapshot())
     assert state.facts.turn_open is True
     assert state.facts.server_turn is ServerTurn.RUNNING
     assert derive(state.facts) is Status.RUNNING
 
 
 def test_snapshot_does_not_invent_a_running_turn() -> None:
-    state = session(connected(), SnapshotAdopted(snapshot()))
+    state = session(connected(), snapshot())
     assert state.facts.turn_open is False
     assert state.facts.server_turn is ServerTurn.UNKNOWN
     assert derive(state.facts) is Status.READY
@@ -518,7 +518,7 @@ def test_watchdog_idle_settles_a_turn_whose_terminal_frame_was_lost() -> None:
     state = session(
         connected(),
         turn_started(),
-        ThreadRead(payload=thread(turn_status="idle")),
+        thread(turn_status="idle"),
     )
     assert state.facts.turn_open is False
     assert derive(state.facts) is Status.READY
@@ -527,8 +527,8 @@ def test_watchdog_idle_settles_a_turn_whose_terminal_frame_was_lost() -> None:
 def test_watchdog_running_restores_a_turn_the_client_never_saw_start() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(snapshot()),
-        ThreadRead(payload=thread(turn_status="running")),
+        snapshot(),
+        thread(turn_status="running"),
     )
     assert state.facts.server_turn is ServerTurn.RUNNING
     assert derive(state.facts) is Status.RUNNING
@@ -537,8 +537,8 @@ def test_watchdog_running_restores_a_turn_the_client_never_saw_start() -> None:
 def test_watchdog_readings_are_honoured_in_both_directions() -> None:
     state = session(
         connected(),
-        ThreadRead(payload=thread(turn_status="running")),
-        ThreadRead(payload=thread(turn_status="idle")),
+        thread(turn_status="running"),
+        thread(turn_status="idle"),
     )
     assert derive(state.facts) is Status.READY
 
@@ -546,8 +546,8 @@ def test_watchdog_readings_are_honoured_in_both_directions() -> None:
 def test_thread_read_restores_the_persisted_turn_number() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(snapshot()),
-        ThreadRead(payload=thread(session_stats={"turns": 3})),
+        snapshot(),
+        thread(session_stats={"turns": 3}),
     )
     assert state.turn == 3
 
@@ -558,8 +558,7 @@ def test_thread_read_restores_the_persisted_turn_number() -> None:
 def test_snapshot_seeds_the_timeline_from_history() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(
-            snapshot(
+        snapshot(
                 history=[
                     history_user("hello"),
                     history_assistant(
@@ -570,8 +569,7 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
                     ),
                     history_tool("t1", "ok", id="tool-1"),
                 ]
-            )
-        ),
+            ),
     )
     assert kinds(state) == [EntryKind.USER, EntryKind.ASSISTANT, EntryKind.TOOL]
     assert contents(state) == ["hello", "hi", "ok"]
@@ -584,11 +582,9 @@ def test_snapshot_seeds_the_timeline_from_history() -> None:
 def test_runtime_input_history_is_an_inspectable_context_notice() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(
-            snapshot(history=[RuntimeNoticeRecord(
+        snapshot(history=[RuntimeNoticeRecord(
                 id="notice-1", source="goal", event="round", content="reminder",
-            )])
-        ),
+            )]),
     )
     assert kinds(state) == [EntryKind.NOTICE]
     notice = state.timeline.get("notice-1")
@@ -598,7 +594,7 @@ def test_runtime_input_history_is_an_inspectable_context_notice() -> None:
 
 
 def test_goal_notice_shows_public_state_executions_and_usage() -> None:
-    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+    state = session(GoalChanged(snapshot=GoalSnapshot(
         state=ActiveGoal(
             goal_id="goal-1",
             revision=2,
@@ -612,7 +608,7 @@ def test_goal_notice_shows_public_state_executions_and_usage() -> None:
             ),
         ),
         activation="armed",
-    ))))
+    )))
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
@@ -620,7 +616,7 @@ def test_goal_notice_shows_public_state_executions_and_usage() -> None:
 
 
 def test_disarmed_active_goal_reads_as_paused() -> None:
-    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+    state = session(GoalChanged(snapshot=GoalSnapshot(
         state=ActiveGoal(
             goal_id="goal-1",
             revision=2,
@@ -628,7 +624,7 @@ def test_disarmed_active_goal_reads_as_paused() -> None:
             started_at=1.0,
         ),
         activation="disarmed",
-    ))))
+    )))
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
@@ -636,7 +632,7 @@ def test_disarmed_active_goal_reads_as_paused() -> None:
 
 
 def test_terminal_goal_notice_names_the_state_and_objective() -> None:
-    state = session(GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+    state = session(GoalChanged(snapshot=GoalSnapshot(
         state=CompleteGoal(
             goal_id="goal-1",
             revision=3,
@@ -646,7 +642,7 @@ def test_terminal_goal_notice_names_the_state_and_objective() -> None:
             reason="Release published",
             stats=GoalStats(rounds_started=3),
         ),
-    ))))
+    )))
 
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
@@ -656,28 +652,28 @@ def test_terminal_goal_notice_names_the_state_and_objective() -> None:
 def test_live_runtime_input_matches_history_without_creating_a_user_turn() -> None:
     state = session(
         connected(),
-        RuntimeNoticePublished(payload=RuntimeNoticeRecord(
+        RuntimeNoticeRecord(
             id="notice-1",
             source="subagent_1",
             event="completed",
             content='<runtime_event><payload encoding="json">{}</payload></runtime_event>',
-        )),
+        ),
     )
 
     assert kinds(state) == [EntryKind.NOTICE]
     live = state.timeline.get("notice-1")
-    replayed = session(SnapshotAdopted(snapshot(history=[RuntimeNoticeRecord(
+    replayed = session(snapshot(history=[RuntimeNoticeRecord(
         id="notice-1", source="subagent_1", event="completed",
         content='<runtime_event><payload encoding="json">{}</payload></runtime_event>',
-    )])))
+    )]))
     assert live == replayed.timeline.get("notice-1")
 
 
 def test_snapshot_replaces_a_previous_timeline_instead_of_appending() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(snapshot(history=[history_user("old")])),
-        SnapshotAdopted(snapshot(history=[history_user("new")])),
+        snapshot(history=[history_user("old")]),
+        snapshot(history=[history_user("new")]),
     )
     assert contents(state) == ["new"]
 
@@ -691,15 +687,13 @@ def test_snapshot_replaces_a_previous_timeline_instead_of_appending() -> None:
 def test_replayed_items_are_stored_under_their_wire_identity() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(
-            snapshot(
+        snapshot(
                 history=[
                     history_user("hello", id="input-1"),
                     history_assistant("hi", id="assistant-1-0-abcd"),
                     history_tool("call-9", "ok", id="tool-call-9"),
                 ]
-            )
-        ),
+            ),
     )
     assert state.timeline.ids() == (
         "input-1", "assistant-1-0-abcd", "tool-call-9",
@@ -711,7 +705,7 @@ def test_two_records_of_one_node_are_one_entry() -> None:
     already holds updates that entry instead of adding a second one."""
     state = session(
         connected(),
-        SnapshotAdopted(snapshot(history=[history_assistant("hi", id="7")])),
+        snapshot(history=[history_assistant("hi", id="7")]),
         history(history_assistant("hi, corrected", id="7")),
     )
 
@@ -744,8 +738,7 @@ def test_a_replayed_history_replaces_what_the_frames_built() -> None:
 def test_snapshot_seeds_usage_identity_and_queue() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(
-            snapshot(
+        snapshot(
                 agent_name="Other",
                 provider="deepseek",
                 model="v4",
@@ -758,8 +751,7 @@ def test_snapshot_seeds_usage_identity_and_queue() -> None:
                 pending_inputs=[
                     PendingInputData(message_id="q1", content="queued", target="next-turn")
                 ],
-            )
-        ),
+            ),
     )
     assert (state.agent_name, state.provider, state.model, state.model_mode) == (
         "Other",
@@ -1251,11 +1243,11 @@ def test_agent_configured_updates_identity() -> None:
 
 
 def test_status_slots_are_replaced_not_merged() -> None:
-    state = session(connected(), ThreadRead(payload=thread(status_slots={"goal": "ship"})))
+    state = session(connected(), thread(status_slots={"goal": "ship"}))
     assert state.status_slots == {"goal": "ship"}
-    reduce(state, ThreadRead(payload=thread(status_slots={"effort": "high"})))
+    reduce(state, thread(status_slots={"effort": "high"}))
     assert state.status_slots == {"effort": "high"}
-    reduce(state, ThreadRead(payload=thread(status_slots={})))
+    reduce(state, thread(status_slots={}))
     assert state.status_slots == {"effort": "high"}
 
 
@@ -1263,7 +1255,7 @@ def test_status_slots_are_replaced_not_merged() -> None:
 
 
 def test_running_jobs_are_visible_while_the_thread_is_idle() -> None:
-    state = session(connected(), JobUpdated(job("j1", "running", "agent")))
+    state = session(connected(), JobUpdatedEvent(view=job("j1", "running", "agent")))
     assert state.facts.jobs_running == 1
     assert derive(state.facts) is Status.READY, "the thread itself is idle"
 
@@ -1271,8 +1263,8 @@ def test_running_jobs_are_visible_while_the_thread_is_idle() -> None:
 def test_job_updates_replace_by_id_instead_of_appending() -> None:
     state = session(
         connected(),
-        JobUpdated(job("j1", "running")),
-        JobUpdated(job("j1", "succeeded")),
+        JobUpdatedEvent(view=job("j1", "running")),
+        JobUpdatedEvent(view=job("j1", "succeeded")),
     )
     assert list(state.jobs) == ["j1"]
     assert state.facts.jobs_running == 0
@@ -1281,8 +1273,8 @@ def test_job_updates_replace_by_id_instead_of_appending() -> None:
 def test_terminal_jobs_do_not_count_as_running() -> None:
     state = session(
         connected(),
-        JobUpdated(job("j1", "succeeded")),
-        JobUpdated(job("j2", "cancelled_before_start", "shell")),
+        JobUpdatedEvent(view=job("j1", "succeeded")),
+        JobUpdatedEvent(view=job("j2", "cancelled_before_start", "shell")),
     )
     assert state.facts.jobs_running == 0
 
@@ -1292,12 +1284,12 @@ def test_authoritative_job_snapshot_replaces_stale_thread_jobs() -> None:
 
     state = session(
         connected(),
-        JobUpdated(job("old", "running")),
-        JobsReplaced(payload=JobListResponse(
+        JobUpdatedEvent(view=job("old", "running")),
+        JobListResponse(
             session_id="s1",
             thread_id="main",
             jobs=[job("current", "succeeded")],
-        )),
+        ),
     )
 
     assert list(state.jobs) == ["current"]
@@ -1373,8 +1365,8 @@ def test_clearing_the_transcript_forgets_the_local_window() -> None:
 def test_a_subagent_thread_read_makes_the_view_read_only() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(snapshot(thread_id="child")),
-        ThreadRead(payload=thread(thread_id="child", kind="subagent", turn_status="running")),
+        snapshot(thread_id="child"),
+        thread(thread_id="child", kind="subagent", turn_status="running"),
     )
     assert state.thread_kind == "subagent"
     assert state.read_only is True, "a subagent thread is not user-driven"
@@ -1384,8 +1376,8 @@ def test_a_subagent_thread_read_makes_the_view_read_only() -> None:
 def test_the_main_thread_read_stays_writable() -> None:
     state = session(
         connected(),
-        SnapshotAdopted(snapshot()),
-        ThreadRead(payload=thread(kind="main", turn_status="idle")),
+        snapshot(),
+        thread(kind="main", turn_status="idle"),
     )
     assert state.thread_kind == "main"
     assert state.read_only is False
@@ -1420,7 +1412,7 @@ def test_a_thread_read_that_says_idle_cancels_what_is_still_open() -> None:
         connected(),
         turn_started(),
         tool_started(call("c1")),
-        ThreadRead(payload=thread(turn_status="idle")),
+        thread(turn_status="idle"),
     )
     assert state.facts.turn_open is False
     assert derive(state.facts) is Status.READY
@@ -1432,7 +1424,7 @@ def test_a_thread_read_that_says_running_leaves_open_work_alone() -> None:
         connected(),
         turn_started(),
         tool_started(call("c1")),
-        ThreadRead(payload=thread(turn_status="running")),
+        thread(turn_status="running"),
     )
     assert state.facts.turn_open is True
     assert state.timeline.get("c1").status == "running"
@@ -1442,17 +1434,17 @@ def test_a_thread_read_that_says_running_leaves_open_work_alone() -> None:
 
 
 def test_attach_records_that_older_history_exists() -> None:
-    state = session(connected(), SnapshotAdopted(snapshot(history_cursor="c1")))
+    state = session(connected(), snapshot(history_cursor="c1"))
     assert state.older == HistoryAvailable(cursor="c1")
 
 
 def test_attach_without_a_cursor_means_the_beginning_is_held() -> None:
-    state = session(connected(), SnapshotAdopted(snapshot()))
+    state = session(connected(), snapshot())
     assert state.older == HistoryComplete()
 
 
 def test_history_rewrite_replaces_the_cursor_and_window() -> None:
-    state = session(connected(), SnapshotAdopted(snapshot(history_cursor="c1")))
+    state = session(connected(), snapshot(history_cursor="c1"))
     reduce(state, history(
         history_user("kept", id="u2"), operation="undo", removed_turns=1,
         turns=1, older_cursor="c9",
@@ -1464,11 +1456,10 @@ def test_history_rewrite_replaces_the_cursor_and_window() -> None:
 def test_task_notice_counts_completed_history_with_active_tasks() -> None:
     from XBotv2.todolist.api.events import TaskChanged
     from XBotv2.todolist.api.models import Task, TaskList
-    from XBotv2.tui.impl.events import TaskChangedReceived
 
-    state = session(TaskChangedReceived(payload=TaskChanged(snapshot=TaskList(
+    state = session(TaskChanged(snapshot=TaskList(
         tasks=(Task(id="3", subject="Remaining"),), completed_count=2,
-    ))))
+    )))
     notice = state.timeline.get("tasks:active")
     assert isinstance(notice, NoticeEntry)
     assert notice.text == "Tasks 2/3 completed"
@@ -1479,21 +1470,20 @@ def test_large_live_completion_and_tool_arguments_leave_only_previews() -> None:
     from XBotv2.core.api.domain import CompletedStop, ModelTiming
     from XBotv2.core.api.tools import ToolCall
     from XBotv2.session.api.records import AssistantRecord
-    from XBotv2.tui.impl.events import AssistantCompleted, AssistantDelta, ToolCallsStarted
     from XBotv2.tui.impl.state import SessionState, reduce
 
     large = "text" * (512 * 1024)
     state = SessionState()
-    reduce(state, AssistantDelta(payload=AssistantTextDelta(text=large)))
+    reduce(state, AssistantTextDelta(text=large))
     streamed = state.timeline.get(state.stream_entry_id)
     assert len(streamed.content) == 512 and streamed.stream_truncated
     from XBotv2.tui.impl.view.entries import entry_body
     assert "Live preview" in entry_body(streamed)
-    reduce(state, AssistantCompleted(payload=AssistantRecord(id="answer", content=large, reasoning=large, timing=ModelTiming(total_ms=0), stop=CompletedStop())))
+    reduce(state, AssistantRecord(id="answer", content=large, reasoning=large, timing=ModelTiming(total_ms=0), stop=CompletedStop()))
     answer = state.timeline.get("answer")
     assert len(answer.content) == len(answer.reasoning) == 512
     assert answer.body_ref.length == answer.reasoning_ref.length == len(large)
-    reduce(state, ToolCallsStarted(payload=StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="edit", args={"value": large}), category="tool"),))))
+    reduce(state, StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="edit", args={"value": large}), category="tool"),)))
     tool = state.timeline.get("call")
     assert tool.args == {}
     assert len(tool.args_ref.preview) == 512 and tool.args_ref.length > len(large)
@@ -1505,14 +1495,14 @@ def test_replayed_tool_completion_merges_with_display_snapshot() -> None:
     from XBotv2.core.api.tools import ToolCall, ToolCallRef, ToolSucceeded, text_output
     from XBotv2.core.api.domain import ToolTiming
     from XBotv2.session.api.records import DisplayBody, DisplayRecord, ToolRecord
-    from XBotv2.tui.impl.events import DisplayHistoryLoaded, ToolCallsStarted, ToolRecordReceived
+    from XBotv2.tui.impl.events import DisplayHistoryLoaded
     from XBotv2.tui.impl.state import SessionState, reduce
 
     state = SessionState()
     display = DisplayRecord(kind="tool", id="tool-result", tool_name="read", call_id="call", outcome="succeeded", fields={"args": DisplayBody(preview="{}", length=2), "result": DisplayBody(preview="ok", length=2)})
     reduce(state, DisplayHistoryLoaded(HistoryPage((display,), None)))
-    reduce(state, ToolCallsStarted(StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="read"), category="tool"),))))
-    reduce(state, ToolRecordReceived(ToolRecord(id="tool-result", call=ToolCallRef(id="call", name="read"), outcome=ToolSucceeded(output=text_output("ok")), timing=ToolTiming(duration_ms=1))))
+    reduce(state, StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="read"), category="tool"),)))
+    reduce(state, ToolRecord(id="tool-result", call=ToolCallRef(id="call", name="read"), outcome=ToolSucceeded(output=text_output("ok")), timing=ToolTiming(duration_ms=1)))
     assert state.timeline.ids() == ("tool-result",)
 
 
@@ -1521,14 +1511,14 @@ def test_replayed_assistant_completion_merges_with_display_snapshot() -> None:
     from XBotv2.core.api.domain import CompletedStop, ModelTiming
     from XBotv2.core.api.history import HistoryPage
     from XBotv2.session.api.records import AssistantRecord, DisplayBody, DisplayRecord
-    from XBotv2.tui.impl.events import AssistantCompleted, AssistantDelta, DisplayHistoryLoaded
+    from XBotv2.tui.impl.events import DisplayHistoryLoaded
     from XBotv2.tui.impl.state import SessionState, reduce
 
     state = SessionState()
     item = DisplayRecord(kind="assistant", id="answer", fields={"content": DisplayBody(preview="reply", length=5), "reasoning": DisplayBody(preview="", length=0)})
     reduce(state, DisplayHistoryLoaded(HistoryPage((item,), None)))
-    reduce(state, AssistantDelta(AssistantTextDelta(text="reply")))
-    reduce(state, AssistantCompleted(AssistantRecord(id="answer", content="reply", timing=ModelTiming(total_ms=0), stop=CompletedStop())))
+    reduce(state, AssistantTextDelta(text="reply"))
+    reduce(state, AssistantRecord(id="answer", content="reply", timing=ModelTiming(total_ms=0), stop=CompletedStop()))
     assert state.timeline.ids() == ("answer",)
     assert state.timeline.get("answer").content == "reply"
 
@@ -1537,7 +1527,7 @@ def test_submission_confirmation_and_queue_are_scoped_to_input_id() -> None:
     from XBotv2.agentloop.api.models import PendingInputData
     from XBotv2.core.api.domain import InboxTarget
     from XBotv2.session.api.events import QueueReplacedEvent
-    from XBotv2.tui.impl.events import QueueReplaced, UserInputAccepted, UserInputFailed, UserInputSubmitted
+    from XBotv2.tui.impl.events import UserInputAccepted, UserInputFailed, UserInputSubmitted
     from XBotv2.tui.impl.state import SessionState, reduce
 
     state = SessionState()
@@ -1546,7 +1536,7 @@ def test_submission_confirmation_and_queue_are_scoped_to_input_id() -> None:
     reduce(state, UserInputAccepted("one"))
     assert state.submission_in_flight and state.pending_submissions == {"two"}
     assert state.timeline.get("one") is None
-    reduce(state, QueueReplaced(QueueReplacedEvent(items=(PendingInputData(message_id="one", content="first", target=InboxTarget.NEXT_TURN),))))
+    reduce(state, QueueReplacedEvent(items=(PendingInputData(message_id="one", content="first", target=InboxTarget.NEXT_TURN),)))
     assert [item.message_id for item in state.queue] == ["one"]
     assert state.pending_submissions == {"two"}
     reduce(state, UserInputFailed("two", "offline"))

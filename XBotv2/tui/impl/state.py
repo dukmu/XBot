@@ -5,8 +5,8 @@ Textual, and is the only place any status fact is assigned -- the old client wro
 its status string from nineteen call sites, which is how a running turn ended up
 displayed as Ready.
 
-Events carry their protocol payloads, so this module never restates a wire shape:
-it reads ``event.payload`` and applies it.
+Validated domain events reach the reducer directly; client-owned events carry
+only the additional state needed by the UI.
 
 Invariants this module is responsible for:
 
@@ -27,14 +27,31 @@ from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Mapping
 from XBotv2.compact.api.protocol import CompactionCompleted, CompactionFailed, CompactionStarted
-from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, TurnCancelled as CancelledOutcome
+from XBotv2.agentloop.api.outputs import (
+    AssistantReasoningDelta,
+    AssistantTextDelta,
+    LoopError,
+    LoopTurnStarted,
+    ToolCallsStarted,
+    TurnCancelled as CancelledOutcome,
+)
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.todolist.api.events import TaskChanged
+from XBotv2.jobs.api.protocol import JobCompletedEvent, JobListResponse, JobUpdatedEvent
+from XBotv2.usage.api.events import UsageUpdated
+from XBotv2.session.api.events import (
+    AgentConfiguredEvent,
+    HistoryUpdatedEvent,
+    InputConsumedEvent,
+    QueueReplacedEvent,
+)
+from XBotv2.interactions.api.models import ClientNotice, UserInputRecorded, UserInputRequest
 from XBotv2.core.api.domain import (
     Cursor,
     ReasoningGenerationMode,
     ResolvedRuntimeSelection,
     UsageSnapshot,
 )
-from XBotv2.interactions.api.models import UserInputRecorded, UserInputRequest
 from XBotv2.goal.api.models import NoGoal
 from XBotv2.jobs.api.contracts import JobView
 from XBotv2.permissions.api.models import NamedPermission, PermissionRequest, ToolPermission
@@ -51,46 +68,25 @@ from XBotv2.session.api.records import (
 )
 from XBotv2.core.api.parts import MediaPart, TextPart
 from XBotv2.core.api.tools import ToolCancelled, ToolDenied, ToolFailed, ToolSucceeded
+from XBotv2.session.api.contracts import ThreadSummary
 from XBotv2.session.api.protocol import OpenSessionResponse
 from XBotv2.tui.impl.events import (
-    AssistantCompleted,
     DisplayHistoryLoaded,
-    AssistantDelta,
-    ClientNoticeReceived,
-    CompactionChanged,
     ConnectionChanged,
-    ErrorFrame,
-    HistoryReplaced,
     InteractionOpened,
     InteractionRequest,
     InteractionResolved,
     InterruptAsked,
     InterruptSettled,
-    JobCompletionNotice,
-    JobsReplaced,
-    GoalChangedReceived,
-    TaskChangedReceived,
-    JobUpdated,
     LocalNotice,
     TranscriptCleared,
-    QueueReplaced,
-    RuntimeNoticePublished,
-    SessionConfigured,
-    SnapshotAdopted,
     StreamGapDetected,
-    ToolCallsStarted,
-    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
-    TurnStarted,
     UiEvent,
-    UsageSnapshotReceived,
     UserInputFailed,
     UserInputSubmitted,
     UserInputAccepted,
-    InputsConsumed,
-    UserMessagePublished,
-    ThreadRead,
 )
 from XBotv2.tui.impl.status import Interaction, Interrupt, ServerTurn, StatusFacts
 from XBotv2.tui.impl.timeline import (
@@ -238,27 +234,27 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     if isinstance(event, ConnectionChanged):
         state.facts = replace(state.facts, connection=event.connection)
 
-    elif isinstance(event, SnapshotAdopted):
-        _adopt_snapshot(state, event.snapshot)
+    elif isinstance(event, OpenSessionResponse):
+        _adopt_snapshot(state, event)
 
     elif isinstance(event, DisplayHistoryLoaded):
         _rebuild_display_items(state, event.payload.items)
         state.older = _older_from_cursor(event.payload.older_cursor)
 
-    elif isinstance(event, SessionConfigured):
-        state.runtime_selection = event.payload.runtime_selection
+    elif isinstance(event, AgentConfiguredEvent):
+        state.runtime_selection = event.runtime_selection
 
-    elif isinstance(event, ThreadRead):
-        turn_status = ServerTurn(event.payload.turn_status)
-        state.thread = event.payload
-        state.title = event.payload.title
-        if event.payload.status_slots:
-            state.status_slots = dict(event.payload.status_slots)
+    elif isinstance(event, ThreadSummary):
+        turn_status = ServerTurn(event.turn_status)
+        state.thread = event
+        state.title = event.title
+        if event.status_slots:
+            state.status_slots = dict(event.status_slots)
         # A fresh client has not seen the historical turn frames.  The thread
         # read already carries the count derived from the canonical persisted
         # conversation, so it is also the authority for the displayed turn
         # number after attach, resume, undo, or compaction.
-        state.turn = event.payload.session_stats.turns
+        state.turn = event.session_stats.turns
         state.facts = replace(
             state.facts,
             server_turn=turn_status,
@@ -271,26 +267,26 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             _close_stream(state)
             _finalize_open_tools(state, "cancelled", clock)
 
-    elif isinstance(event, UsageSnapshotReceived):
-        state.usage = event.payload.snapshot
+    elif isinstance(event, UsageUpdated):
+        state.usage = event.snapshot
 
-    elif isinstance(event, CompactionChanged):
+    elif isinstance(event, (CompactionStarted, CompactionCompleted, CompactionFailed)):
         _apply_compaction(state, event)
 
-    elif isinstance(event, QueueReplaced):
-        state.queue = tuple(event.payload.items)
+    elif isinstance(event, QueueReplacedEvent):
+        state.queue = tuple(event.items)
         for item in state.queue:
             state.pending_submissions.discard(item.message_id)
             entry = state.timeline.get(item.message_id)
             if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
                 state.timeline.remove(item.message_id)
 
-    elif isinstance(event, ClientNoticeReceived):
+    elif isinstance(event, ClientNotice):
         _append(state, NoticeEntry(
             id=state.next_local_id("client_message"),
             notice_kind="client_message",
-            text=event.payload.message,
-            level=event.payload.level,
+            text=event.message,
+            level=event.level,
         ))
 
     elif isinstance(event, TranscriptCleared):
@@ -305,8 +301,8 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             level=event.level,
         ))
 
-    elif isinstance(event, JobCompletionNotice):
-        payload = event.payload
+    elif isinstance(event, JobCompletedEvent):
+        payload = event
         text = f"{payload.view.id}: {payload.view.state}"
         if payload.view.label:
             text = f"{text} — {payload.view.label}"
@@ -316,8 +312,8 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             text=text,
         ))
 
-    elif isinstance(event, GoalChangedReceived):
-        snapshot = event.payload.snapshot
+    elif isinstance(event, GoalChanged):
+        snapshot = event.snapshot
         state_value = snapshot.state
         if isinstance(state_value, NoGoal):
             text = "Goal cleared"
@@ -340,9 +336,9 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             detail=detail,
         ))
 
-    elif isinstance(event, TaskChangedReceived):
-        tasks = event.payload.snapshot.tasks
-        completed = event.payload.snapshot.completed_count
+    elif isinstance(event, TaskChanged):
+        tasks = event.snapshot.tasks
+        completed = event.snapshot.completed_count
         _append(state, NoticeEntry(
             id="tasks:active",
             notice_kind="tasks",
@@ -381,8 +377,8 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             ),
         ))
 
-    elif isinstance(event, TurnStarted):
-        state.turn = event.payload.turn
+    elif isinstance(event, LoopTurnStarted):
+        state.turn = event.turn
         state.turn_started_at = clock
         state.facts = replace(
             state.facts,
@@ -454,17 +450,17 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
                 turn_open=False,
             )
 
-    elif isinstance(event, AssistantDelta):
-        if isinstance(event.payload, AssistantReasoningDelta):
-            _append_delta(state, "", event.payload.text)
+    elif isinstance(event, (AssistantTextDelta, AssistantReasoningDelta)):
+        if isinstance(event, AssistantReasoningDelta):
+            _append_delta(state, "", event.text)
         else:
-            _append_delta(state, event.payload.text, "")
+            _append_delta(state, event.text, "")
 
-    elif isinstance(event, AssistantCompleted):
-        _complete_assistant(state, event.payload)
+    elif isinstance(event, AssistantRecord):
+        _complete_assistant(state, event)
 
-    elif isinstance(event, HistoryReplaced):
-        mutation = event.payload.mutation
+    elif isinstance(event, HistoryUpdatedEvent):
+        mutation = event.mutation
         _rebuild_from_items(state, mutation.history.items)
         state.older = _older_from_cursor(mutation.history.older_cursor)
         state.turn = mutation.stats.turns
@@ -472,15 +468,15 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, ToolCallsStarted):
         _start_tool_calls(
             state,
-            tuple(item.call for item in event.payload.calls),
+            tuple(item.call for item in event.calls),
             clock,
         )
 
-    elif isinstance(event, ToolRecordReceived):
-        _finish_tool_call(state, event.payload, clock)
+    elif isinstance(event, ToolRecord):
+        _finish_tool_call(state, event, clock)
 
-    elif isinstance(event, ErrorFrame):
-        message = event.payload.message or event.payload.code
+    elif isinstance(event, LoopError):
+        message = event.message or event.code
         state.facts = replace(state.facts, last_error=message)
         _finalize_open_tools(state, "error", clock)
         _append(state, ErrorEntry(
@@ -507,8 +503,8 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
         if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
             state.timeline.remove(event.input_id)
 
-    elif isinstance(event, InputsConsumed):
-        for input_id in event.payload.message_ids:
+    elif isinstance(event, InputConsumedEvent):
+        for input_id in event.message_ids:
             entry = state.timeline.get(input_id)
             if isinstance(entry, UserEntry) and entry.delivery is Delivery.PENDING:
                 state.timeline.remove(input_id)
@@ -527,14 +523,14 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             message=f"Message not delivered: {event.error}",
         ))
 
-    elif isinstance(event, UserMessagePublished):
+    elif isinstance(event, HumanInputRecord):
         _publish_user_message(state, event)
 
-    elif isinstance(event, RuntimeNoticePublished):
-        _append(state, _context_notice(event.payload))
+    elif isinstance(event, RuntimeNoticeRecord):
+        _append(state, _context_notice(event))
 
-    elif isinstance(event, JobUpdated):
-        state.jobs[event.payload.id] = event.payload
+    elif isinstance(event, JobUpdatedEvent):
+        state.jobs[event.view.id] = event.view
         state.facts = replace(
             state.facts,
             jobs_running=sum(
@@ -544,13 +540,13 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
             ),
         )
 
-    elif isinstance(event, JobsReplaced):
-        state.jobs = {job.id: job for job in event.payload.jobs}
+    elif isinstance(event, JobListResponse):
+        state.jobs = {job.id: job for job in event.jobs}
         state.facts = replace(
             state.facts,
             jobs_running=sum(
                 1
-                for job in event.payload.jobs
+                for job in event.jobs
                 if job.state in _RUNNING_JOB_STATUSES
             ),
         )
@@ -564,8 +560,7 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
 # --- usage and compaction -------------------------------------------------
 
 
-def _apply_compaction(state: SessionState, event: CompactionChanged) -> None:
-    payload = event.payload
+def _apply_compaction(state: SessionState, payload: CompactionStarted | CompactionCompleted | CompactionFailed) -> None:
     if isinstance(payload, CompactionStarted):
         state.facts = replace(state.facts, compaction=True)
         return
@@ -737,26 +732,26 @@ def _tool_output_text(parts: tuple[object, ...]) -> str:
     return "".join(part.text for part in parts if isinstance(part, TextPart))
 
 
-def _publish_user_message(state: SessionState, event: UserMessagePublished) -> None:
+def _publish_user_message(state: SessionState, event: HumanInputRecord) -> None:
     # I6: the streaming suffix is committed before the interjection lands, so a
     # later delta opens a new entry below the user's message instead of growing
     # the entry above it.
     _close_stream(state)
-    message_id = event.payload.id
+    message_id = event.id
     existing = state.timeline.get(message_id)
     if isinstance(existing, UserEntry):
         _append(state, replace(
-            existing, content=event.payload.content[:512], delivery=Delivery.ACCEPTED,
-            body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
-            media=event.payload.media, artifacts=event.payload.artifacts, media_labels=(),
+            existing, content=event.content[:512], delivery=Delivery.ACCEPTED,
+            body_ref=DisplayBody(preview=event.content[:512], length=len(event.content)),
+            media=event.media, artifacts=event.artifacts, media_labels=(),
         ))
     else:
         _append(state, UserEntry(
             id=message_id,
-            content=event.payload.content[:512],
+            content=event.content[:512],
             delivery=Delivery.ACCEPTED,
-            body_ref=DisplayBody(preview=event.payload.content[:512], length=len(event.payload.content)),
-            media=event.payload.media, artifacts=event.payload.artifacts,
+            body_ref=DisplayBody(preview=event.content[:512], length=len(event.content)),
+            media=event.media, artifacts=event.artifacts,
         ))
     state.pending_submissions.discard(message_id)
 

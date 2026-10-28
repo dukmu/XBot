@@ -12,14 +12,22 @@ Invariants under test:
 from __future__ import annotations
 
 import asyncio
-import threading
 from contextlib import asynccontextmanager
+import threading
 from typing import AsyncIterator
+
 import pytest
 from textual.app import App, ComposeResult
+
 from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, AssistantTextDelta
 from XBotv2.core.api.domain import CompletedStop, ModelTiming
 from XBotv2.session.api.records import AssistantRecord, HumanInputRecord
+from XBotv2.tui.impl.events import ConnectionChanged
+from XBotv2.tui.impl.protocol import FrameTranslator
+from XBotv2.tui.impl.state import SessionState, reduce
+from XBotv2.tui.impl.status import Connection
+from XBotv2.tui.impl.view.entries import BlockVisibility
+from XBotv2.tui.impl.view.transcript import ThinkingActivity, TranscriptScroll, TranscriptView
 from XBotv2.tui.tests.factories import (
     assistant_record,
     human_record,
@@ -29,17 +37,6 @@ from XBotv2.tui.tests.factories import (
     frames,
     snapshot,
 )
-from XBotv2.tui.impl.events import (
-    AssistantCompleted,
-    AssistantDelta,
-    ConnectionChanged,
-    SnapshotAdopted,
-)
-from XBotv2.tui.impl.protocol import FrameTranslator
-from XBotv2.tui.impl.state import SessionState, reduce
-from XBotv2.tui.impl.status import Connection
-from XBotv2.tui.impl.view.entries import BlockVisibility
-from XBotv2.tui.impl.view.transcript import ThinkingActivity, TranscriptScroll, TranscriptView
 
 
 def build_state(*pairs: tuple[str, dict]) -> SessionState:
@@ -256,8 +253,8 @@ async def test_reasoning_updates_do_not_reparse_an_unchanged_answer(monkeypatch)
     from XBotv2.tui.impl.view.blocks import ClampedBlock
 
     state = build_state(user("m1", "explain"))
-    reduce(state, AssistantDelta(payload=AssistantTextDelta(text="**answer**")))
-    reduce(state, AssistantDelta(payload=AssistantReasoningDelta(text="first")))
+    reduce(state, AssistantTextDelta(text="**answer**"))
+    reduce(state, AssistantReasoningDelta(text="first"))
     async with harness(limit=5) as (app, pilot):
         await app.view.render(state)
         await pilot.pause()
@@ -272,7 +269,7 @@ async def test_reasoning_updates_do_not_reparse_an_unchanged_answer(monkeypatch)
             return original(*args, **kwargs)
 
         monkeypatch.setattr(body, "update", update)
-        reduce(state, AssistantDelta(payload=AssistantReasoningDelta(text=" second")))
+        reduce(state, AssistantReasoningDelta(text=" second"))
         await app.view.render(state)
         await pilot.pause()
         assert widget.query_one(".reasoning", ClampedBlock).shown_text == "first second"
@@ -317,7 +314,7 @@ async def test_markdown_preparation_does_not_block_input_or_screen_updates(monke
         composer = app.query_one(Input)
         composer.focus()
         monkeypatch.setattr(Markdown, "__rich_console__", gated_render)
-        reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n**content**")))
+        reduce(state, AssistantTextDelta(text="## Answer\n\n**content**"))
         rendering = asyncio.create_task(app.view.render(state))
         try:
             async with asyncio.timeout(3):
@@ -355,7 +352,7 @@ async def test_reader_scroll_during_markdown_preparation_is_preserved(monkeypatc
         await pilot.pause()
         assert app.view.reader_at_end
         monkeypatch.setattr(Markdown, "__rich_console__", gated_render)
-        reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n**content**")))
+        reduce(state, AssistantTextDelta(text="## Answer\n\n**content**"))
         rendering = asyncio.create_task(app.view.render(state))
         try:
             async with asyncio.timeout(3):
@@ -385,7 +382,7 @@ async def test_markdown_resize_reflows_off_loop_while_input_remains_visible(monk
 
     app = InteractiveHarness(limit=5)
     state = build_state(user("m1", "explain"))
-    reduce(state, AssistantDelta(payload=AssistantTextDelta(text="## Answer\n\n" + "**content** 中文 " * 30)))
+    reduce(state, AssistantTextDelta(text="## Answer\n\n" + "**content** 中文 " * 30))
     started, release = threading.Event(), threading.Event()
     original = Markdown.__rich_console__
 
@@ -420,17 +417,16 @@ async def test_markdown_resize_reflows_off_loop_while_input_remains_visible(monk
 
 
 async def test_short_rebuilt_history_does_not_keep_an_out_of_range_scroll_offset():
-    from XBotv2.tui.impl.events import SnapshotAdopted
     state = build_state(*(user(f"m{i}", f"message {i}") for i in range(40)))
     async with harness(limit=50) as (app, pilot):
         await app.view.render(state)
         await pilot.pause()
         app.view.container.scroll_to(y=10, animate=False, immediate=True)
         await pilot.pause()
-        reduce(state, SnapshotAdopted(snapshot(history=[
+        reduce(state, snapshot(history=[
             human_record("saved-prompt", "originalprompt"),
             human_record("saved-followup", "followup"),
-        ])))
+        ]))
         await app.view.render(state)
         await pilot.pause()
         assert app.view.container.max_scroll_y == 0
@@ -443,11 +439,11 @@ async def test_middle_record_replacement_keeps_unchanged_history_rows_visible():
     async with harness(limit=5) as (app, pilot):
         await app.view.render(state)
         await pilot.pause()
-        reduce(state, SnapshotAdopted(snapshot(history=[
+        reduce(state, snapshot(history=[
             human_record("first", "first"),
             human_record("replacement", "new"),
             human_record("last", "last"),
-        ])))
+        ]))
         await app.view.render(state)
         await pilot.pause()
         assert tuple(child.name for child in app.view.container.children) == (
@@ -461,9 +457,7 @@ async def test_streamed_thinking_widget_survives_canonical_completion_identity()
     from XBotv2.tui.impl.view.blocks import ClampedBlock
 
     state = build_state(user("human-record-1", "explain the next step"))
-    reduce(state, AssistantDelta(
-        payload=AssistantReasoningDelta(text="checking the request")
-    ))
+    reduce(state, AssistantReasoningDelta(text="checking the request"))
     streamed_id = state.stream_entry_id
     assert streamed_id is not None
 
@@ -475,13 +469,13 @@ async def test_streamed_thinking_widget_survives_canonical_completion_identity()
         streamed_block = streamed_widget.query_one(".reasoning", ClampedBlock)
         assert streamed_block.expanded
 
-        reduce(state, AssistantCompleted(payload=AssistantRecord(
+        reduce(state, AssistantRecord(
             id="assistant-record-1",
             content="the answer",
             reasoning="checking the request",
             timing=ModelTiming(total_ms=1),
             stop=CompletedStop(),
-        )))
+        ))
         await app.view.render(state)
         await pilot.pause()
 
@@ -864,7 +858,7 @@ def attached(*items: HumanInputRecord, cursor: str | None = None) -> SessionStat
     """A state built the way production builds one: the server's attach answer."""
     state = SessionState()
     reduce(state, ConnectionChanged(Connection.CONNECTED))
-    reduce(state, SnapshotAdopted(snapshot(history=list(items), history_cursor=cursor)))
+    reduce(state, snapshot(history=list(items), history_cursor=cursor))
     return state
 
 

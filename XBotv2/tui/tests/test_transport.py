@@ -13,13 +13,32 @@ Invariants under test:
 from __future__ import annotations
 
 import asyncio
+
 import pytest
+
+from XBotv2.agentloop.api.outputs import LoopTurnStarted, AssistantTextDelta, LoopError
 from XBotv2.client import XBotClientError
 from XBotv2.core.api.domain import TokenCounters, UsageSnapshot
-from XBotv2.usage.api.events import UsageUpdated as UsageUpdatedPayload
-from XBotv2.protocol.api.models import ErrorResponse
 from XBotv2.core.api.tools import ToolCall
+from XBotv2.interactions.api.models import ClientNotice
 from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
+from XBotv2.protocol.api.models import ErrorResponse
+from XBotv2.session.api.contracts import ThreadSummary
+from XBotv2.session.api.protocol import OpenSessionResponse
+from XBotv2.tui.impl.events import (
+    ConnectionChanged,
+    InteractionOpened,
+    InterruptAsked,
+    InterruptSettled,
+    StreamGapDetected,
+    TurnFinished,
+    UiEvent,
+    UserInputFailed,
+    UserInputSubmitted,
+)
+from XBotv2.tui.impl.state import SessionState, reduce
+from XBotv2.tui.impl.status import Connection, ServerTurn, Status, derive
+from XBotv2.tui.impl.transport import TransportConfig, TransportSession
 from XBotv2.tui.tests.factories import (
     SESSION,
     THREAD,
@@ -34,27 +53,7 @@ from XBotv2.tui.tests.factories import (
     history_page,
     human_record,
 )
-from XBotv2.tui.impl.events import (
-    AssistantDelta,
-    ClientNoticeReceived,
-    ConnectionChanged,
-    ErrorFrame,
-    InteractionOpened,
-    InterruptAsked,
-    InterruptSettled,
-    SnapshotAdopted,
-    StreamGapDetected,
-    TurnFinished,
-    TurnStarted,
-    UiEvent,
-    UsageSnapshotReceived,
-    UserInputFailed,
-    UserInputSubmitted,
-    ThreadRead,
-)
-from XBotv2.tui.impl.state import SessionState, reduce
-from XBotv2.tui.impl.status import Connection, ServerTurn, Status, derive
-from XBotv2.tui.impl.transport import TransportConfig, TransportSession
+from XBotv2.usage.api.events import UsageUpdated, UsageUpdated as UsageUpdatedPayload
 
 
 def cursor_expired(oldest: int = 42) -> XBotClientError:
@@ -153,7 +152,7 @@ async def test_connect_announces_connecting_then_connected(backend: ScriptedBack
 async def test_connect_adopts_the_snapshot(backend: ScriptedBackend) -> None:
     recorder = Recorder()
     await build(backend, recorder).connect()
-    assert recorder.only(SnapshotAdopted).snapshot.data.key.session_id == SESSION
+    assert recorder.only(OpenSessionResponse).data.key.session_id == SESSION
 
 
 async def test_connect_replays_unanswered_prompts(backend: ScriptedBackend) -> None:
@@ -184,7 +183,7 @@ async def test_connect_reads_the_thread_so_a_mid_turn_attach_is_running(
     state = SessionState()
     recorder = Recorder(state)
     await build(backend, recorder).connect()
-    assert recorder.only(ThreadRead).payload.turn_status == "running"
+    assert recorder.only(ThreadSummary).turn_status == "running"
     assert state.status_slots == {"goal": "ship"}
     assert derive(state.facts) is Status.RUNNING
 
@@ -199,7 +198,7 @@ async def test_connect_does_not_double_count_usage(backend: ScriptedBackend) -> 
     recorder = Recorder(state)
     await build(backend, recorder).connect()
     assert state.usage.total_counters.input == 100
-    assert not recorder.of(UsageSnapshotReceived), "an authoritative total is not a delta"
+    assert not recorder.of(UsageUpdated), "an authoritative total is not a delta"
 
 
 async def test_connect_failure_is_visible_and_disconnects(backend: ScriptedBackend) -> None:
@@ -208,7 +207,7 @@ async def test_connect_failure_is_visible_and_disconnects(backend: ScriptedBacke
     recorder = Recorder(state)
     with pytest.raises(RuntimeError):
         await build(backend, recorder).connect()
-    assert recorder.of(ErrorFrame), "a failed connect must be reported"
+    assert recorder.of(LoopError), "a failed connect must be reported"
     assert derive(state.facts) is Status.DISCONNECTED
 
 
@@ -230,8 +229,8 @@ async def test_run_applies_frames_in_order(backend: ScriptedBackend) -> None:
     transport = await connected(backend, recorder)
     stop_on(recorder, transport, TurnFinished)
     await transport.run()
-    assert recorder.of(TurnStarted)
-    assert recorder.only(AssistantDelta).payload.text == "hi"
+    assert recorder.of(LoopTurnStarted)
+    assert recorder.only(AssistantTextDelta).text == "hi"
     assert transport.cursor == 3
 
 
@@ -247,11 +246,11 @@ async def test_a_sequence_gap_is_reported_and_the_frame_still_applies(
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, AssistantDelta)
+    stop_on(recorder, transport, AssistantTextDelta)
     await transport.run()
     gap = recorder.only(StreamGapDetected)
     assert (gap.expected, gap.received) == (2, 9)
-    assert recorder.only(AssistantDelta).payload.text == "after the gap"
+    assert recorder.only(AssistantTextDelta).text == "after the gap"
 
 
 async def test_a_replayed_frame_is_not_applied_twice(backend: ScriptedBackend) -> None:
@@ -279,9 +278,9 @@ async def test_a_replayed_frame_is_not_applied_twice(backend: ScriptedBackend) -
     recorder = Recorder(state)
     transport = await connected(backend, recorder)
     transport._cursor = 1  # noqa: SLF001 - simulate a resubscription replay
-    stop_on(recorder, transport, UsageSnapshotReceived)
+    stop_on(recorder, transport, UsageUpdated)
     await transport.run()
-    assert len(recorder.of(UsageSnapshotReceived)) == 1
+    assert len(recorder.of(UsageUpdated)) == 1
     assert state.usage.total_counters.input == 8
 
 
@@ -292,9 +291,9 @@ async def test_an_unsequenced_frame_is_applied(backend: ScriptedBackend) -> None
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, ClientNoticeReceived)
+    stop_on(recorder, transport, ClientNotice)
     await transport.run()
-    assert recorder.of(ClientNoticeReceived)
+    assert recorder.of(ClientNotice)
 
 
 async def test_a_frame_for_another_session_is_reported_not_applied(
@@ -305,28 +304,28 @@ async def test_a_frame_for_another_session_is_reported_not_applied(
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, ErrorFrame)
+    stop_on(recorder, transport, LoopError)
     await transport.run()
-    assert recorder.of(ErrorFrame)
-    assert not recorder.of(TurnStarted)
+    assert recorder.of(LoopError)
+    assert not recorder.of(LoopTurnStarted)
 
 
 async def test_an_unknown_frame_type_is_reported_not_ignored(backend: ScriptedBackend) -> None:
     backend.streams = [stream(frame("something_new", {}, sequence=1))]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, ErrorFrame)
+    stop_on(recorder, transport, LoopError)
     await transport.run()
-    assert "something_new" in recorder.only(ErrorFrame).payload.message
+    assert "something_new" in recorder.only(LoopError).message
 
 
 async def test_a_malformed_payload_is_reported(backend: ScriptedBackend) -> None:
     backend.streams = [stream(frame("turn_started", {"turn": "nope"}, sequence=1))]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, ErrorFrame)
+    stop_on(recorder, transport, LoopError)
     await transport.run()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
 
 
 # --- reconnect ------------------------------------------------------------
@@ -339,10 +338,10 @@ async def test_a_dead_stream_resubscribes_from_the_cursor(backend: ScriptedBacke
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder)
-    stop_on(recorder, transport, AssistantDelta)
+    stop_on(recorder, transport, AssistantTextDelta)
     await transport.run()
     assert backend.streams[1].after == 1
-    assert recorder.of(AssistantDelta)
+    assert recorder.of(AssistantTextDelta)
 
 
 async def test_exhausted_reconnects_are_reported_and_stop_the_transport(
@@ -356,7 +355,7 @@ async def test_exhausted_reconnects_are_reported_and_stop_the_transport(
     recorder = Recorder(state)
     transport = await connected(backend, recorder, reconnect_delays=(0.0,))
     await transport.run()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
     assert recorder.of(ConnectionChanged)[-1].connection is Connection.DISCONNECTED
     assert derive(state.facts) is Status.DISCONNECTED
     assert backend.stream_opens == 2
@@ -425,10 +424,10 @@ async def test_an_evicted_cursor_resubscribes_from_the_oldest_retained_frame(
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder, cursor_recoveries=1)
-    stop_on(recorder, transport, TurnStarted)
+    stop_on(recorder, transport, LoopTurnStarted)
     await transport.run()
     assert backend.streams[1].after == 41, "resume from the frame before the oldest retained"
-    assert recorder.of(TurnStarted)
+    assert recorder.of(LoopTurnStarted)
 
 
 async def test_the_rewind_budget_is_bounded(backend: ScriptedBackend) -> None:
@@ -441,7 +440,7 @@ async def test_the_rewind_budget_is_bounded(backend: ScriptedBackend) -> None:
     recorder = Recorder()
     transport = await connected(backend, recorder, cursor_recoveries=1, reconnect_delays=())
     await transport.run()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
     assert backend.stream_opens == 2
 
 
@@ -453,10 +452,10 @@ async def test_exhausted_rewinds_rebuild_the_baseline(backend: ScriptedBackend) 
     ]
     recorder = Recorder()
     transport = await connected(backend, recorder, cursor_recoveries=0, baseline_rebuilds=1)
-    stop_on(recorder, transport, TurnStarted)
+    stop_on(recorder, transport, LoopTurnStarted)
     await transport.run()
     assert any(opened.get("mode") == "resume" for opened in backend.opened)
-    assert recorder.of(SnapshotAdopted)
+    assert recorder.of(OpenSessionResponse)
     assert backend.streams[1].after == 7
     assert transport.cursor == 8
 
@@ -473,7 +472,7 @@ async def test_a_baseline_rebuild_is_bounded(backend: ScriptedBackend) -> None:
         backend, recorder, cursor_recoveries=0, baseline_rebuilds=1, reconnect_delays=()
     )
     await transport.run()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
     assert backend.stream_opens == 2, "one rebuild, then give up"
 
 
@@ -485,7 +484,7 @@ async def test_watchdog_reports_the_authoritative_turn_state(backend: ScriptedBa
     recorder = Recorder()
     transport = await connected(backend, recorder)
     await transport.watchdog_once()
-    assert recorder.only(ThreadRead).payload.turn_status == "running"
+    assert recorder.only(ThreadSummary).turn_status == "running"
 
 
 async def test_watchdog_reports_the_threads_status_slots(backend: ScriptedBackend) -> None:
@@ -503,7 +502,7 @@ async def test_watchdog_reports_a_vanished_thread(backend: ScriptedBackend) -> N
     transport = await connected(backend, recorder)
     backend.threads = ()
     await transport.watchdog_once()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
 
 
 async def test_watchdog_failure_is_reported_once_per_streak(backend: ScriptedBackend) -> None:
@@ -513,7 +512,7 @@ async def test_watchdog_failure_is_reported_once_per_streak(backend: ScriptedBac
     backend.thread_error = RuntimeError("unreachable")
     await transport.watchdog_once()
     await transport.watchdog_once()
-    assert len(recorder.of(ErrorFrame)) == 1
+    assert len(recorder.of(LoopError)) == 1
 
 
 async def test_watchdog_reports_again_after_a_recovery(backend: ScriptedBackend) -> None:
@@ -525,7 +524,7 @@ async def test_watchdog_reports_again_after_a_recovery(backend: ScriptedBackend)
     await transport.watchdog_once()
     backend.thread_error = RuntimeError("unreachable")
     await transport.watchdog_once()
-    assert len(recorder.of(ErrorFrame)) == 2
+    assert len(recorder.of(LoopError)) == 2
 
 
 async def test_watch_polls_on_the_configured_interval(backend: ScriptedBackend) -> None:
@@ -541,13 +540,13 @@ async def test_watch_polls_on_the_configured_interval(backend: ScriptedBackend) 
     )
 
     def stop_after_three(event: UiEvent) -> None:
-        if len(recorder.of(ThreadRead)) >= 3:
+        if len(recorder.of(ThreadSummary)) >= 3:
             transport.stop()
 
     recorder.on_event = stop_after_three
     await transport.watch(lambda: True)
     assert slept == [2.5, 2.5, 2.5]
-    assert len(recorder.of(ThreadRead)) == 3
+    assert len(recorder.of(ThreadSummary)) == 3
 
 
 async def test_watch_does_not_read_http_while_the_thread_is_idle(
@@ -623,7 +622,7 @@ async def test_interrupt_failure_is_visible_and_not_claimed_as_success(
     recorder = Recorder()
     transport = await connected(backend, recorder)
     await transport.interrupt()
-    assert recorder.of(ErrorFrame)
+    assert recorder.of(LoopError)
     assert recorder.only(InterruptSettled).cancelled is False
 
 
@@ -689,7 +688,7 @@ async def test_the_reader_subscribes_to_the_assigned_session(
     ]
     recorder = Recorder()
     session = await connected(backend, recorder, session_id="")
-    stop_on(recorder, session, TurnStarted)
+    stop_on(recorder, session, LoopTurnStarted)
     try:
         # Bounded on purpose: a transport that never applies the frame would
         # otherwise reconnect forever, and a hanging test is not a failing test.
@@ -701,7 +700,7 @@ async def test_the_reader_subscribes_to_the_assigned_session(
     assert backend.subscriptions[-1].session_id == "assigned-1", (
         "reading the session the server assigned is the whole point of attaching"
     )
-    assert isinstance(recorder.only(TurnStarted), TurnStarted), (
+    assert isinstance(recorder.only(LoopTurnStarted), LoopTurnStarted), (
         "its frames must not be rejected as foreign"
     )
 
@@ -860,7 +859,7 @@ async def test_a_baseline_rebuild_keeps_the_window_bounded(
     transport = await connected(
         backend, recorder, cursor_recoveries=0, baseline_rebuilds=1, history_window=40,
     )
-    stop_on(recorder, transport, TurnStarted)
+    stop_on(recorder, transport, LoopTurnStarted)
 
     await transport.run()
 
@@ -889,7 +888,7 @@ async def test_target_beyond_first_thread_page_is_opened_and_watched(backend: Sc
     await transport.switch(session_id=SESSION, thread_id="child-100")
     assert backend.opened_threads[-1]["thread_id"] == "child-100"
     assert backend.thread_reads[-1] == (SESSION, "child-100")
-    assert recorder.only(ThreadRead).payload.turn_status == "running"
+    assert recorder.only(ThreadSummary).turn_status == "running"
     assert not backend.thread_list_requests
 
 
@@ -913,7 +912,7 @@ async def test_display_attach_failure_is_visible_and_failed_switch_keeps_session
     backend.list_display_messages = fail_display
     with pytest.raises(RuntimeError, match="display unavailable"):
         await transport.connect()
-    assert recorder.of(ErrorFrame)[-1].payload.code == "connect_failed"
+    assert recorder.of(LoopError)[-1].code == "connect_failed"
     assert recorder.of(ConnectionChanged)[-1].connection is Connection.DISCONNECTED
 
     backend.list_display_messages = original
@@ -928,7 +927,6 @@ async def test_concurrent_submission_confirmation_tracks_each_input(backend: Scr
     from XBotv2.agentloop.api.models import PendingInputData
     from XBotv2.core.api.domain import InboxTarget
     from XBotv2.session.api.events import QueueReplacedEvent
-    from XBotv2.tui.impl.events import QueueReplaced
 
     entered = {"one": asyncio.Event(), "two": asyncio.Event()}
     release = {"one": asyncio.Event(), "two": asyncio.Event()}
@@ -950,7 +948,7 @@ async def test_concurrent_submission_confirmation_tracks_each_input(backend: Scr
     try:
         await asyncio.wait_for(asyncio.gather(*(event.wait() for event in entered.values())), 5)
         assert state.pending_submissions == {"one", "two"}
-        recorder(QueueReplaced(QueueReplacedEvent(items=(PendingInputData(message_id="one", content="queued", target=InboxTarget.NEXT_TURN),))))
+        recorder(QueueReplacedEvent(items=(PendingInputData(message_id="one", content="queued", target=InboxTarget.NEXT_TURN),)))
         release["one"].set()
         await asyncio.wait_for(first, 5)
         assert state.pending_submissions == {"two"} and state.submission_in_flight

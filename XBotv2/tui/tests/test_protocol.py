@@ -15,31 +15,28 @@ input. Three rules matter:
 from __future__ import annotations
 
 import pytest
-from XBotv2.compact.api.protocol import CompactionStarted
-from XBotv2.protocol.api.models import ServerEvent, server_event
-from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
-from XBotv2.core.api.tools import ToolCall
+
+from XBotv2.agentloop.api.outputs import (
+    LoopTurnStarted,
+    AssistantTextDelta,
+    AssistantReasoningDelta,
+    ToolCallsStarted as DomainToolCallsStarted,
+)
+from XBotv2.compact.api.protocol import CompactionStarted, CompactionCompleted, CompactionFailed
 from XBotv2.core.api.domain import SessionScope
+from XBotv2.core.api.tools import ToolCall
+from XBotv2.goal.api.events import GoalChanged
+from XBotv2.interactions.api.models import ClientNotice
+from XBotv2.jobs.api.protocol import JobUpdatedEvent, JobCompletedEvent
+from XBotv2.permissions.api.models import PermissionRequest, ToolPermission
+from XBotv2.protocol.api.models import ServerEvent, server_event
+from XBotv2.session.api.events import HistoryUpdatedEvent, QueueReplacedEvent, AgentConfiguredEvent
+from XBotv2.session.api.records import HumanInputRecord, AssistantRecord, ToolRecord
 from XBotv2.tui.impl.events import (
-    AssistantCompleted,
-    AssistantDelta,
-    ClientNoticeReceived,
-    CompactionChanged,
-    ErrorFrame,
-    GoalChangedReceived,
-    HistoryReplaced,
     InteractionOpened,
     InteractionResolved,
-    JobCompletionNotice,
-    JobUpdated,
-    QueueReplaced,
-    SessionConfigured,
-    ToolCallsStarted,
-    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
-    TurnStarted,
-    UserMessagePublished,
 )
 from XBotv2.tui.impl.protocol import (
     IGNORED_FRAMES,
@@ -49,6 +46,7 @@ from XBotv2.tui.impl.protocol import (
     UnsupportedFrame,
     replay_pending_interactions,
 )
+from XBotv2.usage.api.events import UsageUpdated
 
 SESSION = "s1"
 THREAD = "agent"
@@ -69,11 +67,6 @@ def only(frame_type: str, data: dict) -> object:
     events = translator().translate(frame(frame_type, data))
     assert len(events) == 1, f"{frame_type} produced {len(events)} events"
     return events[0]
-
-
-def payload_of(frame_type: str, data: dict):
-    event = only(frame_type, data)
-    return getattr(event, "payload")
 
 
 # --- envelope validation --------------------------------------------------
@@ -97,8 +90,8 @@ def test_frame_without_session_or_thread_identity_is_accepted() -> None:
         )
     )
     assert len(events) == 1
-    assert isinstance(events[0], TurnStarted)
-    assert events[0].payload.turn == 2
+    assert isinstance(events[0], LoopTurnStarted)
+    assert events[0].turn == 2
 
 
 def test_unknown_frame_type_is_rejected_not_ignored() -> None:
@@ -135,9 +128,9 @@ def test_goal_changed_keeps_owner_state_activation_and_usage() -> None:
         },
     })
 
-    assert isinstance(event, GoalChangedReceived)
-    assert event.payload.snapshot.activation == "disarmed"
-    assert event.payload.snapshot.state.stats.total_tokens == 150
+    assert isinstance(event, GoalChanged)
+    assert event.snapshot.activation == "disarmed"
+    assert event.snapshot.state.stats.total_tokens == 150
 
 
 # --- turn lifecycle -------------------------------------------------------
@@ -145,8 +138,8 @@ def test_goal_changed_keeps_owner_state_activation_and_usage() -> None:
 
 def test_turn_started_carries_only_the_loop_turn() -> None:
     events = translator().translate(frame("turn_started", {"turn": 3}))
-    assert isinstance(events[0], TurnStarted)
-    assert events[0].payload.turn == 3
+    assert isinstance(events[0], LoopTurnStarted)
+    assert events[0].turn == 3
 
 
 def test_turn_started_rejects_fields_owned_by_other_contracts() -> None:
@@ -157,7 +150,7 @@ def test_turn_started_rejects_fields_owned_by_other_contracts() -> None:
 
 
 def test_turn_started_without_slots_is_only_a_turn_event() -> None:
-    assert payload_of("turn_started", {"turn": 3}).turn == 3
+    assert only("turn_started", {"turn": 3}).turn == 3
     assert len(translator().translate(frame("turn_started", {"turn": 3}))) == 1
 
 
@@ -194,14 +187,14 @@ def test_execution_completion_is_validated_without_changing_turn_state() -> None
 
 def test_assistant_text_delta_translates_typed_text() -> None:
     event = only("assistant_text_delta", {"text": "hi"})
-    assert isinstance(event, AssistantDelta)
-    assert event.payload.text == "hi"
+    assert isinstance(event, AssistantTextDelta)
+    assert event.text == "hi"
 
 
 def test_assistant_reasoning_delta_remains_typed_reasoning() -> None:
     event = only("assistant_reasoning_delta", {"text": "why"})
-    assert isinstance(event, AssistantDelta)
-    assert event.payload.text == "why"
+    assert isinstance(event, AssistantReasoningDelta)
+    assert event.text == "why"
 
 
 def test_assistant_completed_translates_the_canonical_record() -> None:
@@ -216,9 +209,9 @@ def test_assistant_completed_translates_the_canonical_record() -> None:
             "stop": {"kind": "completed"},
         },
     )
-    assert isinstance(event, AssistantCompleted)
-    assert event.payload.id == "a1"
-    assert event.payload.content == "done"
+    assert isinstance(event, AssistantRecord)
+    assert event.id == "a1"
+    assert event.content == "done"
 
 
 def test_assistant_completed_keeps_its_calls_in_the_assistant_record() -> None:
@@ -233,8 +226,8 @@ def test_assistant_completed_keeps_its_calls_in_the_assistant_record() -> None:
             "stop": {"kind": "tool_calls_requested"},
         },
     )
-    assert isinstance(event, AssistantCompleted)
-    assert event.payload.tool_calls[0].id == "c1"
+    assert isinstance(event, AssistantRecord)
+    assert event.tool_calls[0].id == "c1"
 
 
 def test_tool_calls_started_translates_every_call() -> None:
@@ -247,8 +240,8 @@ def test_tool_calls_started_translates_every_call() -> None:
             ]
         },
     )
-    assert isinstance(event, ToolCallsStarted)
-    assert [item.call.id for item in event.payload.calls] == ["c1", "c2"]
+    assert isinstance(event, DomainToolCallsStarted)
+    assert [item.call.id for item in event.calls] == ["c1", "c2"]
 
 
 def test_tool_completed_translates_the_canonical_tool_record() -> None:
@@ -264,8 +257,8 @@ def test_tool_completed_translates_the_canonical_tool_record() -> None:
             "timing": {"duration_ms": 2},
         },
     )
-    assert isinstance(event, ToolRecordReceived)
-    assert event.payload.outcome.kind == "succeeded"
+    assert isinstance(event, ToolRecord)
+    assert event.outcome.kind == "succeeded"
 
 
 def test_tool_failure_remains_the_tool_outcome_variant() -> None:
@@ -282,8 +275,8 @@ def test_tool_failure_remains_the_tool_outcome_variant() -> None:
             "timing": {"duration_ms": 2},
         },
     )
-    assert isinstance(event, ToolRecordReceived)
-    assert event.payload.outcome.kind == "failed"
+    assert isinstance(event, ToolRecord)
+    assert event.outcome.kind == "failed"
 
 
 # --- session projections --------------------------------------------------
@@ -294,8 +287,8 @@ def test_user_message_translates_to_a_published_message() -> None:
         "message",
         {"kind": "human_input", "id": "m1", "content": "hello"},
     )
-    assert isinstance(event, UserMessagePublished)
-    assert (event.payload.id, event.payload.content) == ("m1", "hello")
+    assert isinstance(event, HumanInputRecord)
+    assert (event.id, event.content) == ("m1", "hello")
 
 
 def test_queue_updated_replaces_the_queue() -> None:
@@ -303,8 +296,8 @@ def test_queue_updated_replaces_the_queue() -> None:
         "queue_updated",
         {"items": [{"message_id": "q1", "content": "later", "target": "next-turn"}]},
     )
-    assert isinstance(event, QueueReplaced)
-    assert [item.message_id for item in event.payload.items] == ["q1"]
+    assert isinstance(event, QueueReplacedEvent)
+    assert [item.message_id for item in event.items] == ["q1"]
 
 
 def test_agent_configured_translates_identity() -> None:
@@ -325,8 +318,8 @@ def test_agent_configured_translates_identity() -> None:
             },
         }},
     )
-    assert isinstance(event, SessionConfigured)
-    assert event.payload.runtime_selection.agent_name == "Reviewer"
+    assert isinstance(event, AgentConfiguredEvent)
+    assert event.runtime_selection.agent_name == "Reviewer"
 
 
 def test_history_updated_replaces_the_timeline() -> None:
@@ -344,8 +337,8 @@ def test_history_updated_replaces_the_timeline() -> None:
             },
         },
     )
-    assert isinstance(event, HistoryReplaced)
-    assert [item.content for item in event.payload.mutation.history.items] == ["kept"]
+    assert isinstance(event, HistoryUpdatedEvent)
+    assert [item.content for item in event.mutation.history.items] == ["kept"]
 
 
 # --- usage and compaction -------------------------------------------------
@@ -353,10 +346,9 @@ def test_history_updated_replaces_the_timeline() -> None:
 
 def test_usage_updated_carries_the_canonical_snapshot() -> None:
     event = only("usage_updated", {"snapshot": {"total_counters": {"input": 10, "output": 4}}})
-    from XBotv2.tui.impl.events import UsageSnapshotReceived
 
-    assert isinstance(event, UsageSnapshotReceived)
-    assert event.payload.snapshot.total_counters.input == 10
+    assert isinstance(event, UsageUpdated)
+    assert event.snapshot.total_counters.input == 10
 
 
 def test_compaction_started_is_active_without_a_notice() -> None:
@@ -369,8 +361,7 @@ def test_compaction_started_is_active_without_a_notice() -> None:
             "context_tokens_before": 1000,
         },
     )
-    assert isinstance(event, CompactionChanged)
-    assert isinstance(event.payload, CompactionStarted), "started means active"
+    assert isinstance(event, CompactionStarted), "started means active"
 
 
 def test_compaction_completed_carries_the_summary() -> None:
@@ -383,14 +374,14 @@ def test_compaction_completed_carries_the_summary() -> None:
             "metrics": _metrics(),
         },
     )
-    assert isinstance(event, CompactionChanged)
-    assert event.payload.summary.summary == "kept the gist"
+    assert isinstance(event, CompactionCompleted)
+    assert event.summary.summary == "kept the gist"
 
 
 def test_compaction_failed_carries_the_message() -> None:
     event = only("compaction_failed", {"reason": "automatic", "message": "no budget"})
-    assert isinstance(event, CompactionChanged)
-    assert event.payload.message == "no budget"
+    assert isinstance(event, CompactionFailed)
+    assert event.message == "no budget"
 
 
 # --- interactions ---------------------------------------------------------
@@ -464,17 +455,17 @@ def test_user_input_recorded_resolves() -> None:
 
 def test_client_message_becomes_a_notice_with_its_level() -> None:
     event = only("client_message", {"message": "heads up", "level": "warning", "source": "compact"})
-    assert isinstance(event, ClientNoticeReceived)
-    assert event.payload.message == "heads up"
-    assert event.payload.level == "warning"
+    assert isinstance(event, ClientNotice)
+    assert event.message == "heads up"
+    assert event.level == "warning"
 
 
 def test_job_updated_translates_a_snapshot() -> None:
     event = only("job_updated", {"view": {
         "id": "j1", "kind": "agent", "label": "review", "state": "running", "elapsed_ms": 1,
     }})
-    assert isinstance(event, JobUpdated)
-    assert event.payload.id == "j1"
+    assert isinstance(event, JobUpdatedEvent)
+    assert event.view.id == "j1"
 
 
 def test_job_completion_notice_does_not_open_a_turn() -> None:
@@ -484,8 +475,8 @@ def test_job_completion_notice_does_not_open_a_turn() -> None:
             "id": "j1", "kind": "agent", "label": "review", "state": "succeeded", "elapsed_ms": 2,
         }},
     )
-    assert isinstance(event, JobCompletionNotice)
-    assert event.payload.view.id == "j1"
+    assert isinstance(event, JobCompletedEvent)
+    assert event.view.id == "j1"
 
 
 # --- deliberately ignored frames -----------------------------------------

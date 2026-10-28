@@ -9,23 +9,22 @@ structured tool payload shown readably.
 from __future__ import annotations
 
 import html
-import re
 from pathlib import Path
+import re
 
 import pytest
-import yaml
-from rich.markdown import Markdown
 from rich.console import Console
+from rich.markdown import Markdown
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.css.query import NoMatches
 from textual.geometry import Offset
 from textual.selection import SELECT_ALL, Selection
 from textual.widgets import Static
+import yaml
 
 from XBotv2.goal.api.events import GoalChanged
 from XBotv2.goal.api.models import ActiveGoal, GoalSnapshot, GoalStats
-from XBotv2.tui.impl.events import GoalChangedReceived
 from XBotv2.tui.impl.state import SessionState, reduce
 from XBotv2.tui.impl.timeline import (
     AssistantEntry,
@@ -227,7 +226,7 @@ def test_markdown_measurement_and_paint_reuse_identical_rich_output(monkeypatch)
         "```python\nprint('你好')\n```\n\n| A | B |\n|---|---|\n| x | y |"
     )
     cached = entry_body_renderable(assistant(markup))
-    reference = Markdown(cached.markup, code_theme="monokai")
+    reference = Markdown(cached.markup, code_theme=cached.code_theme)
     options = console.options.update(width=80, highlight=False)
     painting = options.update(height=12)
     expected = [list(console.render(reference, option)) for option in (options, painting)]
@@ -499,7 +498,7 @@ async def test_goal_event_renders_status_execution_and_usage_at_80x24(
     tmp_path: Path,
 ) -> None:
     state = SessionState()
-    reduce(state, GoalChangedReceived(payload=GoalChanged(snapshot=GoalSnapshot(
+    reduce(state, GoalChanged(snapshot=GoalSnapshot(
         state=ActiveGoal(
             goal_id="goal-1",
             revision=2,
@@ -513,7 +512,7 @@ async def test_goal_event_renders_status_execution_and_usage_at_80x24(
             ),
         ),
         activation="disarmed",
-    ))))
+    )))
     notice = state.timeline.get("goal:active")
     assert isinstance(notice, NoticeEntry)
     app = EntryHarness(notice)

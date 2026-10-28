@@ -10,8 +10,8 @@ Two jobs:
   producer's own pydantic payload model, so a version skew fails loudly at the
   boundary instead of half-applying.
 
-The frame table is declarative: a type names its payload model and the event that
-carries it. The model does the validation, so no payload field is restated here.
+The frame table is declarative: a type names its payload model and how it
+reaches the reducer. The model validates the payload at the boundary.
 Frames the client deliberately does not act on are listed with the reason and a
 test each; every other unknown type is rejected.
 
@@ -54,36 +54,15 @@ from XBotv2.session.api.events import (
 )
 from XBotv2.session.api.records import (
     AssistantRecord,
-    HumanInputRecord,
     InputRecordPayload,
-    RuntimeNoticeRecord,
     ToolRecord,
 )
 from XBotv2.tui.impl.events import (
-    AssistantCompleted,
-    AssistantDelta,
-    ClientNoticeReceived,
-    CompactionChanged,
-    ErrorFrame,
-    HistoryReplaced,
-    InputsConsumed,
     InteractionOpened,
     InteractionResolved,
-    JobCompletionNotice,
-    GoalChangedReceived,
-    TaskChangedReceived,
-    JobUpdated,
-    QueueReplaced,
-    RuntimeNoticePublished,
-    SessionConfigured,
-    ToolCallsStarted,
-    ToolRecordReceived,
     TurnCancelled,
     TurnFinished,
-    TurnStarted,
     UiEvent,
-    UsageSnapshotReceived,
-    UserMessagePublished,
 )
 
 
@@ -127,6 +106,10 @@ def _carries(event_cls: type) -> Builder:
     return build
 
 
+def _direct(payload: BaseModel) -> tuple[UiEvent, ...]:
+    return (payload,)
+
+
 def _opens() -> Builder:
     def build(payload: BaseModel) -> tuple[UiEvent, ...]:
         return (InteractionOpened(request=payload),)
@@ -135,43 +118,38 @@ def _opens() -> Builder:
 
 
 def _published_input(payload: InputRecordPayload) -> tuple[UiEvent, ...]:
-    record = payload.root
-    if isinstance(record, HumanInputRecord):
-        return (UserMessagePublished(payload=record),)
-    if isinstance(record, RuntimeNoticeRecord):
-        return (RuntimeNoticePublished(payload=record),)
-    raise TypeError(f"Unsupported input record: {type(record).__name__}")
+    return (payload.root,)
 
 
 # --- one-to-one frames ----------------------------------------------------
 
 
 _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
-    "assistant_text_delta": (AssistantTextDelta, _carries(AssistantDelta)),
+    "assistant_text_delta": (AssistantTextDelta, _direct),
     "assistant_reasoning_delta": (
         AssistantReasoningDelta,
-        _carries(AssistantDelta),
+        _direct,
     ),
-    "tool_completed": (ToolRecord, _carries(ToolRecordReceived)),
-    "error": (LoopError, _carries(ErrorFrame)),
+    "tool_completed": (ToolRecord, _direct),
+    "error": (LoopError, _direct),
     # The turn's UI state is already settled by turn_ended; this is the
     # archive completion fact published after the execution lock is released.
     "execution_ended": (ExecutionEnded, lambda _payload: ()),
     "message": (InputRecordPayload, _published_input),
-    "input_consumed": (InputConsumedEvent, _carries(InputsConsumed)),
-    "agent_configured": (AgentConfiguredEvent, _carries(SessionConfigured)),
-    "usage_updated": (UsageUpdated, _carries(UsageSnapshotReceived)),
-    "queue_updated": (QueueReplacedEvent, _carries(QueueReplaced)),
-    "history_updated": (HistoryUpdatedEvent, _carries(HistoryReplaced)),
-    "tool_calls_started": (LoopToolCallsStarted, _carries(ToolCallsStarted)),
-    "compaction_started": (CompactionStarted, _carries(CompactionChanged)),
-    "compaction_completed": (CompactionCompleted, _carries(CompactionChanged)),
-    "compaction_failed": (CompactionFailed, _carries(CompactionChanged)),
-    "job_updated": (JobUpdatedEvent, lambda payload: (JobUpdated(payload=payload.view),)),
-    "client_message": (ClientNotice, _carries(ClientNoticeReceived)),
-    "job_completed": (JobCompletedEvent, _carries(JobCompletionNotice)),
-    "goal_changed": (GoalChanged, _carries(GoalChangedReceived)),
-    "task_changed": (TaskChanged, _carries(TaskChangedReceived)),
+    "input_consumed": (InputConsumedEvent, _direct),
+    "agent_configured": (AgentConfiguredEvent, _direct),
+    "usage_updated": (UsageUpdated, _direct),
+    "queue_updated": (QueueReplacedEvent, _direct),
+    "history_updated": (HistoryUpdatedEvent, _direct),
+    "tool_calls_started": (LoopToolCallsStarted, _direct),
+    "compaction_started": (CompactionStarted, _direct),
+    "compaction_completed": (CompactionCompleted, _direct),
+    "compaction_failed": (CompactionFailed, _direct),
+    "job_updated": (JobUpdatedEvent, _direct),
+    "client_message": (ClientNotice, _direct),
+    "job_completed": (JobCompletedEvent, _direct),
+    "goal_changed": (GoalChanged, _direct),
+    "task_changed": (TaskChanged, _direct),
     "permission_request": (PermissionRequest, _opens()),
     "user_input_required": (UserInputRequest, _opens()),
 }
@@ -180,24 +158,16 @@ _FRAMES: dict[str, tuple[type[BaseModel], Builder]] = {
 # --- frames that need more than a payload swap ----------------------------
 
 
-def _turn_started(payload: LoopTurnStarted) -> tuple[UiEvent, ...]:
-    return (TurnStarted(payload=payload),)
-
-
 def _turn_ended(payload: LoopTurnEnded) -> tuple[UiEvent, ...]:
     if isinstance(payload.outcome, CancelledOutcome):
         return (TurnCancelled(payload=payload),)
     return (TurnFinished(payload=payload),)
 
 
-def _assistant_message(payload: AssistantRecord) -> tuple[UiEvent, ...]:
-    return (AssistantCompleted(payload=payload),)
-
-
 _SPECIAL: Mapping[str, tuple[type[BaseModel], Builder]] = {
-    "turn_started": (LoopTurnStarted, _turn_started),
+    "turn_started": (LoopTurnStarted, _direct),
     "turn_ended": (LoopTurnEnded, _turn_ended),
-    "assistant_completed": (AssistantRecord, _assistant_message),
+    "assistant_completed": (AssistantRecord, _direct),
     "permission_response_recorded": (
         PermissionResponseRecorded,
         _carries(InteractionResolved),

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import pytest
 from rich.cells import cell_len
+
 from XBotv2.core.api.domain import (
     GenerationSettings,
     ModelRoute,
@@ -404,14 +405,14 @@ def test_the_subagent_marker_survives_a_narrow_terminal() -> None:
 
 def report_state(**overrides):
     from XBotv2.tui.tests.factories import SESSION, THREAD, thread as thread_summary
-    from XBotv2.tui.impl.events import SnapshotAdopted, ThreadRead, UserInputSubmitted
+    from XBotv2.tui.impl.events import UserInputSubmitted
     from XBotv2.tui.impl.state import SessionState, reduce
     from XBotv2.tui.impl.status import Connection
     from XBotv2.tui.tests.factories import snapshot
 
     state = SessionState()
     reduce(state, ConnectionChanged(Connection.CONNECTED))
-    reduce(state, SnapshotAdopted(snapshot(workspace_root="/w", provider="p1", model="m1")))
+    reduce(state, snapshot(workspace_root="/w", provider="p1", model="m1"))
     summary = thread_summary(session_id=SESSION, thread_id=THREAD)
     fields = {
         "message_count": 12,
@@ -420,7 +421,7 @@ def report_state(**overrides):
         "workspace_root": "/w",
     }
     fields.update(overrides.pop("summary", {}))
-    reduce(state, ThreadRead(payload=thread_summary(**fields)))
+    reduce(state, thread_summary(**fields))
     return state
 
 
@@ -444,18 +445,15 @@ def test_the_report_carries_the_derived_status_not_a_guess() -> None:
 def test_the_report_counts_what_the_server_queued() -> None:
     """Being submitted is not being queued: only the server's queue counts."""
     from XBotv2.session.api.events import QueueReplacedEvent
-    from XBotv2.tui.impl.events import QueueReplaced
     from XBotv2.tui.impl.state import reduce
     from XBotv2.tui.impl.view.status_bar import status_report
 
     state = report_state()
     reduce(
         state,
-        QueueReplaced(
-            payload=QueueReplacedEvent(
+        QueueReplacedEvent(
                 items=[{"message_id": "q1", "content": "later", "target": "next-turn"}]
-            )
-        ),
+            ),
     )
     text = status_report(state)
     assert "Queued: 1" in text
@@ -478,7 +476,6 @@ def test_the_report_marks_a_subagent_thread_read_only() -> None:
 
 def test_thread_read_updates_the_authoritative_session_title() -> None:
     from XBotv2.session.api.contracts import ThreadSummary
-    from XBotv2.tui.impl.events import ThreadRead
     from XBotv2.tui.impl.state import SessionState, reduce
 
     state = SessionState(title="session-id")
@@ -489,6 +486,6 @@ def test_thread_read_updates_the_authoritative_session_title() -> None:
         title="Caption from the server",
     )
 
-    reduce(state, ThreadRead(payload=thread))
+    reduce(state, thread)
 
     assert state.title == "Caption from the server"
