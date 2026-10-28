@@ -79,7 +79,7 @@ async def test_adapter_builds_app_from_launch_and_plugin_config(fake_app) -> Non
     assert app.kwargs["workspace"] == "/workspace"
     assert app.kwargs["render_interval"] == 0.25
     assert app.kwargs["transcript_limit"] == 80
-    assert app.run_kwargs == {"inline": True, "inline_no_clear": True}
+    assert app.run_kwargs == {"inline": False, "inline_no_clear": False}
     transport = app.kwargs["config"]
     assert transport.session_id == "resume-me"
     assert transport.thread_id == "main"
@@ -111,13 +111,13 @@ async def test_adapter_uses_new_session_defaults_and_launch_overrides(fake_app) 
     assert transport.history_retention == 300
 
 
-async def test_adapter_uses_fullscreen_when_requested(fake_app) -> None:
+async def test_adapter_uses_inline_when_requested(fake_app) -> None:
     adapter = terminal_module.TextualTerminalClient(
         backend=FakeBackend(), commands=commands_port(),
-        config=TextualTuiConfig(fullscreen=True),
+        config=TextualTuiConfig(fullscreen=False),
     )
     await adapter.run()
-    assert fake_app[0].run_kwargs == {"inline": False, "inline_no_clear": False}
+    assert fake_app[0].run_kwargs == {"inline": True, "inline_no_clear": True}
 
 
 @pytest.mark.parametrize("fails", [False, True])

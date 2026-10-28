@@ -17,7 +17,7 @@ class TextualTuiConfig(BaseModel):
     agent: str | None = None
     history_window: int = Field(default=DEFAULT_HISTORY_WINDOW, gt=0)
     history_retention: int = Field(default=DEFAULT_HISTORY_RETENTION, gt=0)
-    fullscreen: bool = False
+    fullscreen: bool = True
 
 
 __all__ = ["TextualTuiConfig"]

@@ -1,10 +1,8 @@
-"""Clamped blocks: a content-sized window with a fixed maximum height.
+"""Foldable blocks in the transcript.
 
 The transcript is a conversation, not a log viewer. A tool result, a reasoning
-trace or a long answer therefore renders as a block with a maximum height:
-collapsed it shows a summary row and a short preview, expanded it grows only to
-its content height and then scrolls at the maximum. This keeps short thinking
-and tool details compact while huge output cannot flood the transcript.
+trace or a long answer shows a summary and short preview when collapsed.
+Expanded content grows naturally so the transcript owns reading and scrolling.
 
 What a block shows is a pure function of the text, so it is tested without a
 terminal; the widget only mounts what that function returns.
@@ -27,7 +25,6 @@ BLOCK_PREVIEW_LINES = 2
 BLOCK_CSS = f"""
 ClampedBlock {{
     height: auto;
-    max-height: {BLOCK_MAX_LINES};
     width: 1fr;
 }}
 ClampedBlock:focus {{
@@ -133,7 +130,7 @@ def _head(
 
 
 class ClampedBlock(VerticalScroll):
-    """One content-sized block, clamped to a fixed maximum height."""
+    """A foldable block with a bounded collapsed preview."""
 
     DEFAULT_CSS = BLOCK_CSS
     can_focus = True
@@ -182,6 +179,7 @@ class ClampedBlock(VerticalScroll):
         self._renderable = renderable
         self.head_widget: Static | None = None
         self.body_widget: Static | None = None
+        self.styles.max_height = None if self._expanded else max_lines
 
     # --- what this block is -------------------------------------------
     @property
@@ -210,6 +208,7 @@ class ClampedBlock(VerticalScroll):
         return _plain(self.head_widget)
 
     def compose(self) -> ComposeResult:
+        self.set_class(self._expanded and self._plan.collapsible, "expanded")
         head = self._head_text()
         if head:
             self.head_widget = Static(Text(head), classes="block-head")
@@ -264,8 +263,6 @@ class ClampedBlock(VerticalScroll):
         if self._plan == previous_plan and renderable == previous_renderable:
             return
         self._apply()
-        if streaming:
-            self.scroll_end(animate=False, immediate=True)
 
     def on_click(self) -> None:
         self.focus()
@@ -310,6 +307,7 @@ class ClampedBlock(VerticalScroll):
             self.body_widget.display = bool(self._plan.body)
         self.set_class(self._plan.collapsible, "collapsible")
         self.set_class(self._expanded and self._plan.collapsible, "expanded")
+        self.styles.max_height = None if self._expanded else self.max_lines
 
     def _head_text(self) -> str:
         return self._plan.head or (self.label if self.always_show_label else "")
@@ -333,13 +331,11 @@ __all__ = [
 
 
 class LazyBodyBlock(ClampedBlock):
-    """A collapsible archive field holding only its current requested slice."""
+    """Load a complete archive field on expansion and release it on collapse."""
 
     BINDINGS = [
         Binding("enter", "toggle", "Expand or collapse", show=False),
         Binding("space", "toggle", "Expand or collapse", show=False),
-        Binding("right", "next_page", "Next body page", show=False),
-        Binding("left", "previous_page", "Previous body page", show=False),
     ]
 
     def __init__(self, preview, *, length, reader, unit="chars", **kwargs):
@@ -348,7 +344,6 @@ class LazyBodyBlock(ClampedBlock):
         self.length = length
         self.unit = unit
         self.reader = reader
-        self._page_offset = 0
         self._load_generation = 0
 
     def toggle(self):
@@ -357,16 +352,7 @@ class LazyBodyBlock(ClampedBlock):
         if self.expanded:
             self._load(0)
         else:
-            self._page_offset = 0
             self.show(self.preview)
-
-    def action_next_page(self):
-        if self.expanded and self._page_offset + 4096 < self.length:
-            self._load(self._page_offset + 4096)
-
-    def action_previous_page(self):
-        if self.expanded and self._page_offset:
-            self._load(max(0, self._page_offset - 4096))
 
     def _load(self, offset):
         self._load_generation += 1
@@ -375,20 +361,27 @@ class LazyBodyBlock(ClampedBlock):
 
     async def _read(self, offset, generation):
         try:
-            page = await self.reader(offset)
+            parts = []
+            while True:
+                page = await self.reader(offset)
+                if generation != self._load_generation or not self.is_mounted or not self.expanded:
+                    return
+                parts.append(page.content)
+                if page.next_offset is None:
+                    break
+                if page.next_offset <= offset:
+                    raise ValueError("Body reader returned an invalid next offset")
+                offset = page.next_offset
         except Exception as exc:  # noqa: BLE001 — show the failure at the block
             if generation == self._load_generation and self.is_mounted and self.expanded:
                 self.show(f"Could not load body: {exc}")
             return
         if generation != self._load_generation or not self.is_mounted or not self.expanded:
             return
-        self._page_offset = page.offset
-        self.show(page.content)
+        self.show("".join(parts))
 
     def _head_text(self):
         text = super()._head_text()
-        if self.expanded:
-            return f"{text} · {self._page_offset + 1}–{min(self._page_offset + 4096, self.length)}/{self.length} · Ctrl+←/→ pages"
         return f"{text} · {self.length} {self.unit}"
 
     def on_unmount(self):

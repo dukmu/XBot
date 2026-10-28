@@ -79,7 +79,7 @@ def older_anchor(ids: Sequence[str], window_ids: Sequence[str]) -> str | None:
     index = _index_of(ids, first, missing=None)
     if index is None or index == 0:
         return None
-    return ids[index - 1]
+    return ids[index - 1 if len(window_ids) == 1 else index + len(window_ids) // 2 - 1]
 
 
 def newer_anchor(
@@ -101,7 +101,7 @@ def newer_anchor(
         return None
     if index == len(ids) - 1:
         return None
-    target = min(len(ids) - 1, index + max(1, limit))
+    target = min(len(ids) - 1, index + max(1, limit // 2))
     if target <= index or target == len(ids) - 1:
         # The next window is the tail, which the anchor represents as ``None``.
         return None

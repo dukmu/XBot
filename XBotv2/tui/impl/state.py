@@ -600,10 +600,9 @@ def _append_delta(state: SessionState, content: str, reasoning: str) -> None:
         existing = AssistantEntry(id=entry_id)
     _append(state, replace(
         existing,
-        content=(existing.content + content[:512])[:512],
-        reasoning=(existing.reasoning + reasoning[:512])[:512],
+        content=existing.content + content,
+        reasoning=existing.reasoning + reasoning,
         streaming=True,
-        stream_truncated=existing.stream_truncated or len(existing.content) + len(content) > 512 or len(existing.reasoning) + len(reasoning) > 512,
     ))
 
 
@@ -617,12 +616,11 @@ def _complete_assistant(state: SessionState, record: AssistantRecord) -> None:
         completed = replace(
             streamed,
             id=record.id,
-            content=record.content[:512],
-            reasoning=record.reasoning[:512],
-            body_ref=DisplayBody(preview=record.content[:512], length=len(record.content)),
-            reasoning_ref=DisplayBody(preview=record.reasoning[:512], length=len(record.reasoning)),
+            content=record.content,
+            reasoning=record.reasoning,
+            body_ref=None,
+            reasoning_ref=None,
             streaming=False,
-            stream_truncated=False,
         )
         if stream_id != record.id:
             if record.id in state.timeline:

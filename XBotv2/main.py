@@ -131,11 +131,11 @@ def _build_parser() -> argparse.ArgumentParser:
     display = tui.add_mutually_exclusive_group()
     display.add_argument(
         "--fullscreen", dest="fullscreen", action="store_true", default=None,
-        help="use the alternate screen instead of inline terminal display",
+        help="use the alternate screen (default)",
     )
     display.add_argument(
         "--inline", dest="fullscreen", action="store_false",
-        help="display inline and keep the output after exit (default)",
+        help="display inline and keep the output after exit",
     )
 
     serve = commands.add_parser(

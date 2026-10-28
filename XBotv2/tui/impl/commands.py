@@ -51,9 +51,6 @@ def register_client_commands(commands: CommandsPort, app) -> None:
             app._cmd_help,
         ),
         _client_command(
-            "status", "Show what the session, runtime and model are doing", "/status", app._cmd_status
-        ),
-        _client_command(
             "settings", "Open this TUI's settings", "/settings", app._cmd_settings
         ),
         _client_command(
@@ -62,15 +59,6 @@ def register_client_commands(commands: CommandsPort, app) -> None:
         _client_command(
             "thread", "View a session thread; subagent threads are read-only", "/thread [thread-id]", app._cmd_thread
         ),
-        _client_command("jobs", "List the background tasks this client is tracking", "/jobs [stop <id>|stopall]", app._cmd_jobs),
-        _client_command(
-            "provider", "Switch provider; with no argument, choose from the catalogue", "/provider [status|list|use <name>]", app._cmd_provider
-        ),
-        _client_command("model", "Switch model; with no argument, choose from the current provider", "/model [status|list|use [<provider>] <model>]", app._cmd_model),
-        _client_command(
-            "effort", "Switch reasoning effort; with no argument, choose from the tiers", "/effort [<level>]", app._cmd_effort
-        ),
-        _client_command("agent", "Switch agent; with no argument, choose from the list", "/agent [status|list|use <name>|<name>]", app._cmd_agent),
         _client_command(
             "thinking", "Show or hide the model's reasoning blocks", "/thinking [on|off|toggle]", app._cmd_thinking
         ),

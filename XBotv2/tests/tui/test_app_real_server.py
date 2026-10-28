@@ -78,7 +78,7 @@ async def base_url(
     no_plugins = scenario in {
         "core", "existing_state", "permission", "permission_deny", "interaction", "thinking_stream",
         "thinking_activity", "queue_stream", "long_history_stream",
-        "minimax_thinking",
+        "minimax_thinking", "transcript_product",
         "unicode_tool",
         "unicode_compact",
         "partial_failure",
@@ -201,7 +201,7 @@ async def base_url(
                     "default_model": "test",
                     "models": [{
                         "model": "test",
-                        "max_context_tokens": 4096,
+                        "max_context_tokens": 32768 if scenario == "transcript_product" else 4096,
                         "max_output_tokens": 1024,
                     }],
                 }
@@ -370,6 +370,21 @@ async def base_url(
                     {"content": REPLY},
                 ],
                 "chunk_delay_ms": 300,
+            },
+            {"content": REPLY},
+        ]
+    elif scenario == "transcript_product":
+        reasoning = "Inspecting the transcript and its live state.\n" * 35 + "REASONING-TAIL"
+        model_responses = [
+            {
+                "reasoning": reasoning,
+                "chunks": [{"reasoning": reasoning}, {}],
+                "chunk_delay_ms": 1200,
+                "tool_calls": [{
+                    "id": "slow-shell",
+                    "name": "shell",
+                    "args": {"command": "sleep 3; printf shell-complete"},
+                }],
             },
             {"content": REPLY},
         ]
@@ -735,6 +750,21 @@ def status_text(app: TuiApp) -> str:
     return str(getattr(content, "plain", "") or "")
 
 
+def connected_and_idle(app: TuiApp) -> bool:
+    from XBotv2.tui.impl.status import Connection, ServerTurn
+    if app.controller is None:
+        return False
+    state = app.controller.state
+    return (state.facts.connection is Connection.CONNECTED
+            and state.thread is not None
+            and state.facts.server_turn is not ServerTurn.RUNNING
+            and not state.facts.turn_open)
+
+
+def pty_connected(screen: str) -> bool:
+    return "❯" in screen and ("default/test" in screen or "minimax/MiniMax-M3" in screen)
+
+
 def transcript_text(app: TuiApp) -> str:
     scroll = app.query_one("#transcript", TranscriptScroll)
     parts: list[str] = []
@@ -903,7 +933,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         _resize_tmux_window(session_name, 120, 40)
         ready = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready" in screen,
+            lambda screen: pty_connected(screen),
             description="the real CLI TUI to connect over PTY",
         )
         (captures / "ready.txt").write_text(ready, encoding="utf-8")
@@ -1069,7 +1099,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         await socket_cut_proxy[1].cut_and_wait_for_reconnect()
         idle_reconnected = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: REPLY in screen and "Ready  turn:1" in screen
+            lambda screen: REPLY in screen
             and "❯ ask me a question" in screen,
             description="the completed turn after an idle socket reconnect",
         )
@@ -1115,7 +1145,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         _tmux("send-keys", "-t", session_name, "Enter")
         follow_up_screen = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: screen.count(REPLY) >= 2 and "Ready  turn:2" in screen,
+            lambda screen: screen.count(REPLY) >= 2,
             description="a long bracketed paste edited before the second turn",
         )
         (captures / "follow-up.txt").write_text(
@@ -1158,8 +1188,7 @@ async def test_real_cli_tui_pty_completes_permission_and_user_input_round_trip(
         _tmux("send-keys", "-t", session_name, "Enter")
         restored_screen = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: f"session:{session_id}" in screen
-            and "follow-up question" in screen
+            lambda screen: "follow-up question" in screen
             and REPLY in screen,
             description="returning to the original session and restoring its history",
         )
@@ -1213,7 +1242,7 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
         _resize_tmux_window(session_name, 80, 24)
         await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready" in screen,
+            lambda screen: pty_connected(screen),
             description="the real CLI TUI to connect before streaming reasoning",
         )
         _tmux("send-keys", "-t", session_name, "-l", "show your reasoning")
@@ -1246,14 +1275,10 @@ async def test_real_cli_tui_pty_shows_thinking_block_while_reasoning_streams(
                 and "Think" in screen
                 and "the request before answering." in screen
                 and "show your reasoning" in screen
-                and "Ready  turn:1" in screen
             ),
             description="the same Think block after the assistant completes",
         )
         assert "ctx:~" in completed
-        assert "in:120" in completed
-        assert "out:35" in completed
-        assert "cache:20%" in completed
         assert len(completed.splitlines()) == 24
         assert max(map(len, completed.splitlines()), default=0) <= 80
         (captures / "thinking-completed.txt").write_text(
@@ -1325,14 +1350,14 @@ async def test_real_cli_keeps_long_unicode_tool_payload_operable_at_80x24(
         )
         _resize_tmux_window(session_name, 80, 24)
         await _wait_for_tmux_screen(
-            session_name, lambda screen: "Ready" in screen,
+            session_name, lambda screen: pty_connected(screen),
             description="the Unicode payload TUI to connect",
         )
         _tmux("send-keys", "-t", session_name, "-l", "render 漢字🙂 and long code")
         _tmux("send-keys", "-t", session_name, "Enter")
         completed = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Unicode complete" in screen and "Ready  turn:1" in screen,
+            lambda screen: "Unicode complete" in screen,
             description="the long Unicode tool turn to complete",
         )
         assert len(completed.splitlines()) == 24
@@ -1444,7 +1469,7 @@ async def test_minimax_thinking_runs_through_provider_server_and_textual_pty(
         _resize_tmux_window(session_name, width, height)
         await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready" in screen,
+            lambda screen: pty_connected(screen),
             description="the real client to attach to the MiniMax-configured server",
         )
         _tmux("send-keys", "-t", session_name, "-l", "explain the next step")
@@ -1468,7 +1493,6 @@ async def test_minimax_thinking_runs_through_provider_server_and_textual_pty(
                 and "Checking the request." in screen
                 and "MiniMax response." in screen
                 and "explain the next step" in screen
-                and "Ready  turn:1" in screen
             ),
             description="provider reasoning and final text in the completed turn",
         )
@@ -1571,7 +1595,7 @@ async def test_real_cli_tui_pty_shows_thinking_activity_without_reasoning(
         _resize_tmux_window(session_name, 80, 24)
         await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready" in screen,
+            lambda screen: pty_connected(screen),
             description="the real CLI TUI to connect before the slow response",
         )
         _tmux("send-keys", "-t", session_name, "-l", "wait for a normal reply")
@@ -1591,7 +1615,7 @@ async def test_real_cli_tui_pty_shows_thinking_activity_without_reasoning(
 
         completed = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: REPLY in screen and "Ready  turn:1" in screen,
+            lambda screen: REPLY in screen,
             description="the normal answer to replace its transient thinking activity",
         )
         assert "Thinking" not in completed
@@ -1614,124 +1638,70 @@ async def test_real_cli_settings_overlay_uses_f2_and_preserves_draft(
     base_url: str,
     tmp_path: Path,
 ) -> None:
-    """Settings navigation and the documented shortcut work in a real TTY."""
+    """The generic resource editor saves through HTTP without consuming the draft."""
     if shutil.which("tmux") is None:
         pytest.skip("tmux is required for the real TTY interaction smoke")
-
-    await real_client.open_session(
-        session_id=SESSION_ID,
-        thread_id=THREAD_ID,
-        mode="new",
-    )
-    session_name = f"xbot-settings-{uuid.uuid4().hex[:10]}"
-    repo_root = Path(__file__).resolve().parents[3]
-    xbot = Path(sys.executable).with_name("xbot")
-    command = shlex.join([
-        str(xbot),
-        "tui",
-        "--server",
-        base_url,
-        "--session",
-        SESSION_ID,
-        "--no-plugins",
-    ])
+    await real_client.open_session(session_id=SESSION_ID, thread_id=THREAD_ID, mode="new")
+    catalog = await real_client.list_configuration(SESSION_ID, THREAD_ID)
+    resource_index = next(index for index, resource in enumerate(catalog.resources) if resource.id == "config:overlay")
+    resource = catalog.resources[resource_index]
+    scope = resource.scopes[0]
+    original = await real_client.get_configuration(SESSION_ID, THREAD_ID, resource.id, scope=scope)
+    rows = yaml.safe_load(original.content)
+    rows.append({"id": "coretools", "config": {"shell_max_timeout_seconds": 91}})
+    content = yaml.safe_dump(rows, sort_keys=False)
+    name = f"xbot-settings-{uuid.uuid4().hex[:10]}"
     captures = tmp_path / "settings-pty-captures"
     captures.mkdir()
+    command = shlex.join([
+        str(Path(sys.executable).with_name("xbot")), "tui", "--server", base_url,
+        "--session", SESSION_ID, "--no-plugins", "--data-dir", str(tmp_path / "client-data"),
+    ])
     try:
-        _tmux(
-            "new-session",
-            "-d",
-            "-s",
-            session_name,
-            "-x",
-            "80",
-            "-y",
-            "24",
-            "-c",
-            str(repo_root),
-            command,
+        _tmux("new-session", "-d", "-s", name, "-x", "110", "-y", "40",
+              "-c", str(Path(__file__).resolve().parents[3]), command)
+        _resize_tmux_window(name, 110, 40)
+        await _wait_for_tmux_screen(name, pty_connected, description="the client to attach")
+        _tmux("send-keys", "-t", name, "-l", "unsent draft")
+        _tmux("send-keys", "-t", name, "F2")
+        opened = await _wait_for_tmux_screen(
+            name, lambda screen: "Filter resources" in screen and "Plugin overlay" in screen,
+            description="the server-described configuration directory",
         )
-        _resize_tmux_window(session_name, 80, 24)
-        await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Ready" in screen and f"session:{SESSION_ID}" in screen,
-            description="the settings TUI to attach to the existing session",
+        (captures / "opened.txt").write_text(opened, encoding="utf-8")
+        _tmux("send-keys", "-t", name, *("Down" for _ in range(resource_index)), "Enter")
+        selected = await _wait_for_tmux_screen(
+            name, lambda screen: "Raw plugin declarations" in screen,
+            description="the selected resource's document and owner description",
         )
-
-        _tmux("send-keys", "-t", session_name, "-l", "/status")
-        _tmux("send-keys", "-t", session_name, "Enter")
-        report = await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Status" in screen and "ID: tui-e2e" in screen,
-            description="the local read-only Status page",
+        (captures / "selected.txt").write_text(selected, encoding="utf-8")
+        _tmux("send-keys", "-t", name, "Tab", "Tab", "F7")
+        _tmux("set-buffer", "-b", name, "--", content)
+        _tmux("paste-buffer", "-p", "-r", "-d", "-b", name, "-t", name)
+        await asyncio.sleep(.1)
+        (captures / "edited.txt").write_text(_capture_tmux_screen(name), encoding="utf-8")
+        _tmux("send-keys", "-t", name, "C-s")
+        saved = await _wait_for_tmux_screen(
+            name, lambda screen: "Saved." in screen,
+            description="the persisted server configuration",
         )
-        (captures / "status-command.txt").write_text(report, encoding="utf-8")
-        assert "Settings" not in report, "/status is read-only rather than settings navigation"
-        _tmux("send-keys", "-t", session_name, "Escape")
-        await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Status" not in screen,
-            description="closing the read-only Status page",
-        )
-
-        _tmux("send-keys", "-t", session_name, "-l", "unsent draft")
-        _tmux("send-keys", "-t", session_name, "F2")
-        status = await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Settings" in screen and "ID: tui-e2e" in screen,
-            description="the Status settings page opened with F2",
-        )
-        (captures / "status.txt").write_text(status, encoding="utf-8")
-
-        _tmux("send-keys", "-t", session_name, "Down")
-        _tmux("send-keys", "-t", session_name, "Enter")
-        model = await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Settings" in screen
-            and "Provider: default" in screen
-            and "Change model" in screen,
-            description="the Model page backed by the provider catalog",
-        )
-        (captures / "model.txt").write_text(model, encoding="utf-8")
-        model_action_rows = [
-            line
-            for line in model.splitlines()
-            if any(
-                label in line
-                for label in (
-                    "Change provider",
-                    "Change model",
-                    "Change effort",
-                    "Change agent",
-                )
-            )
-        ]
-        assert len(model_action_rows) == 4
-        assert all(
-            "▔" not in line and "▁" not in line
-            for line in model_action_rows
-        ), (
-            "Settings actions should render as compact rows; dialog navigation "
-            "borders are outside the action rows"
-        )
-
-        _tmux("send-keys", "-t", session_name, "Escape")
+        (captures / "saved.txt").write_text(saved, encoding="utf-8")
+        document = await real_client.get_configuration(SESSION_ID, THREAD_ID, resource.id, scope=scope)
+        assert document.content == content
+        _tmux("send-keys", "-t", name, "Escape")
         closed = await _wait_for_tmux_screen(
-            session_name,
-            lambda screen: "Settings" not in screen and "unsent draft" in screen,
-            description="closing Settings without losing the composer draft",
+            name, lambda screen: "Filter resources" not in screen and "unsent draft" in screen,
+            description="returning to the untouched composer draft",
         )
         (captures / "closed.txt").write_text(closed, encoding="utf-8")
     finally:
         try:
-            await _stop_tmux_tui(session_name)
-        except AssertionError:
-            pass
-        try:
-            _tmux("kill-session", "-t", session_name)
-        except AssertionError:
-            pass
-
+            await _stop_tmux_tui(name)
+        finally:
+            try:
+                _tmux("kill-session", "-t", name)
+            except AssertionError:
+                pass
 
 @pytest.mark.parametrize("base_url", ["queue_stream"], indirect=True)
 async def test_real_cli_enter_steers_during_a_running_turn_and_renders_the_pending_prompt(
@@ -1779,14 +1749,14 @@ async def test_real_cli_enter_steers_during_a_running_turn_and_renders_the_pendi
         _resize_tmux_window(session_name, 80, 24)
         await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready" in screen,
+            lambda screen: pty_connected(screen),
             description="the real CLI TUI to connect before queueing",
         )
         _tmux("send-keys", "-t", session_name, "-l", "first request")
         _tmux("send-keys", "-t", session_name, "Enter")
         await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Running" in screen and "turn:1" in screen,
+            lambda screen: "Thinking" in screen,
             description="the first provider turn to be running",
         )
 
@@ -1797,7 +1767,7 @@ async def test_real_cli_enter_steers_during_a_running_turn_and_renders_the_pendi
             lambda screen: (
                 "queued follow-up" in screen
                 and "next-step" in screen
-                and "Running" in screen
+                and "Thinking" in screen
             ),
             description="the steered prompt visible above the composer during the first turn",
         )
@@ -1901,7 +1871,7 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
         _resize_tmux_window(session_name, 80, 24)
         tail = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "Ready  turn:30" in screen and "history turn 29" in screen,
+            lambda screen: "history turn 29" in screen,
             description="the long-history TUI to attach at its tail",
         )
         (captures / "tail.txt").write_text(tail, encoding="utf-8")
@@ -1909,7 +1879,7 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
         _tmux("send-keys", "-t", session_name, "PageUp")
         older = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "history turn 1" in screen and "Ready  turn:30" in screen,
+            lambda screen: "history turn 1" in screen,
             description="PageUp to the earlier history window",
         )
         (captures / "older-page.txt").write_text(older, encoding="utf-8")
@@ -1924,11 +1894,17 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
 
         _tmux("send-keys", "-t", session_name, "-l", "stream while reading history")
         _tmux("send-keys", "-t", session_name, "Enter")
+        async with asyncio.timeout(8):
+            while True:
+                threads = (await real_client.list_threads(session_id)).threads
+                if any(t.thread_id == THREAD_ID and t.turn_status == "running" for t in threads):
+                    break
+                await asyncio.sleep(0.02)
         streaming = await _wait_for_tmux_screen(
             session_name,
             lambda screen: (
                 "history turn 1" in screen
-                and "Running  turn:31" in screen
+                and "stream while reading history" not in screen
                 and "Checking the long conversation" not in screen
             ),
             description="the older reader anchor while the off-screen tail streams",
@@ -1942,7 +1918,7 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
             session_name,
             lambda screen: (
                 "history turn 1" in screen
-                and "Running  turn:31" in screen
+                and "stream while reading history" not in screen
                 and max(map(cell_len, screen.splitlines()), default=0) == 100
             ),
             description="the reader anchor after a live resize",
@@ -1954,10 +1930,16 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
         _resize_tmux_window(session_name, 80, 24)
         assert _LONG_HISTORY_GATE is not None
         _LONG_HISTORY_GATE.set()
+        async with asyncio.timeout(12):
+            while True:
+                threads = (await real_client.list_threads(session_id)).threads
+                if any(t.thread_id == THREAD_ID and t.turn_status == "idle" for t in threads):
+                    break
+                await asyncio.sleep(0.02)
 
         completed_anchored = await _wait_for_tmux_screen(
             session_name,
-            lambda screen: "history turn 1" in screen and "Ready  turn:31" in screen,
+            lambda screen: "history turn 1" in screen,
             description="the older reader anchor after streaming completes",
             seconds=12,
         )
@@ -1971,7 +1953,6 @@ async def test_real_cli_pages_long_history_without_tail_stream_or_resize_jumps(
             lambda screen: (
                 "stream while reading history" in screen
                 and REPLY in screen
-                and "Ready  turn:31" in screen
                 and "▸ Think · 1 line · ctrl+o expands" in screen
                 and "I am checking the request before answering." in screen
             ),
@@ -2054,7 +2035,7 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
             screen = await _wait_for_tmux_screen(
                 name,
                 lambda value, session_id=session_id: (
-                    "Ready" in value and f"session:{session_id}" in value
+                    pty_connected(value)
                 ),
                 description=f"{session_id} to attach to the shared server",
             )
@@ -2070,7 +2051,6 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
                 "alpha first turn" in screen
                 and REPLY in screen
                 and "Think" in screen
-                and "Ready  turn:1" in screen
             ),
             description="session A's first completed turn",
         )
@@ -2094,7 +2074,6 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
             lambda screen: (
                 "beta independent turn" in screen
                 and REPLY in screen
-                and "Ready  turn:1" in screen
             ),
             description="session B's independent turn",
         )
@@ -2114,10 +2093,8 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
         resumed = await _wait_for_tmux_screen(
             tmux_resumed,
             lambda screen: (
-                f"session:{session_a}" in screen
-                and "alpha first turn" in screen
+                "alpha first turn" in screen
                 and REPLY in screen
-                and "Ready  turn:1" in screen
             ),
             description="a new TUI process to hydrate session A from disk",
         )
@@ -2132,7 +2109,6 @@ async def test_two_real_cli_tuis_keep_sessions_isolated_and_resume_from_disk(
             lambda screen: (
                 "alpha after resume" in screen
                 and screen.count(REPLY) == 2
-                and "Ready  turn:2" in screen
             ),
             description="continued conversation after disk resume",
         )
@@ -2182,7 +2158,7 @@ async def test_exiting_real_tui_before_input_does_not_persist_empty_session(
     app = tui(real_client)
 
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert not session_root.exists()
         await pilot.press("ctrl+c")
 
@@ -2194,7 +2170,7 @@ async def test_exiting_real_tui_before_input_does_not_persist_empty_session(
 async def test_the_real_client_connects_and_reports_ready(real_client: XBotClient) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert app.controller is not None
         assert app.controller.state.session_id == SESSION_ID
         assert app.controller.state.thread_id == THREAD_ID
@@ -2205,7 +2181,7 @@ async def test_the_real_thread_read_is_the_authority_on_the_turn(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         # The watchdog already read the thread; a second read must agree.
         assert app.controller is not None
         assert await app.controller.transport.watchdog_once() is True
@@ -2217,7 +2193,7 @@ async def test_the_real_thread_read_is_the_authority_on_the_turn(
 async def test_a_real_turn_arrives_on_screen(real_client: XBotClient) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("say hello")
         await pilot.press("enter")
@@ -2238,7 +2214,7 @@ async def test_real_goal_runs_two_executions_and_completes_on_screen(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(80, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/goal verify the release")
         await pilot.press("enter")
@@ -2251,7 +2227,7 @@ async def test_real_goal_runs_two_executions_and_completes_on_screen(
                 # doubles as the barrier that keeps this wait from returning
                 # before the second execution is fully rendered.
                 and "Verified through the real TUI flow." in transcript_text(app)
-                and "Ready" in status_text(app)
+                and connected_and_idle(app)
             ),
             description="the real goal to finish its second execution",
         )
@@ -2278,7 +2254,7 @@ async def test_partial_provider_failure_stays_visible_and_the_tui_recovers(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(80, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("fail after partial output")
         await pilot.press("enter")
@@ -2287,7 +2263,7 @@ async def test_partial_provider_failure_stays_visible_and_the_tui_recovers(
             lambda: (
                 "Partial answer survived the failure." in transcript_text(app)
                 and "provider stream broke after partial output" in transcript_text(app)
-                and "Running" not in status_text(app)
+                and connected_and_idle(app)
             ),
             description="the partial provider failure to settle visibly",
         )
@@ -2303,7 +2279,7 @@ async def test_partial_provider_failure_stays_visible_and_the_tui_recovers(
         await pilot.press("enter")
         await wait_for(
             pilot,
-            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            lambda: REPLY in transcript_text(app) and connected_and_idle(app),
             description="a successful follow-up after provider failure",
         )
         assert "Partial answer survived the failure." in transcript_text(app)
@@ -2316,7 +2292,7 @@ async def test_partial_stream_survives_interrupt_and_follow_up(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(80, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("interrupt this stream")
         await pilot.press("enter")
@@ -2330,7 +2306,7 @@ async def test_partial_stream_survives_interrupt_and_follow_up(
             pilot,
             lambda: (
                 "Turn interrupted" in transcript_text(app)
-                and "Running" not in status_text(app)
+                and connected_and_idle(app)
             ),
             description="the interrupt terminal state",
         )
@@ -2346,7 +2322,7 @@ async def test_partial_stream_survives_interrupt_and_follow_up(
         await pilot.press("enter")
         await wait_for(
             pilot,
-            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            lambda: REPLY in transcript_text(app) and connected_and_idle(app),
             description="a successful follow-up after interrupt",
         )
         assert "First, I am checking" in transcript_text(app)
@@ -2359,7 +2335,7 @@ async def test_failed_tool_output_remains_visible_and_follow_up_works(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(80, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("run a failing tool")
         await pilot.press("enter")
@@ -2367,7 +2343,7 @@ async def test_failed_tool_output_remains_visible_and_follow_up_works(
             pilot,
             lambda: (
                 "Recovered after the failed tool." in transcript_text(app)
-                and "Ready" in status_text(app)
+                and connected_and_idle(app)
             ),
             description="the failed tool and recovered assistant reply",
         )
@@ -2390,24 +2366,22 @@ async def test_failed_tool_output_remains_visible_and_follow_up_works(
         assert tool.outcome.kind == "failed"
         assert "exit code 7" in tool.outcome.error.message
         assert any(part.text == "partial-tool-output" for part in tool.outcome.output.parts)
-        assert await real_client.read_artifact(
-            SESSION_ID, THREAD_ID, tool.outcome.output.artifacts[0].id,
-        ) == b"partial-tool-output"
+        assert not tool.outcome.output.artifacts
 
         composer.load_text("continue after tool failure")
         await pilot.press("enter")
         await wait_for(
             pilot,
-            lambda: REPLY in transcript_text(app) and "Ready" in status_text(app),
+            lambda: REPLY in transcript_text(app) and connected_and_idle(app),
             description="a successful follow-up after tool failure",
         )
 
 
 @pytest.mark.parametrize("base_url", ["caption"], indirect=True)
-async def test_caption_updates_the_real_tui_statusline(real_client: XBotClient) -> None:
+async def test_caption_updates_the_real_tui_session(real_client: XBotClient) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         app.query_one("#composer", Composer).load_text("plan a trip to Kyoto")
         await pilot.press("enter")
         await wait_for(
@@ -2425,10 +2399,8 @@ async def test_caption_updates_the_real_tui_statusline(real_client: XBotClient) 
         await pilot.pause()
 
         assert app.controller.state.title == CAPTION
-        assert CAPTION in status_text(app)
 
-        # Switching away and back must adopt the persisted thread title into
-        # both state and the bottom statusline, not just retain a stale label.
+        # Switching away and back must adopt the persisted thread title.
         await real_client.open_session(
             session_id="other-caption-e2e", thread_id=THREAD_ID, mode="new"
         )
@@ -2452,7 +2424,6 @@ async def test_caption_updates_the_real_tui_statusline(real_client: XBotClient) 
             and app.controller.state.title == CAPTION,
             description="restore the persisted caption after switching back",
         )
-        assert CAPTION in status_text(app)
 
     await real_client.close_session(SESSION_ID)
     stored = await real_client.get_session(SESSION_ID)
@@ -2471,7 +2442,7 @@ async def test_caption_retries_after_a_real_first_turn_provider_failure(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("first question")
         await pilot.press("enter")
@@ -2493,7 +2464,6 @@ async def test_caption_retries_after_a_real_first_turn_provider_failure(
         assert await app.controller.transport.watchdog_once() is True
         await pilot.pause()
         assert app.controller.state.title == CAPTION
-        assert CAPTION in status_text(app)
 
     await real_client.close_session(SESSION_ID)
     stored = await real_client.get_session(SESSION_ID)
@@ -2513,7 +2483,7 @@ async def test_real_permission_request_can_be_approved_from_the_tui(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("write a file after asking permission")
         await pilot.press("enter")
@@ -2560,7 +2530,7 @@ async def test_real_permission_request_can_be_denied_from_the_tui(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("write only if the user approves")
         await pilot.press("enter")
@@ -2598,7 +2568,7 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(120, 40)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("ask me where to deploy")
         await pilot.press("enter")
@@ -2674,7 +2644,7 @@ async def test_real_user_input_request_can_be_answered_from_the_tui(
 async def test_real_reasoning_and_usage_reach_the_tui(real_client: XBotClient) -> None:
     app = tui(real_client)
     async with app.run_test(size=(120, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         app.query_one("#composer", Composer).load_text("show reasoning and usage")
         await pilot.press("enter")
         await wait_for(
@@ -2687,11 +2657,9 @@ async def test_real_reasoning_and_usage_reach_the_tui(real_client: XBotClient) -
         assert "I am checking the request before answering." in transcript
         assert "Think" in transcript
         status = status_text(app)
-        assert "in:120" in status
-        assert "out:35" in status
-        assert "cache:20%" in status
-        assert "ctx:~" in status
-        assert "session:tui-e2e" in status
+        assert app.controller is not None
+        counters = app.controller.state.usage.total_counters
+        assert (counters.input, counters.output, counters.cache_read) == (120, 35, 30)
         assert "ctx:~" in status
         assert "/4.1k" in status
 
@@ -2703,7 +2671,7 @@ async def test_real_tui_compact_command_renders_event_and_persists_summary_traje
     """The TUI command, event stream, transcript and durable history agree."""
     app = tui(real_client)
     async with app.run_test(size=(120, 30)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         await wait_for(
             pilot,
             lambda: app.commands.get("compact") is not None,
@@ -2718,7 +2686,7 @@ async def test_real_tui_compact_command_renders_event_and_persists_summary_traje
                 await wait_for(
                     pilot,
                     lambda index=index: f"answer {index}" in transcript_text(app)
-                    and "Ready" in status_text(app),
+                    and connected_and_idle(app),
                     description=f"turn {index} to finish",
                 )
             except AssertionError as exc:
@@ -2801,7 +2769,7 @@ async def test_real_cli_compaction_survives_process_resume_and_continues(
     try:
         launch(first)
         await _wait_for_tmux_screen(
-            first, lambda screen: "Ready" in screen,
+            first, lambda screen: pty_connected(screen),
             description="the compact TUI to attach",
         )
         for index in range(5):
@@ -2810,7 +2778,7 @@ async def test_real_cli_compaction_survives_process_resume_and_continues(
             await _wait_for_tmux_screen(
                 first,
                 lambda screen, index=index: (
-                    f"answer {index}" in screen and f"Ready  turn:{index + 1}" in screen
+                    f"answer {index}" in screen
                 ),
                 description=f"turn {index + 1} before compaction",
             )
@@ -2839,7 +2807,6 @@ async def test_real_cli_compaction_survives_process_resume_and_continues(
             resumed_name,
             lambda screen: (
                 "question 4" in screen
-                and "Ready  turn:5" in screen
             ),
             description="the preserved transcript and lifetime turn count after resume",
         )
@@ -2850,7 +2817,7 @@ async def test_real_cli_compaction_survives_process_resume_and_continues(
         continued = await _wait_for_tmux_screen(
             resumed_name,
             lambda screen: (
-                "answer after compact resume" in screen and "Ready  turn:6" in screen
+                "answer after compact resume" in screen
             ),
             description="a completed turn after compact process resume",
         )
@@ -2885,17 +2852,17 @@ async def test_a_real_turn_ends_ready_and_shows_no_pending_marker(
 ) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("say hello")
         await pilot.press("enter")
         await wait_for(pilot, lambda: REPLY in transcript_text(app), description="reply")
         await wait_for(
             pilot,
-            lambda: "Running" not in status_text(app),
+            lambda: connected_and_idle(app),
             description="the turn to finish",
         )
-        assert "Ready" in status_text(app), (
+        assert connected_and_idle(app), (
             f"status={status_text(app)!r} transcript={transcript_text(app)!r}"
         )
         assert app.controller is not None
@@ -2910,7 +2877,7 @@ async def test_the_real_transcript_is_ordered(real_client: XBotClient) -> None:
     """Prompt, then reply -- and the reply is not written into the prompt."""
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("first question")
         await pilot.press("enter")
@@ -2931,7 +2898,7 @@ async def test_the_real_sequence_has_no_gaps(real_client: XBotClient) -> None:
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert app.controller is not None
         composer = app.query_one("#composer", Composer)
         composer.load_text("say hello")
@@ -2939,7 +2906,7 @@ async def test_the_real_sequence_has_no_gaps(real_client: XBotClient) -> None:
         await wait_for(pilot, lambda: REPLY in transcript_text(app), description="reply")
         await wait_for(
             pilot,
-            lambda: "Running" not in status_text(app),
+            lambda: connected_and_idle(app),
             description="the turn to finish",
         )
         timeline = app.controller.state.timeline
@@ -2996,7 +2963,7 @@ async def test_two_real_turns_in_a_row(real_client: XBotClient) -> None:
     """The second turn must not reuse the first turn's entry."""
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         for index in (1, 2):
             composer.load_text(f"question {index}")
@@ -3022,7 +2989,7 @@ async def test_switching_sessions_swaps_the_transcript_and_keeps_chatting(
     mid-run over a real socket and continue the conversation there."""
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
 
         # A turn in the session the TUI attached to.
@@ -3076,7 +3043,7 @@ async def test_an_attached_image_reaches_the_real_server(
     path.write_bytes(PNG_BYTES)
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text(f"/attach {path}")
         await pilot.press("enter")
@@ -3114,7 +3081,7 @@ async def test_the_real_thread_picker_lists_the_sessions_threads(
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/thread")
         await pilot.press("enter")
@@ -3133,7 +3100,7 @@ async def test_switching_to_the_real_main_thread_keeps_the_client_writable(
     """A thread switch is a re-attach, not a second view: the client keeps working."""
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/thread main")
         await pilot.press("enter")
@@ -3160,7 +3127,7 @@ async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
 
     app = tui(real_client)
     async with app.run_test(size=(100, 28)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("Delegate this review and wait for the result")
         await pilot.press("enter")
@@ -3255,7 +3222,7 @@ async def test_real_subagent_can_be_inspected_read_only_and_returns_to_main(
     async with resumed.run_test(size=(100, 28)) as pilot:
         await wait_for(
             pilot,
-            lambda: "Ready" in status_text(resumed),
+            lambda: connected_and_idle(resumed),
             description="the resumed main thread",
         )
         assert "The delegated review is complete." in transcript_text(resumed)
@@ -3294,7 +3261,7 @@ async def test_second_real_tui_hydrates_an_already_running_subagent(
     async with first.run_test(size=(100, 28)) as first_pilot:
         await wait_for(
             first_pilot,
-            lambda: "Ready" in status_text(first),
+            lambda: connected_and_idle(first),
             description="the first TUI",
         )
         first.query_one("#composer", Composer).load_text("Delegate this in background")
@@ -3325,7 +3292,7 @@ async def test_second_real_tui_hydrates_an_already_running_subagent(
             render_interval=0.01,
         )
         async with second.run_test(size=(100, 28)) as second_pilot:
-            await wait_for(second_pilot, lambda: "Ready" in status_text(second),
+            await wait_for(second_pilot, lambda: connected_and_idle(second),
                            description="the second TUI to attach")
             assert second.controller is not None
             await second_pilot.press("ctrl+t")
@@ -3418,7 +3385,7 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
         launch(first_tmux)
         await _wait_for_tmux_screen(
             first_tmux,
-            lambda screen: "Ready" in screen and f"session:{SESSION_ID}" in screen,
+            lambda screen: pty_connected(screen),
             description="the first real TUI attach",
         )
         _tmux(
@@ -3436,7 +3403,6 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
         )
         assert "<runtime_event" not in parent
         assert '"kind": "job_completed"' not in parent
-        assert "Context ·" in parent
         assert "ctx:~" in parent and "!" in parent
         (captures / "parent-complete.txt").write_text(parent, encoding="utf-8")
 
@@ -3471,14 +3437,12 @@ async def test_real_cli_subagent_thread_is_read_only_and_survives_process_resume
             resumed_tmux,
             lambda screen: (
                 "The delegated review is complete." in screen
-                and "session:Subagent review" in screen
-                and "Ready" in screen
+                and pty_connected(screen)
             ),
             description="the parent transcript in a new TUI process",
         )
         assert "<runtime_event" not in resumed_parent
         assert '"kind": "job_completed"' not in resumed_parent
-        assert "Context ·" in resumed_parent
         assert "ctx:~" in resumed_parent and "!" in resumed_parent
         (captures / "parent-resumed.txt").write_text(
             resumed_parent, encoding="utf-8"
@@ -3514,7 +3478,7 @@ async def test_a_fresh_attach_with_no_session_id_comes_up_ready(
         render_interval=0.01,
     )
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert "Disconnected" not in status_text(app)
         assert app.controller is not None
         assert app.controller.state.session_id, "the assigned session id is adopted"
@@ -3530,15 +3494,14 @@ async def test_a_fresh_attach_with_no_session_id_comes_up_ready(
 async def test_the_real_catalogue_is_discovered_not_hardcoded(
     real_client: XBotClient,
 ) -> None:
-    """The client-owned status entry does not replace the server catalogue."""
+    """The client exposes the server catalogue and its command help."""
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert app.controller is not None
         server_catalog = await app.controller.commands()
         assert any(spec.name == "status" for spec in server_catalog)
-        assert "status" in app.commands.names(), "the client exposes its local Status page"
-        assert "model" in app.commands.names()
+        assert "status" not in app.commands.names()
         composer = app.query_one("#composer", Composer)
         composer.load_text("/help")
         await pilot.press("enter")
@@ -3560,7 +3523,7 @@ async def test_a_real_server_command_runs_and_answers(real_client: XBotClient) -
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         assert app.controller is not None
         composer = app.query_one("#composer", Composer)
         composer.load_text("/status verbose")
@@ -3578,23 +3541,18 @@ async def test_a_real_server_command_runs_and_answers(real_client: XBotClient) -
 # --- the client-side report and the pickers, over real HTTP ---------------
 
 
-async def test_status_is_rendered_from_local_state(real_client: XBotClient) -> None:
-    """No ``/status`` round trip: the client has the thread read already."""
+async def test_status_is_rendered_from_server_command(real_client: XBotClient) -> None:
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
-        assert app.controller is not None
-        session_id = app.controller.state.session_id
-        composer = app.query_one("#composer", Composer)
-        composer.load_text("/status")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="connected")
+        app.query_one("#composer", Composer).load_text("/status")
         await pilot.press("enter")
         await wait_for(
             pilot,
-            lambda: bool(app.screen.query("#settings-status-report")),
-            description="report",
+            lambda: f"ID: {SESSION_ID}" in transcript_text(app),
+            description="server status report",
         )
-        rendered = str(app.screen.query_one("#settings-status-report", Static).content)
-        assert f"ID: {session_id}" in rendered
+        rendered = transcript_text(app)
         assert f"Thread: {THREAD_ID}" in rendered
         assert "State:" in rendered
 
@@ -3604,7 +3562,7 @@ async def test_the_provider_picker_reads_the_real_catalogue(real_client: XBotCli
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/provider")
         await pilot.press("enter")
@@ -3633,7 +3591,7 @@ async def test_the_model_picker_reads_the_real_catalogue(real_client: XBotClient
 
     app = tui(real_client)
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("/model")
         await pilot.press("enter")
@@ -3679,14 +3637,14 @@ async def test_a_real_window_pages_back_and_names_the_same_nodes(
         render_interval=0.01,
     )
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("first question")
         await pilot.press("enter")
         await wait_for(pilot, lambda: REPLY in transcript_text(app), description="answer")
         await wait_for(
             pilot,
-            lambda: "Running" not in status_text(app),
+            lambda: connected_and_idle(app),
             description="the turn to finish",
         )
         controller = app.controller
@@ -3741,14 +3699,14 @@ async def test_a_real_regenerate_leaves_one_prompt_and_one_answer(
         render_interval=0.01,
     )
     async with app.run_test(size=(100, 24)) as pilot:
-        await wait_for(pilot, lambda: "Ready" in status_text(app), description="Ready")
+        await wait_for(pilot, lambda: connected_and_idle(app), description="Ready")
         composer = app.query_one("#composer", Composer)
         composer.load_text("first question")
         await pilot.press("enter")
         await wait_for(pilot, lambda: REPLY in transcript_text(app), description="answer")
         await wait_for(
             pilot,
-            lambda: "Running" not in status_text(app),
+            lambda: connected_and_idle(app),
             description="the turn to finish",
         )
 
@@ -3757,7 +3715,7 @@ async def test_a_real_regenerate_leaves_one_prompt_and_one_answer(
         )
         await wait_for(
             pilot,
-            lambda: "Running" not in status_text(app)
+            lambda: connected_and_idle(app)
             and app.controller is not None
             and any(entry.id == "regenerate-1"
                     and getattr(entry, "content", "") == "first question"
@@ -3791,3 +3749,70 @@ async def test_a_real_regenerate_leaves_one_prompt_and_one_answer(
             for entry in controller.state.timeline
             if getattr(entry, "content", "") == "first question"
         ) == 1, ids
+
+
+@pytest.mark.parametrize("base_url", ["transcript_product"], indirect=True)
+async def test_real_cli_fullscreen_transcript_stream_and_tool_clock(base_url, tmp_path):
+    """The production CLI fills its PTY, keeps reasoning, and ticks during tools."""
+    if shutil.which("tmux") is None:
+        pytest.skip("tmux is required for the real TTY interaction smoke")
+    name = f"xbot-transcript-{uuid.uuid4().hex[:10]}"
+    captures = tmp_path / "transcript-captures"
+    captures.mkdir()
+    command = shlex.join([
+        str(Path(sys.executable).with_name("xbot")), "tui", "--server", base_url,
+        "--no-plugins", "--data-dir", str(tmp_path / "client-data"),
+    ])
+    try:
+        _tmux("new-session", "-d", "-s", name, "-x", "100", "-y", "35",
+              "-c", str(Path(__file__).resolve().parents[3]), command)
+        _resize_tmux_window(name, 100, 35)
+        ready = await _wait_for_tmux_screen(
+            name, lambda screen: "default/test" in screen and "❯" in screen,
+            description="the default fullscreen client",
+        )
+        assert len(ready.splitlines()) == 35
+        assert _tmux("display-message", "-p", "-t", name, "#{alternate_on}").strip() == "1"
+        (captures / "ready.txt").write_text(ready, encoding="utf-8")
+        _tmux("send-keys", "-t", name, "-l", "check the complete transcript")
+        _tmux("send-keys", "-t", name, "Enter")
+        thinking = await _wait_for_tmux_screen(
+            name, lambda screen: "REASONING-TAIL" in screen and "Tool · turn:" not in screen,
+            description="reasoning beyond the old preview limit, while still streaming",
+        )
+        assert "Live preview" not in thinking
+        (captures / "thinking.txt").write_text(thinking, encoding="utf-8")
+        tool = await _wait_for_tmux_screen(
+            name, lambda screen: re.search(r"Tool · turn:1 [\d.]+s", screen) is not None,
+            description="the running tool and elapsed time",
+        )
+        first_clock = re.search(r"Tool · turn:1 ([\d.]+)s", tool).group(1)
+        ticking = await _wait_for_tmux_screen(
+            name,
+            lambda screen: (match := re.search(r"Tool · turn:1 ([\d.]+)s", screen))
+            is not None and float(match.group(1)) >= float(first_clock) + .4,
+            description="the clock advancing without new tool events",
+        )
+        (captures / "tool-ticking.txt").write_text(ticking, encoding="utf-8")
+        complete = await _wait_for_tmux_screen(
+            name, lambda screen: REPLY in screen and "Tool · turn:" not in screen,
+            description="the completed turn",
+        )
+        assert "shell-output.txt" not in complete
+        (captures / "completed.txt").write_text(complete, encoding="utf-8")
+        _resize_tmux_window(name, 80, 45)
+        _tmux("send-keys", "-t", name, "-l", "draft after resize")
+        resized = await _wait_for_tmux_screen(
+            name, lambda screen: "draft after resize" in screen.splitlines()[-3],
+            description="the composer at the bottom of the resized fullscreen PTY",
+        )
+        assert len(resized.splitlines()) == 45
+        (captures / "resized.txt").write_text(resized, encoding="utf-8")
+    finally:
+        try:
+            await _stop_tmux_tui(name)
+        finally:
+            try:
+                _tmux("kill-session", "-t", name)
+            except AssertionError:
+                pass

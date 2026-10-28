@@ -225,8 +225,6 @@ def entry_header(entry: Entry, *, assistant_label: str = "Assistant") -> str:
 
 def entry_body(entry: Entry, *, visibility: BlockVisibility | None = None) -> str:
     """The entry's body text, with structured payloads rendered readably."""
-    if isinstance(entry, AssistantEntry) and entry.stream_truncated:
-        return entry.content + "\n[Live preview; full text available after completion]"
     if isinstance(entry, (UserEntry, AssistantEntry)):
         return entry.content
     if isinstance(entry, ToolEntry):

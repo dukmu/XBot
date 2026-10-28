@@ -1465,8 +1465,8 @@ def test_task_notice_counts_completed_history_with_active_tasks() -> None:
     assert notice.text == "Tasks 2/3 completed"
 
 
-def test_large_live_completion_and_tool_arguments_leave_only_previews() -> None:
-    from XBotv2.agentloop.api.outputs import AssistantTextDelta, StartedToolCall, ToolCallsStarted as StartedPayload
+def test_large_live_completion_preserves_content_and_tool_arguments_use_previews() -> None:
+    from XBotv2.agentloop.api.outputs import AssistantReasoningDelta, AssistantTextDelta, StartedToolCall, ToolCallsStarted as StartedPayload
     from XBotv2.core.api.domain import CompletedStop, ModelTiming
     from XBotv2.core.api.tools import ToolCall
     from XBotv2.session.api.records import AssistantRecord
@@ -1475,14 +1475,15 @@ def test_large_live_completion_and_tool_arguments_leave_only_previews() -> None:
     large = "text" * (512 * 1024)
     state = SessionState()
     reduce(state, AssistantTextDelta(text=large))
+    reduce(state, AssistantReasoningDelta(text=large))
     streamed = state.timeline.get(state.stream_entry_id)
-    assert len(streamed.content) == 512 and streamed.stream_truncated
+    assert streamed.content == streamed.reasoning == large
     from XBotv2.tui.impl.view.entries import entry_body
-    assert "Live preview" in entry_body(streamed)
+    assert entry_body(streamed) == large
     reduce(state, AssistantRecord(id="answer", content=large, reasoning=large, timing=ModelTiming(total_ms=0), stop=CompletedStop()))
     answer = state.timeline.get("answer")
-    assert len(answer.content) == len(answer.reasoning) == 512
-    assert answer.body_ref.length == answer.reasoning_ref.length == len(large)
+    assert answer.content == answer.reasoning == large
+    assert answer.body_ref is None and answer.reasoning_ref is None
     reduce(state, StartedPayload(calls=(StartedToolCall(call=ToolCall(id="call", name="edit", args={"value": large}), category="tool"),)))
     tool = state.timeline.get("call")
     assert tool.args == {}

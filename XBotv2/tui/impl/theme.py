@@ -21,10 +21,6 @@ TUI_CSS = """
 Screen {
     layout: vertical;
 }
-Screen:inline {
-    height: 24;
-    max-height: 100%;
-}
 #transcript {
     height: 1fr;
     width: 1fr;
@@ -35,6 +31,13 @@ Screen:inline {
     max-height: 60%;
     width: 1fr;
     display: none;
+}
+Screen.editing-configuration #transcript {
+    display: none;
+}
+Screen.editing-configuration #inline-panel {
+    height: 1fr;
+    max-height: 100%;
 }
 #completion {
     height: auto;
@@ -68,7 +71,6 @@ Screen:inline {
 }
 #composer {
     padding: 0 1;
-    border-top: solid $text-muted;
     background: $background;
 }
 #status {

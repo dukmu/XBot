@@ -1,818 +1,364 @@
-"""The Textual settings overlay, limited to published client capabilities."""
+"""Generic editor for configuration resources published by the server."""
 
 from __future__ import annotations
 
+import copy
+import json
 import math
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Callable, Literal
+from collections.abc import Awaitable, Callable
+from typing import TYPE_CHECKING, Any
 
-from pydantic import JsonValue
 from textual import on
 from textual.app import ComposeResult
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.widget import Widget
-from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static
+from textual.widgets import Button, Checkbox, Input, OptionList, Select, Static, TextArea
 
-from XBotv2.config.api.contracts import PatchPluginConfig
-from XBotv2.tui.impl.view.plugin_config import (
-    SchemaField,
-    SupportedSchema,
-    UnsupportedSchema,
-    apply_changes,
-    plugin_schema,
-)
-from XBotv2.tui.impl.view.selection import Option as Choice
+from XBotv2.tui.impl.view.plugin_config import SchemaField, schema_fields
 
 if TYPE_CHECKING:
-    from XBotv2.config.api.contracts import PluginConfigCatalog, PluginConfigScope
-    from XBotv2.config.api.protocol import SessionPolicyResponse
-    from XBotv2.permissions.api.models import PermissionRule
-    from XBotv2.sandbox.api.models import SandboxConfig
+    from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument
 
-SettingName = Literal["provider", "model", "effort", "agent", "thinking", "details"]
-
-PAGES = ("Status", "Model", "Permissions", "Sandbox", "Plugins", "Appearance")
 
 SETTINGS_CSS = """
-SettingsPanel {
-    width: 100%;
-    height: 18;
-    max-height: 100%;
-}
-#settings {
-    width: 100%;
-    height: 100%;
-    padding: 0 1;
-}
-#settings-title {
-    height: 1;
-    text-style: bold;
-}
-#settings-body {
-    height: 1fr;
-}
-#settings-nav {
-    width: 20;
-    height: 1fr;
-}
-#settings-nav > .option-list--option-highlighted {
-    color: $accent;
-    text-style: bold;
-}
-#settings-content {
-    width: 1fr;
-    height: 1fr;
-    padding: 0 1;
-}
-#settings-page-title {
-    height: 1;
-    text-style: bold;
-}
-#settings-page-content {
-    height: 1fr;
-}
-#settings-page-actions {
-    height: auto;
-    width: 1fr;
-    align-horizontal: right;
-}
-#settings-page-actions.hidden {
-    display: none;
-}
-.settings-copy {
-    height: auto;
-    margin-bottom: 1;
-}
-Button.settings-action {
-    width: 1fr;
-    height: 1;
-    min-height: 1;
-    margin-bottom: 1;
-    padding: 0 1;
-    background: transparent;
-    color: $text;
-    text-align: left;
-    content-align: left middle;
-}
-.settings-action:focus {
-    color: $accent;
-    text-style: bold;
-}
-.settings-action:hover {
-    color: $accent;
-}
-#settings-help {
-    height: 1;
-    color: $text-muted;
-}
+SettingsPanel { width: 100%; height: 1fr; }
+#settings { width: 100%; height: 100%; padding: 0 1; }
+#settings-title { height: 1; text-style: bold; }
+#settings-body { height: 1fr; }
+#settings-resources { width: 30%; height: 1fr; }
+#settings-filter { height: 3; }
+#settings-list { height: 1fr; }
+#settings-content { width: 1fr; height: 1fr; padding-left: 1; }
+#settings-heading { height: auto; }
+#settings-scope { height: 3; }
+#settings-editor { height: 1fr; }
+#settings-editor TextArea { height: 1fr; min-height: 6; }
+#settings-fields { height: 1fr; }
+.settings-field-label { height: auto; margin-top: 1; }
+.settings-field-action { height: 1; min-height: 1; }
+#settings-message { height: auto; }
+#settings-actions { height: auto; align-horizontal: right; }
+#settings-actions Button { min-width: 6; }
+#settings-help { height: 1; color: $text-muted; }
 """
 
 
-@dataclass(frozen=True, slots=True)
-class SettingsData:
-    """Presentation facts prepared by the client owner from public models."""
-
-    status: str
-    provider: str
-    model: str
-    effort: str
-    agent: str
-    providers: tuple[Choice, ...]
-    models: tuple[Choice, ...]
-    efforts: tuple[Choice, ...]
-    agents: tuple[Choice, ...]
-    provider_error: str = ""
-    agent_error: str = ""
-    policy_error: str = ""
-    session_policy: SessionPolicyResponse | None = None
-    plugin_config_error: str = ""
-    plugin_config: PluginConfigCatalog | None = None
-    plugin_draft: PluginConfigDraft | None = None
-    plugin_status: str = ""
-    reasoning_visible: bool = True
-    tool_details_visible: bool = False
-
-
-@dataclass(frozen=True, slots=True)
-class PluginConfigDraft:
-    """Unsaved changes made to one producer-owned scope overlay."""
-
-    plugin_id: str
-    values: dict[str, JsonValue]
-    removals: tuple[str, ...]
-
-
-@dataclass(frozen=True, slots=True)
-class SettingsAction:
-    """A user choice for the app to execute through its existing owner."""
-
-    name: SettingName
-    choices: tuple[Choice, ...] = ()
-
-
-@dataclass(frozen=True, slots=True)
-class PluginConfigSaveAction:
-    """A typed user request for the app to save a plugin config patch."""
-
-    plugin_id: str
-    patch: PatchPluginConfig
-    draft: PluginConfigDraft
-
-
 class SettingsPanel(Widget):
-    """Keyboard-first settings navigation with explicit unavailable pages."""
+    """Browse and edit server-described configuration without resource-specific logic."""
 
     DEFAULT_CSS = SETTINGS_CSS
-    BINDINGS = [("escape", "cancel", "Close")]
+    BINDINGS = [("escape", "cancel", "Close"), ("ctrl+s", "save", "Save")]
 
     def __init__(
         self,
-        data: SettingsData,
+        catalog: ConfigurationCatalog,
         *,
-        initial_page: str = "Status",
+        read: Callable[..., Awaitable[ConfigurationDocument]],
+        save: Callable[[ConfigurationDocument], Awaitable[ConfigurationDocument]],
         read_only: bool = False,
     ) -> None:
         super().__init__()
-        self.on_result: Callable[[SettingsAction | PluginConfigSaveAction | None], None] | None = None
-        self.data = data
+        self.on_result: Callable[[None], None] | None = None
+        self.catalog = catalog
+        self.read = read
+        self.save = save
         self.read_only = read_only
-        self.page_index = PAGES.index(initial_page) if initial_page in PAGES else 0
-        catalog = data.plugin_config
-        self._selected_plugin_id = (
-            data.plugin_draft.plugin_id
-            if data.plugin_draft is not None
-            else catalog.plugins[0].plugin_id
-            if catalog is not None and catalog.plugins
-            else ""
-        )
-        self._plugin_changes: dict[str, dict[str, JsonValue]] = {}
-        self._plugin_removals: dict[str, set[str]] = {}
-        if data.plugin_draft is not None:
-            self._plugin_changes[data.plugin_draft.plugin_id] = dict(
-                data.plugin_draft.values
-            )
-            self._plugin_removals[data.plugin_draft.plugin_id] = set(
-                data.plugin_draft.removals
-            )
-        self._plugin_field_bindings: dict[str, tuple[str, SchemaField]] = {}
-        self._plugin_clear_bindings: dict[str, tuple[str, str]] = {}
-        self._plugin_enum_values: dict[str, tuple[JsonValue, ...]] = {}
-        self._invalid_plugin_fields: set[str] = set()
-        self._plugin_message = data.plugin_status
+        self.resource: Any = None
+        self.document: Any = None
+        self.content: Any = None
+        self._filtered = list(catalog.resources)
+        self._raw_mode = False
+        self._invalid: set[str] = set()
+        self._fields: dict[str, SchemaField] = {}
+        self._controls: dict[str, SchemaField] = {}
+        self._actions: dict[str, tuple[str, str]] = {}
+        self._busy = False
+        self._conflict = False
 
     def compose(self) -> ComposeResult:
         with Vertical(id="settings"):
-            yield Static(
-                "Status" if self.read_only else "Settings",
-                id="settings-title",
-            )
-            if self.read_only:
-                with VerticalScroll(id="settings-page-content"):
-                    yield Static("")
-            else:
-                with Horizontal(id="settings-body"):
-                    yield OptionList(
-                        *PAGES,
-                        id="settings-nav",
-                        markup=False,
-                        classes="-textual-compact",
-                    )
-                    with Vertical(id="settings-content"):
-                        yield Static(PAGES[self.page_index], id="settings-page-title")
-                        with VerticalScroll(id="settings-page-content"):
-                            yield Static("")
-                        yield Horizontal(id="settings-page-actions", classes="hidden")
-            yield Static(
-                (
-                    "Esc close"
-                    if self.read_only
-                    else "↑↓ choose a section · Tab to controls · Enter select · Esc close"
-                ),
-                id="settings-help",
-            )
+            yield Static("Settings", id="settings-title")
+            with Horizontal(id="settings-body"):
+                with Vertical(id="settings-resources"):
+                    yield Input(placeholder="Filter resources", id="settings-filter")
+                    yield OptionList(id="settings-list", markup=False)
+                with Vertical(id="settings-content"):
+                    yield Static("Select a resource", id="settings-heading", markup=False)
+                    yield Select([], id="settings-scope", allow_blank=True, disabled=True)
+                    with VerticalScroll(id="settings-editor"):
+                        yield Static("Select a resource to edit.")
+                    yield Static("", id="settings-message", markup=False)
+                    with Horizontal(id="settings-actions"):
+                        yield Button("JSON", id="settings-mode", disabled=True)
+                        yield Button("Discard", id="settings-reload", disabled=True)
+                        yield Button("Save", id="settings-save", disabled=True)
+            yield Static("Enter select · Tab controls · Ctrl+S save · Esc close", id="settings-help")
 
     async def on_mount(self) -> None:
-        if self.read_only:
-            self.query_one("#settings-page-content", VerticalScroll).focus()
-        else:
-            nav = self.query_one("#settings-nav", OptionList)
-            nav.highlighted = self.page_index
-            nav.focus()
-        await self._show_page()
+        self.query_one("#settings-editor", VerticalScroll).can_focus = False
+        self._refresh_list()
+        self.query_one("#settings-list", OptionList).focus()
+        if self._filtered:
+            if self._filtered[0].scopes:
+                await self._load(self._filtered[0], self._filtered[0].scopes[0])
+            else:
+                self._message("This resource has no available scope.")
 
-    @on(OptionList.OptionSelected, "#settings-nav")
-    async def on_page_selected(self, event: OptionList.OptionSelected) -> None:
-        self.page_index = event.option_index
-        await self._show_page()
+    def _refresh_list(self) -> None:
+        query = self.query_one("#settings-filter", Input).value.casefold().strip()
+        self._filtered = [item for item in self.catalog.resources if query in f"{item.title} {item.description}".casefold()]
+        listing = self.query_one("#settings-list", OptionList)
+        listing.clear_options()
+        listing.add_options([item.title for item in self._filtered])
+        if self._filtered:
+            listing.highlighted = 0
+
+    @on(Input.Changed, "#settings-filter")
+    def filter_resources(self) -> None:
+        self._refresh_list()
+
+    @on(OptionList.OptionSelected, "#settings-list")
+    async def select_resource(self, event: OptionList.OptionSelected) -> None:
+        if event.option_index >= len(self._filtered):
+            return
+        resource = self._filtered[event.option_index]
+        if self.resource is not None and resource.id == self.resource.id:
+            return
+        if self._dirty() or self._invalid:
+            self._message("Save or close this draft before switching resources.")
+            return
+        if not resource.scopes:
+            self._message("This resource has no available scope.")
+            return
+        await self._load(resource, resource.scopes[0])
+
+    @on(Select.Changed, "#settings-scope")
+    async def select_scope(self, event: Select.Changed) -> None:
+        if self._busy or self.document is None or not isinstance(event.value, str) or event.value == self.document.scope:
+            return
+        if self._dirty() or self._invalid:
+            self._message("Save or close this draft before switching scope.")
+            event.select.value = self.document.scope
+            return
+        await self._load(self.resource, event.value)
+
+    async def _load(self, resource, scope: str) -> None:
+        self._busy = True
+        try:
+            document = await self.read(resource.id, scope=scope)
+        except Exception as exc:
+            self._message(f"Could not load configuration: {exc}")
+            if self.document is not None:
+                self.query_one("#settings-scope", Select).value = self.document.scope
+            self._busy = False
+            return
+        self.resource = resource
+        self.document = document
+        self.content = copy.deepcopy(document.content)
+        self._invalid.clear()
+        self._raw_mode = False
+        self._conflict = False
+        heading = self.query_one("#settings-heading", Static)
+        heading.update(f"{resource.title}\n{resource.description}")
+        selector = self.query_one("#settings-scope", Select)
+        selector.set_options([(scope.title(), scope) for scope in resource.scopes])
+        selector.disabled = len(resource.scopes) < 2
+        selector.value = document.scope
+        await self._render_editor()
+        self._message("")
+        self._busy = False
+        self._refresh_actions()
+
+    async def _render_editor(self) -> None:
+        self._fields.clear()
+        self._controls.clear()
+        self._actions.clear()
+        editor = self.query_one("#settings-editor", VerticalScroll)
+        await editor.remove_children()
+        if self.document is None:
+            return
+        fields = schema_fields(self.document.config_schema)
+        if self.resource.format == "json" and isinstance(self.content, dict) and fields and not self._raw_mode:
+            widgets: list[Widget] = []
+            for index, field in enumerate(fields):
+                self._fields[field.name] = field
+                description = field.schema.get("description")
+                widgets.append(Static(f"{field.label}" + (f" — {description}" if isinstance(description, str) and description else ""), classes="settings-field-label", markup=False))
+                action_id = f"settings-field-action-{index}"
+                present = field.name in self.content
+                self._actions[action_id] = (field.name, "remove" if present else "add")
+                if present:
+                    value = self.content[field.name]
+                    control_id = f"settings-field-{index}"
+                    self._controls[control_id] = field
+                    disabled = self.read_only or field.schema.get("readOnly") is True
+                    if field.kind == "boolean" and not field.nullable:
+                        widgets.append(Checkbox(field.label, value=value is True, id=control_id, classes="settings-field-checkbox", disabled=disabled))
+                    elif field.kind == "enum":
+                        options = [("null" if option is None else str(option), str(n)) for n, option in enumerate(field.options)]
+                        selected = next((str(n) for n, option in enumerate(field.options) if type(value) is type(option) and value == option), Select.BLANK)
+                        widgets.append(Select(options, value=selected, allow_blank=True, id=control_id, classes="settings-field-enum", disabled=disabled))
+                    else:
+                        text = json.dumps(value, ensure_ascii=False) if field.kind == "json" else "" if value is None else str(value)
+                        widgets.append(Input(value=text, id=control_id, classes="settings-field-input", disabled=disabled, password=field.schema.get("format") == "password" or field.schema.get("writeOnly") is True))
+                widgets.append(Button("Remove override" if present else "Set value", id=action_id, classes="settings-field-action", disabled=self.read_only or field.schema.get("readOnly") is True, compact=True))
+            await editor.mount(*widgets)
+        else:
+            text = json.dumps(self.content, ensure_ascii=False, indent=2) if self.resource.format == "json" else str(self.content)
+            await editor.mount(TextArea(text, id="settings-text", read_only=self.read_only))
+        self._refresh_actions()
 
     @on(Button.Pressed)
-    async def on_setting_action(self, event: Button.Pressed) -> None:
-        name = event.button.id
-        if name == "plugin-config-apply":
-            self._finish(self._plugin_save_action())
-            return
-        if name in self._plugin_clear_bindings:
-            plugin_id, field_name = self._plugin_clear_bindings[name]
-            self._plugin_changes.setdefault(plugin_id, {}).pop(field_name, None)
-            removals = self._plugin_removals.setdefault(plugin_id, set())
-            if field_name in removals:
-                removals.remove(field_name)
+    async def button_pressed(self, event: Button.Pressed) -> None:
+        name = event.button.id or ""
+        if name == "settings-save":
+            await self._save()
+        elif name == "settings-reload" and self.document is not None:
+            await self._load(self.resource, self.document.scope)
+        elif name == "settings-mode" and self.document is not None:
+            if self._invalid:
+                self._message("Correct the invalid value before switching editor.")
+                return
+            self._raw_mode = not self._raw_mode
+            await self._render_editor()
+        elif name in self._actions:
+            field_name, operation = self._actions[name]
+            field = self._fields[field_name]
+            if operation == "remove":
+                self.content.pop(field_name, None)
             else:
-                removals.add(field_name)
-            self._invalid_plugin_fields.clear()
-            await self._show_page()
-            return
-        choices: tuple[Choice, ...] = ()
-        if name == "setting-provider":
-            name, choices = "provider", self.data.providers
-        elif name == "setting-model":
-            name, choices = "model", self.data.models
-        elif name == "setting-effort":
-            name, choices = "effort", self.data.efforts
-        elif name == "setting-agent":
-            name, choices = "agent", self.data.agents
-        elif name == "setting-thinking":
-            name = "thinking"
-        elif name == "setting-details":
-            name = "details"
-        else:
-            return
-        self._finish(SettingsAction(name=name, choices=choices))
+                self.content[field_name] = copy.deepcopy(field.schema.get("default", _default_value(field)))
+            self._invalid.discard(field_name)
+            await self._render_editor()
 
-    @on(Select.Changed, "#plugin-config-selection")
-    async def on_plugin_selected(self, event: Select.Changed) -> None:
-        plugin_id = event.value
-        if not isinstance(plugin_id, str) or plugin_id == self._selected_plugin_id:
+    @on(Input.Changed, ".settings-field-input")
+    def field_input_changed(self, event: Input.Changed) -> None:
+        field = self._controls.get(event.input.id or "")
+        if field is None or self._busy:
             return
-        if self._has_plugin_changes():
-            self._plugin_message = "Apply or clear this draft before switching plugins."
-            await self._show_page()
-            return
-        self._selected_plugin_id = plugin_id
-        self._plugin_message = ""
-        await self._show_page()
-
-    @on(Input.Changed, ".plugin-config-input")
-    def on_plugin_input_changed(self, event: Input.Changed) -> None:
-        field_binding = self._plugin_field_bindings.get(event.input.id or "")
-        if field_binding is None:
-            return
-        plugin_id, field = field_binding
         try:
-            value = _parse_input_value(field, event.value)
+            value = _parse_value(field, event.value)
         except ValueError as exc:
-            self._invalid_plugin_fields.add(field.name)
-            self._show_plugin_message(str(exc))
+            self._invalid.add(field.name)
+            self._message(str(exc))
         else:
-            self._invalid_plugin_fields.discard(field.name)
-            self._set_plugin_value(plugin_id, field, value)
-            self._show_plugin_message(self._plugin_message)
-        self._refresh_plugin_apply()
+            self._invalid.discard(field.name)
+            self.content[field.name] = value
+            if not self._invalid:
+                self._message("")
+        self._refresh_actions()
 
-    @on(Checkbox.Changed, ".plugin-config-checkbox")
-    def on_plugin_checkbox_changed(self, event: Checkbox.Changed) -> None:
-        field_binding = self._plugin_field_bindings.get(event.checkbox.id or "")
-        if field_binding is None:
-            return
-        plugin_id, field = field_binding
-        self._set_plugin_value(plugin_id, field, event.value)
-        self._refresh_plugin_apply()
+    @on(Checkbox.Changed, ".settings-field-checkbox")
+    def field_checkbox_changed(self, event: Checkbox.Changed) -> None:
+        field = self._controls.get(event.checkbox.id or "")
+        if field is not None and not self._busy:
+            self.content[field.name] = event.value
+            self._refresh_actions()
 
-    @on(Select.Changed, ".plugin-config-enum")
-    def on_plugin_enum_changed(self, event: Select.Changed) -> None:
-        field_binding = self._plugin_field_bindings.get(event.select.id or "")
-        options = self._plugin_enum_values.get(event.select.id or "")
-        if field_binding is None or options is None:
+    @on(Select.Changed, ".settings-field-enum")
+    def field_enum_changed(self, event: Select.Changed) -> None:
+        field = self._controls.get(event.select.id or "")
+        if field is not None and not self._busy and isinstance(event.value, str) and event.value.isdigit():
+            index = int(event.value)
+            if index < len(field.options):
+                self.content[field.name] = field.options[index]
+                self._refresh_actions()
+
+    @on(TextArea.Changed, "#settings-text")
+    def text_changed(self, event: TextArea.Changed) -> None:
+        if self._busy or self.document is None:
             return
-        plugin_id, field = field_binding
-        if not isinstance(event.value, str) or not event.value.isdigit():
+        text = event.text_area.text
+        if self.resource.format == "json":
+            try:
+                self.content = json.loads(text, parse_constant=_reject_constant)
+            except ValueError as exc:
+                self._invalid.add("document")
+                self._message(f"Invalid JSON: {exc}")
+            else:
+                self._invalid.discard("document")
+                self._message("")
+        else:
+            self.content = text
+        self._refresh_actions()
+
+    def _dirty(self) -> bool:
+        return self.document is not None and self.content != self.document.content
+
+    async def _save(self) -> None:
+        if self._busy or self.document is None or self.read_only or self._invalid or self._conflict or not self._dirty():
             return
-        index = int(event.value)
-        if index < len(options):
-            self._set_plugin_value(plugin_id, field, options[index])
-            self._refresh_plugin_apply()
+        self._busy = True
+        self._refresh_actions()
+        try:
+            updated = await self.save(self.document.model_copy(update={"content": copy.deepcopy(self.content)}))
+        except Exception as exc:
+            if getattr(exc, "status_code", None) == 409:
+                self._conflict = True
+                self._message("Configuration changed on the server. Draft retained; Discard reloads latest and loses this draft.")
+            else:
+                self._message(f"Save failed: {exc}. Your draft is retained.")
+        else:
+            self.document = updated
+            self.content = copy.deepcopy(updated.content)
+            await self._render_editor()
+            self._message("Saved. " + self.resource.description)
+        self._busy = False
+        self._refresh_actions()
+
+    def _message(self, message: str) -> None:
+        self.query_one("#settings-message", Static).update(message)
+
+    def _refresh_actions(self) -> None:
+        save = self.query_one("#settings-save", Button)
+        save.disabled = self.read_only or self._busy or self.document is None or not self._dirty() or bool(self._invalid) or self._conflict
+        self.query_one("#settings-reload", Button).disabled = self._busy or self.document is None
+        mode = self.query_one("#settings-mode", Button)
+        mode.disabled = self._busy or self.document is None or self.resource.format != "json" or not schema_fields(self.document.config_schema) or not isinstance(self.content, dict)
+        mode.label = "Form" if self._raw_mode else "JSON"
 
     def action_cancel(self) -> None:
-        self._finish(None)
-
-    def _finish(self, value: SettingsAction | PluginConfigSaveAction | None) -> None:
         if self.on_result is not None:
-            self.on_result(value)
+            self.on_result(None)
 
-    async def _show_page(self) -> None:
-        title = PAGES[self.page_index]
-        if not self.read_only:
-            self.query_one("#settings-page-title", Static).update(title)
-        self._plugin_field_bindings.clear()
-        self._plugin_clear_bindings.clear()
-        self._plugin_enum_values.clear()
-        self._invalid_plugin_fields.clear()
-        content = self.query_one("#settings-page-content", VerticalScroll)
-        await content.remove_children()
-        await content.mount(*self._page_widgets(title))
-        if self.read_only:
-            return
-        actions = self.query_one("#settings-page-actions", Horizontal)
-        await actions.remove_children()
-        catalog = self.data.plugin_config
-        selected = (
-            next(
-                (item for item in catalog.plugins if item.plugin_id == self._selected_plugin_id),
-                None,
-            )
-            if catalog is not None
-            else None
-        )
-        form = plugin_schema(selected) if selected is not None else None
-        if isinstance(form, SupportedSchema) and form.fields:
-            await actions.mount(
-                Button(
-                    "Apply changes",
-                    id="plugin-config-apply",
-                    disabled=not self._has_plugin_changes(),
-                )
-            )
-            actions.remove_class("hidden")
-        else:
-            actions.add_class("hidden")
-
-    def _page_widgets(self, page: str) -> tuple[Widget, ...]:
-        if page == "Status":
-            return (
-                Static(
-                    self.data.status,
-                    id="settings-status-report",
-                    classes="settings-copy",
-                    markup=False,
-                ),
-            )
-        if page == "Model":
-            return self._model_widgets()
-        if page == "Permissions":
-            return self._permission_widgets()
-        if page == "Sandbox":
-            return self._sandbox_widgets()
-        if page == "Plugins":
-            return self._plugin_widgets()
-        return (
-            Static(
-                "These display choices apply to this TUI process only.",
-                classes="settings-copy",
-            ),
-            Button(
-                f"Thinking details: {'shown' if self.data.reasoning_visible else 'hidden'}",
-                id="setting-thinking",
-                classes="settings-action",
-                compact=True,
-            ),
-            Button(
-                f"Tool details: {'shown' if self.data.tool_details_visible else 'hidden'}",
-                id="setting-details",
-                classes="settings-action",
-                compact=True,
-            ),
-        )
-
-    def _model_widgets(self) -> tuple[Static | Button, ...]:
-        widgets: list[Static | Button] = [
-            Static(
-                f"Provider: {self.data.provider or 'unknown'}",
-                classes="settings-copy",
-                markup=False,
-            ),
-            Button(
-                "Change provider",
-                id="setting-provider",
-                classes="settings-action",
-                disabled=not self.data.providers,
-                compact=True,
-            ),
-            Static(
-                f"Model: {self.data.model or 'unknown'}",
-                classes="settings-copy",
-                markup=False,
-            ),
-            Button(
-                "Change model",
-                id="setting-model",
-                classes="settings-action",
-                disabled=not self.data.models,
-                compact=True,
-            ),
-            Static(
-                f"Reasoning effort: {self.data.effort or 'unknown'}",
-                classes="settings-copy",
-                markup=False,
-            ),
-            Button(
-                "Change effort",
-                id="setting-effort",
-                classes="settings-action",
-                disabled=not self.data.efforts,
-                compact=True,
-            ),
-            Static(
-                f"Agent: {self.data.agent or 'unknown'}",
-                classes="settings-copy",
-                markup=False,
-            ),
-            Button(
-                "Change agent",
-                id="setting-agent",
-                classes="settings-action",
-                disabled=not self.data.agents,
-                compact=True,
-            ),
-        ]
-        if self.data.provider_error:
-            widgets.append(
-                Static(
-                    f"Provider catalog unavailable: {self.data.provider_error}",
-                    classes="settings-copy",
-                    markup=False,
-                )
-            )
-        if self.data.agent_error:
-            widgets.append(
-                Static(
-                    f"Agent catalog unavailable: {self.data.agent_error}",
-                    classes="settings-copy",
-                    markup=False,
-                )
-            )
-        return tuple(widgets)
-
-    def _permission_widgets(self) -> tuple[Static, ...]:
-        policy = self.data.session_policy
-        if policy is None:
-            message = self.data.policy_error or "The session policy has not loaded."
-            return (Static(message, classes="settings-copy", markup=False),)
-        lines = ["Session policy", f"Default: {policy.permissions.default_decision}"]
-        lines.extend(_permission_rule(rule) for rule in policy.permissions.rules)
-        lines += [
-            "Effective policy",
-            f"Default: {policy.effective_permissions.default_decision}",
-        ]
-        lines.extend(
-            _permission_rule(rule)
-            for rule in policy.effective_permissions.rules
-        )
-        return (
-            Static("\n".join(lines), classes="settings-copy", markup=False),
-        )
-
-    def _sandbox_widgets(self) -> tuple[Static, ...]:
-        policy = self.data.session_policy
-        if policy is None:
-            message = self.data.policy_error or "The session policy has not loaded."
-            return (Static(message, classes="settings-copy", markup=False),)
-        lines = ["Session policy"]
-        lines.extend(_sandbox_values(policy.sandbox))
-        lines += ["Effective policy", *_sandbox_values(policy.effective_sandbox)]
-        return (
-            Static("\n".join(lines), classes="settings-copy", markup=False),
-        )
-
-    def _plugin_widgets(self) -> tuple[Widget, ...]:
-        catalog = self.data.plugin_config
-        if catalog is None:
-            message = self.data.plugin_config_error or "Plugin configuration has not loaded."
-            return (Static(message, classes="settings-copy", markup=False),)
-        applies_to = {
-            "current_session": "current session",
-            "new_sessions": "new sessions",
-        }[catalog.applies_to]
-        if not catalog.plugins:
-            return (
-                Static(
-                    f"Scope: {catalog.scope} · {catalog.workspace_root}\n"
-                    "No plugin configuration is declared for this workspace.",
-                    classes="settings-copy",
-                    markup=False,
-                ),
-            )
-        selected = next(
-            (
-                plugin
-                for plugin in catalog.plugins
-                if plugin.plugin_id == self._selected_plugin_id
-            ),
-            catalog.plugins[0],
-        )
-        self._selected_plugin_id = selected.plugin_id
-        widgets: list[Widget] = [
-            Static(
-                f"Scope: {catalog.scope} · {catalog.workspace_root} · Applies to: {applies_to}",
-                classes="settings-copy",
-                markup=False,
-            ),
-            Select(
-                [
-                    (f"{plugin.name} ({plugin.plugin_id})", plugin.plugin_id)
-                    for plugin in catalog.plugins
-                ],
-                id="plugin-config-selection",
-                value=selected.plugin_id,
-                allow_blank=False,
-            ),
-        ]
-        widgets.append(
-            Static(
-                f"{selected.name} · {selected.plugin_id}",
-                classes="settings-copy",
-                markup=False,
-            )
-        )
-        form = plugin_schema(selected)
-        if isinstance(form, UnsupportedSchema):
-            widgets.append(
-                Static(
-                    f"Configuration editor unavailable: {form.reason}",
-                    classes="settings-copy",
-                    markup=False,
-                )
-            )
-        elif not form.fields:
-            widgets.append(
-                Static(
-                    "This schema declares no editable fields.",
-                    classes="settings-copy",
-                    markup=False,
-                )
-            )
-        else:
-            for index, field in enumerate(form.fields):
-                widgets.extend(self._plugin_field_widgets(selected, field, index))
-        if self._plugin_message:
-            widgets.append(
-                Static(
-                    self._plugin_message,
-                    id="settings-plugin-message",
-                    classes="settings-copy",
-                    markup=False,
-                )
-            )
-        return tuple(widgets)
-
-    def _plugin_field_widgets(
-        self, plugin, field: SchemaField, index: int
-    ) -> tuple[Widget, ...]:
-        changes = self._plugin_changes.get(plugin.plugin_id, {})
-        removals = self._plugin_removals.get(plugin.plugin_id, set())
-        if field.name in changes:
-            value = changes[field.name]
-        elif field.name in plugin.scope_config:
-            value = plugin.scope_config[field.name]
-        elif field.name in plugin.effective_config:
-            value = plugin.effective_config[field.name]
-        else:
-            value = field.schema.get("default")
-        scope_override = field.name in plugin.scope_config
-        source = "scope override" if scope_override else "inherited / default"
-        if field.name in removals:
-            source = "will inherit after applying"
-
-        field_id = f"plugin-config-field-{index}"
-        self._plugin_field_bindings[field_id] = (plugin.plugin_id, field)
-        controls: list[Widget] = [
-            Static(f"{field.label} · {source}", classes="settings-copy", markup=False)
-        ]
-        if field.kind == "boolean":
-            controls.append(
-                Checkbox(
-                    field.label,
-                    id=field_id,
-                    classes="plugin-config-checkbox",
-                    value=value is True,
-                )
-            )
-        elif field.kind == "enum":
-            options = field.options
-            if field.nullable and None not in options:
-                options += (None,)
-            self._plugin_enum_values[field_id] = options
-            selected_index = next(
-                (
-                    option_index
-                    for option_index, option in enumerate(options)
-                    if type(option) is type(value) and option == value
-                ),
-                0 if options else -1,
-            )
-            controls.append(
-                Select(
-                    [
-                        (
-                            "— unset —" if option is None else str(option),
-                            str(option_index),
-                        )
-                        for option_index, option in enumerate(options)
-                    ],
-                    id=field_id,
-                    classes="plugin-config-enum",
-                    value=str(selected_index) if selected_index >= 0 else Select.BLANK,
-                    allow_blank=field.nullable,
-                )
-            )
-        else:
-            controls.append(
-                Input(
-                    value="" if value is None else str(value),
-                    placeholder="Unset" if field.nullable else field.label,
-                    id=field_id,
-                    classes="plugin-config-input",
-                )
-            )
-        if scope_override or field.name in removals:
-            clear_id = f"plugin-config-clear-{index}"
-            self._plugin_clear_bindings[clear_id] = (plugin.plugin_id, field.name)
-            controls.append(
-                Button(
-                    "Keep override" if field.name in removals else "Clear override",
-                    id=clear_id,
-                    classes="settings-action",
-                )
-            )
-        return tuple(controls)
-
-    def _has_plugin_changes(self) -> bool:
-        plugin_id = self._selected_plugin_id
-        return bool(
-            self._plugin_changes.get(plugin_id)
-            or self._plugin_removals.get(plugin_id)
-        )
-
-    def _set_plugin_value(
-        self, plugin_id: str, field: SchemaField, value: JsonValue
-    ) -> None:
-        catalog = self.data.plugin_config
-        if catalog is None:
-            return
-        plugin = next(
-            (item for item in catalog.plugins if item.plugin_id == plugin_id), None
-        )
-        if plugin is None:
-            return
-        changes = self._plugin_changes.setdefault(plugin_id, {})
-        removals = self._plugin_removals.setdefault(plugin_id, set())
-        removals.discard(field.name)
-        if field.name in plugin.scope_config and _json_same(
-            plugin.scope_config[field.name], value
-        ):
-            changes.pop(field.name, None)
-        else:
-            changes[field.name] = value
-
-    def _plugin_draft(self) -> PluginConfigDraft:
-        plugin_id = self._selected_plugin_id
-        return PluginConfigDraft(
-            plugin_id=plugin_id,
-            values=dict(self._plugin_changes.get(plugin_id, {})),
-            removals=tuple(sorted(self._plugin_removals.get(plugin_id, set()))),
-        )
-
-    def _plugin_save_action(self) -> PluginConfigSaveAction:
-        catalog = self.data.plugin_config
-        if catalog is None:
-            raise RuntimeError("plugin configuration catalog is not loaded")
-        plugin = next(
-            item
-            for item in catalog.plugins
-            if item.plugin_id == self._selected_plugin_id
-        )
-        draft = self._plugin_draft()
-        return PluginConfigSaveAction(
-            plugin_id=plugin.plugin_id,
-            patch=PatchPluginConfig(
-                scope=catalog.scope,
-                revision=catalog.revision,
-                config=apply_changes(
-                    plugin.scope_config, draft.values, draft.removals
-                ),
-            ),
-            draft=draft,
-        )
-
-    def _show_plugin_message(self, message: str) -> None:
-        self._plugin_message = message
-        for widget in self.query("#settings-plugin-message"):
-            if isinstance(widget, Static):
-                widget.update(message)
-
-    def _refresh_plugin_apply(self) -> None:
-        for widget in self.query("#plugin-config-apply"):
-            if isinstance(widget, Button):
-                widget.disabled = (
-                    not self._has_plugin_changes() or bool(self._invalid_plugin_fields)
-                )
+    async def action_save(self) -> None:
+        await self._save()
 
 
-def _permission_rule(rule: PermissionRule) -> str:
-    qualifiers = []
-    if rule.param_patterns:
-        qualifiers.append(f"parameters={rule.param_patterns}")
-    if rule.path_scope is not None:
-        qualifiers.append(f"path={rule.path_scope}")
-    suffix = f" ({', '.join(qualifiers)})" if qualifiers else ""
-    return f"{rule.decision}: {rule.tool_pattern}{suffix}"
+def _reject_constant(value: str) -> None:
+    raise ValueError(f"Non-finite number: {value}")
 
 
-def _sandbox_values(config: SandboxConfig) -> list[str]:
-    values = config.model_dump(mode="json", exclude={"resources"})
-    lines = [f"{name}: {value}" for name, value in values.items()]
-    lines.extend(
-        f"resource {resource.path}: {resource.access}"
-        for resource in config.resources
-    )
-    return lines
-
-
-def _parse_input_value(field: SchemaField, raw: str) -> JsonValue:
+def _default_value(field: SchemaField) -> Any:
+    if field.nullable:
+        return None
+    if field.kind == "boolean":
+        return False
+    if field.kind in {"integer", "number"}:
+        return 0
+    if field.kind == "enum":
+        return field.options[0] if field.options else None
     if field.kind == "string":
-        value: JsonValue = raw
-        minimum = field.schema.get("minLength")
-        maximum = field.schema.get("maxLength")
-        if isinstance(minimum, int) and len(raw) < minimum:
-            raise ValueError(f"{field.label} must have at least {minimum} characters.")
-        if isinstance(maximum, int) and len(raw) > maximum:
-            raise ValueError(f"{field.label} must have at most {maximum} characters.")
-        return value
+        return ""
+    return None
+
+
+def _parse_value(field: SchemaField, raw: str) -> Any:
     if raw == "" and field.nullable:
         return None
-    if raw == "":
-        raise ValueError(f"{field.label} is required.")
+    if field.kind == "string":
+        return raw
     try:
+        if field.kind == "json":
+            return json.loads(raw, parse_constant=_reject_constant)
+        if field.kind == "boolean":
+            value = json.loads(raw)
+            if not isinstance(value, bool):
+                raise ValueError("expected boolean")
+            return value
         value = int(raw) if field.kind == "integer" else float(raw)
+        if isinstance(value, float) and not math.isfinite(value):
+            raise ValueError("not finite")
+        return value
     except ValueError as exc:
-        raise ValueError(f"{field.label} must be a {field.kind}.") from exc
-    if isinstance(value, float) and not math.isfinite(value):
-        raise ValueError(f"{field.label} must be finite.")
-    exclusive_minimum = field.schema.get("exclusiveMinimum")
-    exclusive_maximum = field.schema.get("exclusiveMaximum")
-    if isinstance(exclusive_minimum, (int, float)) and value <= exclusive_minimum:
-        raise ValueError(f"{field.label} must be greater than {exclusive_minimum}.")
-    if isinstance(exclusive_maximum, (int, float)) and value >= exclusive_maximum:
-        raise ValueError(f"{field.label} must be less than {exclusive_maximum}.")
-    minimum = field.schema.get("minimum")
-    maximum = field.schema.get("maximum")
-    if isinstance(minimum, (int, float)) and value < minimum:
-        raise ValueError(f"{field.label} must be at least {minimum}.")
-    if isinstance(maximum, (int, float)) and value > maximum:
-        raise ValueError(f"{field.label} must be at most {maximum}.")
-    return value
-
-
-def _json_same(left: JsonValue, right: JsonValue) -> bool:
-    return type(left) is type(right) and left == right
-
-
-__all__ = [
-    "PAGES",
-    "SETTINGS_CSS",
-    "SettingName",
-    "SettingsAction",
-    "SettingsData",
-    "SettingsPanel",
-    "PluginConfigDraft",
-    "PluginConfigSaveAction",
-]
+        raise ValueError(f"{field.label}: invalid {field.kind} value") from exc

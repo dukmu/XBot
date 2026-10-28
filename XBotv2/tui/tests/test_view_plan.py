@@ -116,9 +116,9 @@ def test_paging_up_keeps_the_overlap_and_drops_the_newest() -> None:
     first = plan_window(timeline, (), limit=3)
     assert first.mounted == ("e7", "e8", "e9")
     second = plan_window(timeline, first.mounted, anchor=older_anchor(timeline, first.mounted), limit=3)
-    assert second.mounted == ("e4", "e5", "e6")
-    assert second.mount == ("e4", "e5", "e6")
-    assert second.remove == ("e7", "e8", "e9")
+    assert second.mounted == ("e5", "e6", "e7")
+    assert second.mount == ("e5", "e6")
+    assert second.remove == ("e8", "e9")
 
 
 def test_paging_down_keeps_the_overlap_and_drops_the_oldest() -> None:
@@ -126,8 +126,8 @@ def test_paging_down_keeps_the_overlap_and_drops_the_oldest() -> None:
     window = plan_window(timeline, (), anchor="e4", limit=3)
     assert window.mounted == ("e2", "e3", "e4")
     onward = plan_window(timeline, window.mounted, anchor=newer_anchor(timeline, window.mounted, limit=3), limit=3)
-    assert onward.mounted == ("e5", "e6", "e7")
-    assert onward.remove == ("e2", "e3", "e4")
+    assert onward.mounted == ("e3", "e4", "e5")
+    assert onward.remove == ("e2",)
 
 
 def test_the_mounted_set_never_exceeds_the_limit_while_paging() -> None:
@@ -151,7 +151,7 @@ def test_newer_anchor_is_none_once_the_window_reaches_the_tail() -> None:
 
 def test_newer_anchor_moves_one_window_at_a_time() -> None:
     timeline = ids(20)
-    assert newer_anchor(timeline, ("e0", "e1", "e2"), limit=3) == "e5"
+    assert newer_anchor(timeline, ("e0", "e1", "e2"), limit=3) == "e3"
 
 
 def test_anchors_on_an_empty_or_unmounted_timeline_are_none() -> None:

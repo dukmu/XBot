@@ -770,6 +770,9 @@ async def test_thinking_activity_is_transient_and_not_a_timeline_entry() -> None
         assert len(app.query(ThinkingActivity)) == 1
         assert "Thinking" in str(app.query_one(ThinkingActivity).content)
         assert state.timeline.ids() == ("u1",)
+        await app.view.render_activity("✳ Tool · turn:1 2.0s")
+        assert "2.0s" in str(app.query_one(ThinkingActivity).content)
+        assert state.timeline.ids() == ("u1",)
 
         await app.view.render(state, thinking=False)
         await settle(pilot)
