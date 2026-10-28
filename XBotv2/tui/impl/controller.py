@@ -149,15 +149,10 @@ class TuiController:
     # --- rendering ----------------------------------------------------
 
     async def flush(self) -> bool:
-        """Redraw the views if anything changed since the last flush.
-
-        Retention is evaluated even when no event arrived: the reader returning
-        to the tail is a change only the view can see, and the pages they walked
-        past must not stay held until the next event happens to arrive.
-        """
-        released = self._release_held_pages()
-        if not self._dirty and not released:
+        """Redraw the views if anything changed since the last flush."""
+        if not self._dirty:
             return False
+        self._trim_live_timeline()
         self._dirty = False
         await self._view.render_transcript(
             self._history_state or self.state,
@@ -171,9 +166,8 @@ class TuiController:
         await self._view.render_interaction(request)
         return True
 
-    def _release_held_pages(self) -> bool:
+    def _trim_live_timeline(self) -> None:
         """Release completed live entries outside the recent count and byte budget."""
-        changed = False
         entries = list(self.state.timeline)
         total = sum(_entry_bytes(entry) for entry in entries)
         for entry in entries:
@@ -189,10 +183,7 @@ class TuiController:
                 continue
             self.state.timeline.remove(entry.id)
             total -= _entry_bytes(entry)
-            changed = True
-        if changed:
             self._live_trimmed = True
-        return changed
 
     async def flush_loop(self, interval: float = 0.1) -> None:
         """Redraw on a fixed cadence while events keep arriving.

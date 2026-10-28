@@ -51,7 +51,6 @@ from XBotv2.tui.impl.events import (
     InterruptAsked,
     InterruptSettled,
     SnapshotAdopted,
-    StatusSlotsUpdated,
     StreamGapDetected,
     UiEvent,
     UserInputFailed,
@@ -264,7 +263,7 @@ class TransportSession:
         )
         self._cursor = 0
         self._stopped = False
-        self._watchdog_failures = 0
+        self._watchdog_failed = False
         self._cursor_recoveries = 0
         self._baseline_rebuilds = 0
         # Switching sessions moves the read loop onto another subscription. The
@@ -669,10 +668,8 @@ class TransportSession:
         except Exception as exc:
             self._note_watchdog_failure(str(exc))
             return False
-        self._watchdog_failures = 0
+        self._watchdog_failed = False
         self._emit(ThreadRead(payload=summary))
-        if summary.status_slots:
-            self._emit(StatusSlotsUpdated(dict(summary.status_slots)))
         return True
 
     async def watch(self, should_poll: Callable[[], bool]) -> None:
@@ -685,9 +682,9 @@ class TransportSession:
                 await self.watchdog_once()
 
     def _note_watchdog_failure(self, message: str) -> None:
-        if self._watchdog_failures == 0:
+        if not self._watchdog_failed:
             self._emit(ErrorFrame(payload=LoopError(code="watchdog_failed", message=message)))
-        self._watchdog_failures += 1
+        self._watchdog_failed = True
 
     # --- writes -------------------------------------------------------
 

@@ -76,7 +76,6 @@ from XBotv2.tui.impl.events import (
     QueueReplaced,
     RuntimeNoticePublished,
     SessionConfigured,
-    StatusSlotsUpdated,
     ToolCallsStarted,
     ToolRecordReceived,
     TurnCancelled,

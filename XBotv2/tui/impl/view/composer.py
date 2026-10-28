@@ -217,7 +217,6 @@ class Composer(Vertical):
         completion: Any = None,
     ) -> None:
         super().__init__(id=id)
-        self._on_submit = on_submit
         self._hint_text = ""
         self._queue_editing = False
         self._model: ComposerModel | None = None

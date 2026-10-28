@@ -43,7 +43,6 @@ from XBotv2.tui.impl.events import (
     InterruptAsked,
     InterruptSettled,
     SnapshotAdopted,
-    StatusSlotsUpdated,
     StreamGapDetected,
     TurnFinished,
     TurnStarted,
@@ -186,7 +185,7 @@ async def test_connect_reads_the_thread_so_a_mid_turn_attach_is_running(
     recorder = Recorder(state)
     await build(backend, recorder).connect()
     assert recorder.only(ThreadRead).payload.turn_status == "running"
-    assert recorder.only(StatusSlotsUpdated).slots == {"goal": "ship"}
+    assert state.status_slots == {"goal": "ship"}
     assert derive(state.facts) is Status.RUNNING
 
 
@@ -491,10 +490,11 @@ async def test_watchdog_reports_the_authoritative_turn_state(backend: ScriptedBa
 
 async def test_watchdog_reports_the_threads_status_slots(backend: ScriptedBackend) -> None:
     backend.threads = (thread(status_slots={"goal": "ship"}),)
-    recorder = Recorder()
+    state = SessionState()
+    recorder = Recorder(state)
     transport = await connected(backend, recorder)
     await transport.watchdog_once()
-    assert recorder.only(StatusSlotsUpdated).slots == {"goal": "ship"}
+    assert state.status_slots == {"goal": "ship"}
 
 
 async def test_watchdog_reports_a_vanished_thread(backend: ScriptedBackend) -> None:

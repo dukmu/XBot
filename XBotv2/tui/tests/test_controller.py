@@ -30,6 +30,7 @@ from XBotv2.tui.impl.controller import TuiController
 from XBotv2.tui.impl.events import (
     AssistantDelta,
     ConnectionChanged,
+    LocalNotice,
     ThreadRead,
     TurnStarted,
     UserMessagePublished,
@@ -682,15 +683,32 @@ async def test_paging_up_at_the_beginning_does_not_request_history(backend: Scri
 
 
 async def test_live_history_is_bounded_without_loading_older_pages(backend: ScriptedBackend) -> None:
-    from XBotv2.tui.impl.timeline import UserEntry, Delivery
     control, _ = controller(backend, history_retention=3)
     for index in range(10):
-        control.state.timeline.upsert(UserEntry(id=f"u{index}", content="old", delivery=Delivery.ACCEPTED))
+        control.dispatch(UserMessagePublished(payload=human_record(f"u{index}", "old")))
     await control.flush()
     assert control.state.timeline.ids() == ("u7", "u8", "u9")
-    control.state.timeline.upsert(UserEntry(id="big", content="x" * (3 * 1024 * 1024), delivery=Delivery.ACCEPTED))
+    control.dispatch(LocalNotice(notice_kind="test", text="x" * (3 * 1024 * 1024)))
     await control.flush()
-    assert control.state.timeline.ids() == ("big",)
+    assert len(control.state.timeline.ids()) == 1
+    assert next(iter(control.state.timeline)).text == "x" * (3 * 1024 * 1024)
+
+
+async def test_retention_keeps_in_flight_entries(backend: ScriptedBackend) -> None:
+    from XBotv2.agentloop.api.outputs import AssistantTextDelta, StartedToolCall, ToolCallsStarted as LoopToolCallsStarted
+    from XBotv2.core.api.tools import ToolCall
+    from XBotv2.tui.impl.events import ToolCallsStarted, UserInputSubmitted
+
+    control, _ = controller(backend, history_retention=1)
+    control.dispatch(UserMessagePublished(payload=human_record("old", "old")))
+    control.dispatch(UserInputSubmitted(input_id="pending", content="waiting"))
+    control.dispatch(AssistantDelta(payload=AssistantTextDelta(text="streaming")))
+    stream_id = control.state.stream_entry_id
+    control.dispatch(ToolCallsStarted(payload=LoopToolCallsStarted(calls=(
+        StartedToolCall(call=ToolCall(id="tool", name="test", args={}), category="execute"),
+    ))))
+    await control.flush()
+    assert set(control.state.timeline.ids()) == {"pending", stream_id, "tool"}
 
 
 async def test_history_pages_replace_old_view_while_live_events_continue(backend: ScriptedBackend) -> None:

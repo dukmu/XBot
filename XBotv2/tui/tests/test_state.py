@@ -92,7 +92,6 @@ from XBotv2.tui.impl.events import (
     RuntimeNoticePublished,
     SessionConfigured,
     SnapshotAdopted,
-    StatusSlotsUpdated,
     StreamGapDetected,
     ToolCallsStarted,
     ToolRecordReceived,
@@ -1252,9 +1251,11 @@ def test_agent_configured_updates_identity() -> None:
 
 
 def test_status_slots_are_replaced_not_merged() -> None:
-    state = session(connected(), StatusSlotsUpdated({"goal": "ship"}))
+    state = session(connected(), ThreadRead(payload=thread(status_slots={"goal": "ship"})))
     assert state.status_slots == {"goal": "ship"}
-    reduce(state, StatusSlotsUpdated({"effort": "high"}))
+    reduce(state, ThreadRead(payload=thread(status_slots={"effort": "high"})))
+    assert state.status_slots == {"effort": "high"}
+    reduce(state, ThreadRead(payload=thread(status_slots={})))
     assert state.status_slots == {"effort": "high"}
 
 

@@ -77,7 +77,6 @@ from XBotv2.tui.impl.events import (
     RuntimeNoticePublished,
     SessionConfigured,
     SnapshotAdopted,
-    StatusSlotsUpdated,
     StreamGapDetected,
     ToolCallsStarted,
     ToolRecordReceived,
@@ -249,13 +248,12 @@ def reduce(state: SessionState, event: UiEvent, *, now: float | None = None) -> 
     elif isinstance(event, SessionConfigured):
         state.runtime_selection = event.payload.runtime_selection
 
-    elif isinstance(event, StatusSlotsUpdated):
-        state.status_slots = dict(event.slots)
-
     elif isinstance(event, ThreadRead):
         turn_status = ServerTurn(event.payload.turn_status)
         state.thread = event.payload
         state.title = event.payload.title
+        if event.payload.status_slots:
+            state.status_slots = dict(event.payload.status_slots)
         # A fresh client has not seen the historical turn frames.  The thread
         # read already carries the count derived from the canonical persisted
         # conversation, so it is also the authority for the displayed turn

@@ -17,8 +17,8 @@ isolation.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Mapping, Union
+from dataclasses import dataclass
+from typing import Union
 from XBotv2.core.api.history import HistoryPage
 from XBotv2.session.api.records import DisplayRecord
 from XBotv2.agentloop.api.outputs import (
@@ -97,13 +97,6 @@ class JobsReplaced:
 @dataclass(frozen=True)
 class SessionConfigured:
     payload: AgentConfiguredEvent
-
-
-@dataclass(frozen=True)
-class StatusSlotsUpdated:
-    """Status slots travel beside the turn frames that carry them."""
-
-    slots: Mapping[str, str] = field(default_factory=dict, hash=False)
 
 
 @dataclass(frozen=True)
@@ -330,7 +323,6 @@ UiEvent = Union[
     ConnectionChanged,
     SnapshotAdopted,
     SessionConfigured,
-    StatusSlotsUpdated,
     ThreadRead,
     StreamGapDetected,
     TurnStarted,
@@ -391,7 +383,6 @@ __all__ = [
     "QueueReplaced",
     "SessionConfigured",
     "SnapshotAdopted",
-    "StatusSlotsUpdated",
     "StreamGapDetected",
     "StartedToolCall",
     "ToolCallsStarted",
