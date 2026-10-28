@@ -159,16 +159,8 @@ class Stream:
         if row is None:
             return
         seq, offset, mtime = row
-        current_mtime = (
-            self.paths.rollout_file.stat().st_mtime_ns
-            if self.paths.rollout_file.exists()
-            else 0
-        )
-        size = (
-            self.paths.rollout_file.stat().st_size
-            if self.paths.rollout_file.exists()
-            else 0
-        )
+        signature = file_signature(self.paths.rollout_file)
+        size, current_mtime = (signature[2], signature[3]) if signature else (0, 0)
         if size == offset and current_mtime == mtime:
             return
         claim = None
@@ -249,11 +241,8 @@ class Stream:
                     f"Invalid rollout reference for {self.thread}"
                 ) from exc
             seq, offset = batch[-1][0]["seq"], end
-        final_mtime = (
-            self.paths.rollout_file.stat().st_mtime_ns
-            if self.paths.rollout_file.exists()
-            else 0
-        )
+        signature = file_signature(self.paths.rollout_file)
+        final_mtime = signature[3] if signature else 0
         if final_mtime != mtime:
             await self._sql(
                 lambda c: execute(
@@ -489,10 +478,8 @@ class Stream:
             return await self._present()
 
     async def _present(self):
-        return (
-            self.paths.rollout_file.exists()
-            and self.paths.rollout_file.stat().st_size > 0
-        )
+        signature = file_signature(self.paths.rollout_file)
+        return signature is not None and signature[2] > 0
 
     async def head(self):
         async with self.resources.handle_use(

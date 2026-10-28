@@ -121,6 +121,26 @@ async def test_shared_atomic_materialization_and_cancelled_io_drains(records, mo
     assert len(first.splitlines()) == 8
 
 
+async def test_shared_pins_evict_on_last_release_and_session_drain(records):
+    scope, _, _ = records
+    cache = scope.root.require(PERSISTENCE).artifact_cache
+    ref = await scope.artifacts.reference_records("notes")
+    async with scope.artifacts.pin(ref) as first:
+        async with scope.artifacts.pin(ref) as second:
+            assert first == second
+            assert Path(first).is_file()
+            cache.budget = 0
+        assert Path(first).is_file()
+    assert not Path(first).exists()
+
+    cache.budget = 16000
+    async with scope.artifacts.pin(ref) as rebuilt:
+        assert Path(rebuilt).is_file()
+    assert Path(rebuilt).is_file()
+    await scope.root.require(PERSISTENCE).drain("s")
+    assert not Path(rebuilt).exists()
+
+
 async def test_fork_and_selection_exchange_rebind_without_source_session(records, tmp_path):
     from XBotv2.session.api.contracts import SESSIONS
     scope, source, paths = records

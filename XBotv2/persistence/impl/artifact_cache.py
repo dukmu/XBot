@@ -25,6 +25,7 @@ class ArtifactCache:
         self.root = resources._paths.data_dir / ".cache" / "artifacts" / uuid4().hex
         self.entries = OrderedDict()
         self.lock = asyncio.Lock()
+        self._unpinned_bytes = 0
 
     def path(self, store, identity):
         return self.root / store._paths.session_id / identity.split("/", 1)[1]
@@ -33,6 +34,8 @@ class ArtifactCache:
         async with self.lock:
             entry = self.entries.get(key)
             if entry is not None:
+                if not entry.pins:
+                    self._unpinned_bytes -= entry.charge
                 entry.pins += 1
                 self.entries.move_to_end(key)
             return entry
@@ -80,23 +83,26 @@ class ArtifactCache:
             if entry is not None:
                 async with self.lock:
                     entry.pins -= 1
+                    if not entry.pins:
+                        self._unpinned_bytes += entry.charge
                     self.entries.move_to_end(key)
                 await self._evict()
 
     async def _evict(self):
         from XBotv2.persistence.impl.artifacts import _unlink
         async with self.lock:
+            if self._unpinned_bytes <= self.budget:
+                return
             candidates = [(key, entry) for key, entry in self.entries.items() if not entry.pins]
         for key, entry in candidates:
-            async with self.lock:
-                unpinned = sum(value.charge for value in self.entries.values() if not value.pins)
-                if unpinned <= self.budget:
-                    return
             async with self.resources.artifact_lock(entry.path.parent, key[1]):
                 async with self.lock:
+                    if self._unpinned_bytes <= self.budget:
+                        return
                     if self.entries.get(key) is not entry or entry.pins:
                         continue
                     del self.entries[key]
+                    self._unpinned_bytes -= entry.charge
                 await run_file_io(_unlink, entry.path)
 
     async def drop_session(self, session_id):
@@ -105,8 +111,9 @@ class ArtifactCache:
             selected = [(key, entry) for key, entry in self.entries.items() if key[0] == session_id]
             if any(entry.pins for _, entry in selected):
                 raise RuntimeError("Session artifact paths are still in use")
-            for key, _ in selected:
+            for key, entry in selected:
                 del self.entries[key]
+                self._unpinned_bytes -= entry.charge
         for _, entry in selected:
             await run_file_io(_unlink, entry.path)
 
@@ -116,4 +123,5 @@ class ArtifactCache:
             if any(entry.pins for entry in self.entries.values()):
                 raise RuntimeError("Artifact cache still has active users")
             self.entries.clear()
+            self._unpinned_bytes = 0
         await run_file_io(shutil.rmtree, self.root, True)
