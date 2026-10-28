@@ -68,6 +68,7 @@ class OpenAICompatibleProvider(BaseProvider):
         retry_backoff_factor: float = 0.5,
         request_timeout_seconds: float | None = 60.0,
         input_modalities: list[str] | None = None,
+        output_token_parameter: str = "max_tokens",
     ) -> None:
         from openai import AsyncOpenAI
 
@@ -83,6 +84,7 @@ class OpenAICompatibleProvider(BaseProvider):
         }
         if base_url:
             kwargs["base_url"] = base_url
+        self._output_token_parameter = output_token_parameter
         self._extra_body = {} if extra_body is None else dict(extra_body)
         if extra_headers:
             kwargs["default_headers"] = dict(extra_headers)
@@ -121,7 +123,7 @@ class OpenAICompatibleProvider(BaseProvider):
         generation = selection.generation
         if generation.temperature is not None:
             api_kwargs["temperature"] = generation.temperature
-        api_kwargs["max_tokens"] = generation.max_output_tokens
+        api_kwargs[self._output_token_parameter] = generation.max_output_tokens
         if generation.mode.kind == "reasoning":
             api_kwargs["reasoning_effort"] = generation.mode.effort
         derived_extra_body: dict[str, JsonValue] = {}
@@ -413,6 +415,7 @@ def create_openai_provider(provider_config, model_config):
     return OpenAICompatibleProvider(
         **_provider_arguments(provider_config, model_config),
         extra_headers=provider_config.headers or None,
+        output_token_parameter=model_config.output_token_parameter,
     )
 
 

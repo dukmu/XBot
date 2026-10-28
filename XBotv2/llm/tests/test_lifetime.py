@@ -211,13 +211,13 @@ async def test_cancelled_selection_finishes_old_close_and_updates_binding(tmp_pa
     try:
         thread = await sessions.open(OpenSession("a", "main", str(tmp_path), "minimax", "new", True))
         runtime = thread.require(AGENT_RUNTIME)
-        selection = asyncio.create_task(runtime.select_provider("minimax", "Minimax-M2.7"))
+        selection = asyncio.create_task(runtime.select_provider("minimax", "MiniMax-M3.1-Flash"))
         await entered.wait()
         selection.cancel()
         finish.set()
         with pytest.raises(asyncio.CancelledError):
             await selection
-        assert runtime.current_selection().model == "Minimax-M2.7"
+        assert runtime.current_selection().model == "MiniMax-M3.1-Flash"
         stream = thread.require(MODEL).astream("new")
         clients[1].finish.set()
         assert await anext(stream) == "new"

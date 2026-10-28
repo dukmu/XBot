@@ -683,3 +683,39 @@ async def test_anthropic_rejects_delta_without_its_content_block_start():
 
     assert isinstance(events[-1], ModelFailed)
     assert all(not isinstance(event, ModelCompleted) for event in events)
+
+
+@pytest.mark.parametrize("parameter", ["max_tokens", "max_completion_tokens"])
+async def test_openai_compatible_output_budget_uses_configured_wire_field(parameter):
+    from XBotv2.llm.api.contracts import ModelConfig, ProviderConfig
+    from XBotv2.llm.impl.openai import create_openai_provider
+
+    model = ModelConfig(model="example", output_token_parameter=parameter)
+    config = ProviderConfig(api_key="test", default_model="example", models=[model])
+    provider = create_openai_provider(config, model)
+    sent = []
+
+    class Completions:
+        async def create(self, **kwargs):
+            sent.append(kwargs)
+            async def chunks():
+                yield ChatCompletionChunk.model_validate({
+                    "id": "1", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    "created": 1, "model": "example", "object": "chat.completion.chunk",
+                })
+            return _FakeOpenAIStream(chunks())
+
+    await provider.client.close()
+    provider.client = SimpleNamespace(chat=SimpleNamespace(completions=Completions()))
+    request = ModelRequest(
+        messages=(ProviderUser(parts=(TextPart(text="hi"),)),), tools=(),
+        selection=ResolvedModelSelection(
+            route=ModelRoute(provider="test", model="example"),
+            generation=GenerationSettings(mode=StandardGenerationMode(), max_output_tokens=512),
+            context_window=4096,
+        ),
+    )
+    _ = [event async for event in provider.astream(request)]
+    assert sent[0][parameter] == 512
+    other = "max_completion_tokens" if parameter == "max_tokens" else "max_tokens"
+    assert other not in sent[0]
