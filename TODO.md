@@ -579,3 +579,30 @@
 - [x] 最终可视候选 `0930c9f4` 的run6实际PID1484433/session24194，脚本run.exit=0、CLI cli.exit=0，服务/provider关闭。只续接同一持久session的正常ANSI画面，没有重做队列、审批或旧业务工况；最终回复自动可见，未用Ctrl+End。主代理实际看 `/tmp/xbot-tui-product-21/run6/color-fullscreen-final.png`，灰色窄scrollbar已替代抢眼紫色粗条，正文/输入层次与最后回复完整可见；原始 `.ansi`、`terminal.bin`、run.log均在同目录。旧版对照采用run5/prior-old-fullscreen-ready.png，映射为相同终端默认色表；这些是实际tmux ANSI的可视转换，不是伪造原生窗口或声称固定用户终端背景。
 - [x] 当前交付为默认外观改造与Textual客户端产品操作，不声称所有Codex功能齐平：普通终端inline及可选fullscreen、行内选择/审批/问答、pending文字编辑/删除/steer、历史文本召回和既有分页/惰性正文。已消费历史的原子替换、未知artifact的pending全文编辑受现有接口限制；本轮未增加外部编辑器入口。没有为此改runtime，也没有引入Maya绑定或主题选择功能。最后移除Appearance页遗留的一条无效--theme说明，只删展示文案/追加本日志，不重跑已通过工况。
 - [x] 最终差异逐文件审读：仅TUI实现/测试/文档、main.py的TUI参数和客户端overlay、CLI测试及TODO；XCore、服务端、agentloop、session、protocol、存储业务无改动。用户未跟踪设计稿和.worktrees保持，不提交PNG/日志/环境，不推送、不合并main。本节目标完成，失败和分段续接证据按原退出状态保留，不改造成“一次全套全绿”。
+
+## 10. 三轮代码精简（2026-10-28，完成）
+
+- [x] 从 `refactor-all` 的 `e6a163cf`、tracked clean 开始。目标为可读性、减少冗余状态和重复工作，不按删行数凑成果。三个具体实施切片只交给三名 GPT-6.1 Terra：客户端状态/刷新、物理存储/缓存、上下文构建；主代理逐文件审读、整合并按责任提交。复用此前仍适用的验证，本轮只运行受影响的定向检查。
+
+### 第一轮：TUI 状态和空闲刷新
+
+- [x] 删除只写不读的 `Composer._on_submit`；看门狗失败次数改为实际需要的布尔标记；删除重复承载同一线程状态的私有 `StatusSlotsUpdated` 事件，由 `ThreadRead` 一处更新。保留非空状态槽替换、空状态槽不覆盖的现有语义。
+- [x] 空闲 `flush` 先检查 dirty，再做时间线保留计算；将过时的 `_release_held_pages` 改为实际职责 `_trim_live_timeline`，删除无消费者的返回值。所有生产时间线变更仍经过 dirty 路径；原条数/8 MiB 预算及 pending 用户、流式助手、运行工具保护保留。提交 `c495176a`。
+- [x] 删除无用字段时的首组为 2 passed / 1 failed，actual exit1（`/tmp/xbot-slim-tui-composer.log`、`.actualexit`）；失败发生在直接构造 TuiApp 的样式解析，尚未挂载输入组件。将默认 `ansi-dark` 初始化从适配器移入应用构造，单独提交 `c220db06`。只重跑失败节点，1 passed / actual0（`/tmp/xbot-slim-tui-theme-fix.log`、`.actualexit`）。
+- [x] 状态槽、看门狗、launcher、事件复用定向集合 79 passed / actual0（`/tmp/xbot-slim-tui-state.log`、`.actualexit`）；保留预算、进行中条目及分页定向集合 7 passed / actual0（`/tmp/xbot-slim-tui-retention.log`、`.actualexit`）。测试使用真实 dispatch 路径，不再直接改 timeline 后期待空闲扫描补处理。
+- [x] 同输入工作量探针：1,000 条时间线、100 次空闲刷新，`_entry_bytes` 调用从 100,000 次降为 0。原始输出 `/tmp/xbot-tui-idle-before.log`、`/tmp/xbot-tui-idle-after.log`；这说明消除了重复计算，不是实际 TTY 或整机加速比例。
+
+### 第二轮：物理存储和缓存
+
+- [x] rollout 恢复/存在判断复用已有 `file_signature`，将同一次检查中的 exists/stat 合并为一次 stat。原始后端所有权、事务重放及损坏修复节点 2 passed，工具终态 exit0（`/tmp/xbot-persistence-stat-focused.log`，未另存 exit 文件）。
+- [x] ArtifactCache 在现有锁内维护唯一私有 `_unpinned_bytes`：首次 pin 扣除、最后释放加入、淘汰/会话清理扣除、关闭归零。预算内命中/释放不再遍历整表，超预算淘汰不再逐候选重新求和；保留每 artifact 锁、身份/pin 检查，并在取得锁后复查当前预算。持久层仍只处理物理字节和使用权，未加入会话业务或修改持久化格式。上述存储改动提交 `87448168`。
+- [x] 真实物化的共享 pin/最后释放淘汰/会话 drain，加既有原子物化与取消 I/O 收尾、零预算空文件节点，最终 3 passed / actual_exit0（`/tmp/xbot-artifact-cache-focused-final.log`）。初次同组已通过，按私有字段命名调整后仅重验该受影响集合；初始 `/tmp/xbot-artifact-cache-focused.log` 保留，不将两次相同集合累加为覆盖范围。
+- [x] 同输入元数据探针：1,000 个缓存条目、100 次命中/释放，`items()` 扫描 200→0，`values()` 扫描 200→0，actual_exit0。脚本 `/tmp/xbot-artifact-cache-probe.py`，最终输出 `/tmp/xbot-artifact-cache-probe-final.log`；初始命名版本输出另留 `/tmp/xbot-artifact-cache-probe.log`。不将元数据探针称为磁盘吞吐或端到端性能。
+
+### 第三轮：上下文和请求构建
+
+- [x] Engine 复用上下文契约已有 tuple，删除构建、hook 替换和请求之间的 list/tuple 往返；只有迭代收尾需要插入通知时构建新 tuple。请求边界仍接受 Sequence 并归一为 tuple。ContextBuilder 直接过滤/扩展注册组件，删除一次性的中间列表，保持 owner/组件顺序及空白过滤。提交 `d60a9e40`。
+- [x] 实际模型请求路径的普通、ReplaceRequest、ReplaceContext、重试、收尾及工具 schema 复用定向集合 7 passed / actual0（`/tmp/xbot-slim-core-request.log`、`.exit`）；跨 owner/同 owner 注册顺序与空白组件过滤节点 1 passed / actual0（`/tmp/xbot-slim-context-prompt.log`、`.exit`）。检查最终 provider request 和提示顺序，未做真实 provider 吞吐测量。
+
+- [x] 最终代码评估点为 `d60a9e40b7daba8191a31f6e4b7cece380efd292`；各组检查在提交前对应的受影响源码上分段执行，不声称该提交 checkout 后跑过一次整合全套。主代理已审读全部差异并检查空白错误。后续本日志提交只改 TODO，不改变被验证的生产源码。
+- [x] 未重复旧全套、PTY、真实 provider、并发压力或 wheel 验收，本轮证据仅覆盖列明路径。未为尚不能证明无效的持久字段增设迁移；本轮删的是已确认无用字段、重复私有事件和中间容器，并消除实际扫描。用户未跟踪设计稿和 `.worktrees/` 保留；不提交本地探针/日志/缓存，不推送、不合并 main。
