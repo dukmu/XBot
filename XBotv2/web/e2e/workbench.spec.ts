@@ -651,6 +651,10 @@ test("does not navigate away while a server command is active", async ({ page })
 });
 
 test("manages the authoritative DSh queue while a turn is running", async ({ page }, testInfo) => {
+  const interrupts: string[] = [];
+  page.on("request", (request) => {
+    if (request.url().endsWith("/interrupt")) interrupts.push(request.url());
+  });
   await openDemoSession(page);
   const composer = page.getByRole("textbox", { name: "Message XBot" });
   await composer.fill("Hold queue turn");
@@ -663,6 +667,10 @@ test("manages the authoritative DSh queue while a turn is running", async ({ pag
   await expect(dock).toContainText("Queued follow-up");
   await dock.getByRole("button", { name: "Edit queued message" }).click();
   const editor = dock.getByRole("textbox", { name: "Edit queued message" });
+  await editor.press("Escape");
+  await expect(dock).toContainText("Queued follow-up");
+  expect(interrupts).toEqual([]);
+  await dock.getByRole("button", { name: "Edit queued message" }).click();
   await editor.fill("Edited follow-up");
   await dock.getByRole("button", { name: "Save queued message" }).click();
   await expect(dock).toContainText("Edited follow-up");
@@ -670,6 +678,17 @@ test("manages the authoritative DSh queue while a turn is running", async ({ pag
   await dock.getByRole("button", { name: "Remove queued message" }).click();
   await expect(dock).toBeHidden();
   await expect(page.getByText("The delayed turn completed.", { exact: true })).toBeVisible();
+});
+
+test("mobile sidebar closes with Escape and returns focus", async ({ page }) => {
+  test.skip((page.viewportSize()?.width || 0) > 760, "the desktop sidebar stays visible");
+  const opener = page.getByRole("button", { name: "Open sessions" });
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeHidden();
+  await opener.click();
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(page.getByRole("navigation", { name: "Sessions" })).toBeHidden();
+  await expect(opener).toBeFocused();
 });
 
 test("keeps a long history bounded while allowing older messages", async ({ page }) => {
@@ -715,8 +734,7 @@ async function mockProtocol(page: Page) {
     message_id: string;
     content: string;
     target: "next-turn" | "next-step";
-    source: string;
-    image_count: number;
+    media_count: number;
     artifact_count: number;
   }> = [];
   type MockRuntimeEvent = {
@@ -874,141 +892,23 @@ async function mockProtocol(page: Page) {
     if (path === "/sessions" && method === "POST") {
       const payload = request.postDataJSON();
       const sessionId = String(payload.session_id || "demo-session");
-      return json(route, {
-        ...openSession(
-          sessionId,
-          String(payload.workspace_root || ""),
-          Number(payload.history_limit || 0),
-        ),
-        pending_interactions: payload.mode === "resume" && pendingPermission ? [pendingPermission] : [],
-      });
+      const threadId = String(payload.thread_id || "agent");
+      return json(route, { data: openedThread(sessionId, threadId, String(payload.workspace_root || ""), pendingInputs) });
     }
     if (path === "/sessions/demo-session/threads" && method === "POST") {
-      return json(route, openSubagentSession());
+      return json(route, { data: openedThread("demo-session", "subagent-research", "", []) });
     }
-    if (path === "/sessions/demo-session/threads") return json(route, {
-      session_id: "demo-session",
-      threads: [{
-        session_id: "demo-session",
-        thread_id: "agent",
-        status: "active",
-        kind: "main",
-        turn_status: "idle",
-        parent_thread_id: "",
-        agent: "default",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: demoMessageCount,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: { goal: "active" },
-      }, {
-        session_id: "demo-session",
-        thread_id: "subagent-research",
-        status: "inactive",
-        kind: "subagent",
-        turn_status: "idle",
-        parent_thread_id: "agent",
-        agent: "researcher",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: 2,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: {},
-      }],
-    });
-    if (path === "/sessions/history-session/threads") return json(route, {
-      session_id: "history-session",
-      threads: [{
-        session_id: "history-session",
-        thread_id: "history-main",
-        status: "inactive",
-        kind: "main",
-        turn_status: "idle",
-        parent_thread_id: "",
-        agent: "default",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: 2,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: { goal: "active" },
-        workspace_root: "/workspace/history",
-        title: "Historical review",
-      }],
-    });
-    if (path === "/sessions/second-session/threads") return json(route, {
-      session_id: "second-session",
-      threads: [{
-        session_id: "second-session",
-        thread_id: "agent",
-        status: "inactive",
-        kind: "main",
-        turn_status: "idle",
-        parent_thread_id: "",
-        agent: "default",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: 0,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: {},
-        workspace_root: "/workspace/XBot",
-        title: "Second session",
-      }],
-    });
-    if (path === "/sessions/long-session/threads") return json(route, {
-      session_id: "long-session",
-      threads: [{
-        session_id: "long-session",
-        thread_id: "long-main",
-        status: "inactive",
-        kind: "main",
-        turn_status: "idle",
-        parent_thread_id: "",
-        agent: "default",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: 200,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: { goal: "active" },
-        workspace_root: "/workspace/long",
-        title: "Long history",
-      }],
-    });
-    if (path === "/sessions/fork-session/threads") return json(route, {
-      session_id: "fork-session",
-      threads: [{
-        session_id: "fork-session",
-        thread_id: "agent",
-        status: "inactive",
-        kind: "main",
-        turn_status: "idle",
-        parent_thread_id: "",
-        agent: "default",
-        provider: "minimax",
-        model: "Minimax-M3",
-        model_mode: "high",
-        context_window: 32000,
-        message_count: 3,
-        usage: usage(),
-        pending_interactions: [],
-        status_slots: { goal: "active" },
-        workspace_root: "/workspace/XBot",
-      }],
-    });
+    const threadPath = path.match(/^\/sessions\/([^/]+)\/threads(?:\/([^/]+))?$/);
+    if (threadPath && method === "GET") {
+      const [, sessionId, threadId] = threadPath;
+      if (threadId) return json(route, threadSummary(sessionId, threadId, demoMessageCount));
+      const main = sessionId === "history-session" ? "history-main" : sessionId === "long-session" ? "long-main" : "agent";
+      const threads = [threadSummary(sessionId, main, demoMessageCount)];
+      if (sessionId === "demo-session" && url.searchParams.get("kind") !== "main") {
+        threads.push(threadSummary(sessionId, "subagent-research", demoMessageCount));
+      }
+      return json(route, { session_id: sessionId, threads, previous_cursor: null, next_cursor: null });
+    }
     if (path === "/sessions/demo-session/fork" && method === "POST") return json(route, {
       session_id: "fork-session",
       source_session_id: "demo-session",
@@ -1045,24 +945,12 @@ async function mockProtocol(page: Page) {
     if (path.endsWith("/trajectory") && method === "GET") {
       const sessionId = path.split("/")[2];
       const threadId = path.split("/")[4];
-      const opened = threadId === "subagent-research" ? openSubagentSession() : openSession(sessionId);
-      const history = cleared && sessionId === "demo-session" ? [] : regenerated && sessionId === "demo-session" ? [
-        { id: "regen-user", role: "user", content: "Inspect API boundaries", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
-        { id: "assistant-1-0", role: "assistant", content: "Regenerated from the persisted input.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
-      ] : opened.history;
-      const all = history.map((message, index) => ({
-        position: index + 1,
-        kind: "message",
-        message_id: String((message as { id?: string }).id || `history-${index + 1}`),
-        message,
-      }));
-      const end = Number(url.searchParams.get("cursor") || all.length);
-      const limit = Number(url.searchParams.get("limit") || all.length);
-      const start = Math.max(0, end - limit);
-      return json(route, {
-        items: all.slice(start, end),
-        next_cursor: start ? String(start) : null,
-      });
+      const all = cleared && sessionId === "demo-session" ? [] : trajectoryMessages(sessionId, threadId);
+      const end = Number(url.searchParams.get("before") || url.searchParams.get("cursor") || all.length + 1);
+      const limit = Number(url.searchParams.get("limit") || 160);
+      const page = all.filter((item) => item.position < end).slice(-limit);
+      const older = page.length && page[0].position > 1 ? String(page[0].position) : null;
+      return json(route, { page: { items: page, older_cursor: older, newer_cursor: null }, newest_position: all.length });
     }
     if (path.endsWith("/messages") && method === "GET") {
       const sessionId = path.split("/")[2];
@@ -1098,23 +986,8 @@ async function mockProtocol(page: Page) {
       items: [],
     });
     if (path.endsWith("/jobs") && method === "GET") return json(route, {
-      session_id: "demo-session",
-      thread_id: "agent",
-      jobs: [{
-        job_id: "agent-1",
-        kind: "agent",
-        command: "Explorer: inspect protocol boundaries",
-        cwd: "/workspace",
-        status: "running",
-        created_at: 1,
-        started_at: 1,
-        finished_at: 0,
-        output: "Inspecting protocol models and client boundaries...",
-        error: "",
-        agent: "Explorer",
-        thread_id: "subagent-explorer",
-        usage: { total_tokens: 240 },
-      }],
+      session_id: routeSessionId, thread_id: path.split("/")[4],
+      jobs: [{ id: "agent-1", kind: "agent", label: "Explorer: inspect protocol boundaries", state: "running", elapsed_ms: 0, summary: "Inspecting protocol models and client boundaries..." }],
     });
     if (path.endsWith("/events")) {
       const after = Number(url.searchParams.get("after") || 0);
@@ -1122,6 +995,8 @@ async function mockProtocol(page: Page) {
         route,
         (runtimeEvents.get(routeSessionId) || []).filter((event) => event.sequence > after),
         after,
+        routeSessionId,
+        path.split("/")[4],
       );
     }
     const queueMatch = path.match(/^\/sessions\/[^/]+\/threads\/[^/]+\/queue\/([^/]+)$/);
@@ -1146,23 +1021,22 @@ async function mockProtocol(page: Page) {
           message_id: requestId,
           content,
           target: "next-turn",
-          source: "user",
-          image_count: Array.isArray(payload.images) ? payload.images.length : 0,
+          media_count: Array.isArray(payload.media) ? payload.media.length : 0,
           artifact_count: Array.isArray(payload.attachments) ? payload.attachments.length : 0,
         });
         publishRuntime(routeSessionId, [{ type: "queue_updated", data: { items: pendingInputs } }], requestId);
-        return sse(route, []);
+        return route.fulfill({ status: 204 });
       }
       demoMessageCount += content.startsWith("Plan") ? 4 : content.startsWith("Write") ? 1 : 2;
       if (content.startsWith("Hold")) {
         await new Promise((resolve) => setTimeout(resolve, content.startsWith("Hold queue") ? 1600 : 400));
         const events = [
           { type: "turn_started", data: { turn: 2 } },
-          { type: "assistant_message", data: { content: "The delayed turn completed.", tool_calls: [] } },
-          { type: "turn_finished", data: { turn: 2, status_slots: { goal: "active" } } },
+          { type: "assistant_completed", data: { kind: "assistant", id: "delayed-answer", content: "The delayed turn completed.", reasoning: "", tool_calls: [], timing: { total_ms: 0, first_delta_ms: null }, stop: { kind: "completed" } } },
+          { type: "turn_ended", data: { turn: 2, outcome: { kind: "finished", stop_reason: "completed" } } },
         ];
         publishRuntime(routeSessionId, events, requestId);
-        return sse(route, events);
+        return route.fulfill({ status: 204 });
       }
       if (content.startsWith("Write")) {
         const events = [{
@@ -1279,6 +1153,65 @@ async function mockProtocol(page: Page) {
   });
 }
 
+function threadSummary(sessionId: string, threadId: string, demoMessageCount: number) {
+  const child = threadId === "subagent-research";
+  const history = sessionId === "history-session";
+  const long = sessionId === "long-session";
+  return {
+    session_id: sessionId, thread_id: threadId, status: "active", kind: child ? "subagent" : "main",
+    turn_status: "idle", parent_thread_id: child ? "agent" : "", agent: child ? "researcher" : "default",
+    provider: "minimax", model: "Minimax-M3", model_mode: "high", context_window: 32000,
+    message_count: sessionId === "second-session" ? 0 : history ? 2 : long ? 200 : demoMessageCount,
+    usage: usage(), session_stats: { turns: 1, steps: 1, llm_ms: 1000, tool_ms: 300, ttft_ms: 200, ttft_steps: 1, decode_ms: 800, decode_tokens: 200 },
+    pending_interactions: [], status_slots: { goal: "active" },
+    workspace_root: history ? "/workspace/history" : long ? "/workspace/long" : "/workspace/XBot",
+    title: history ? "Historical review" : long ? "Long history" : sessionId === "second-session" ? "Second session" : "Demo session",
+  };
+}
+
+function openedThread(sessionId: string, threadId: string, workspace: string, pendingInputs: unknown[]) {
+  const summary = threadSummary(sessionId, threadId, 3);
+  return {
+    key: { session_id: sessionId, thread_id: threadId },
+    metadata: {
+      title: summary.title, workspace_root: workspace || summary.workspace_root,
+      parent_thread_id: summary.parent_thread_id,
+      runtime_selection: { agent_name: summary.agent, model: {
+        route: { provider: summary.provider, model: summary.model },
+        generation: { mode: { kind: "reasoning", effort: "high" } }, context_window: summary.context_window,
+      } },
+    },
+    usage: usage(), status_slots: summary.status_slots, event_cursor: 0,
+    history: { items: [], older_cursor: null, newer_cursor: null },
+    pending_inputs: pendingInputs, pending_interactions: [],
+  };
+}
+
+function trajectoryMessages(sessionId: string, threadId: string) {
+  const human = (id: string, content: string) => ({ kind: "human_input", id, parts: [{ kind: "text", text: content }], artifacts: [] });
+  const assistant = (id: string, content: string, reasoning = "", calls: unknown[] = []) => ({
+    kind: "assistant", id, parts: [{ kind: "text", text: content }, { kind: "reasoning", text: reasoning }, ...calls],
+    exchange: { timing: { total_ms: 0, first_delta_ms: null }, stop: { kind: "completed" } },
+  });
+  let messages: object[];
+  if (threadId === "subagent-research") {
+    messages = [human("child-user", "Inspect persistence"), assistant("child-answer", "Subagent inspected the persistence boundary.")];
+  } else if (sessionId === "second-session") {
+    messages = [];
+  } else if (sessionId === "history-session") {
+    messages = [human("history-user", "Review the persisted workspace"), assistant("history-answer", "A persisted answer from history.", "I checked the persisted context.")];
+  } else if (sessionId === "long-session") {
+    messages = Array.from({ length: 100 }, (_, i) => [human(`user-${i}`, `Historical message ${i + 1}`), assistant(`answer-${i}`, `Historical answer ${i + 1}`)]).flat();
+  } else {
+    messages = [
+      human("demo-user", "Inspect API boundaries"),
+      assistant("demo-answer", "I will inspect the public SDK surface.", "", [{ type: "tool_call", id: "call-read", name: "filesystem_read", args: { path: "docs/sdk.md" } }]),
+      { kind: "tool", id: "demo-tool", call: { id: "call-read", name: "filesystem_read" }, outcome: { kind: "succeeded", output: { parts: [{ kind: "text", text: "Protocol v3 is the source contract." }], structured: null, artifacts: [] } }, timing: { duration_ms: 0 } },
+    ];
+  }
+  return messages.map((message, index) => ({ kind: "message_appended", position: index + 1, message }));
+}
+
 function openSession(sessionId = "demo-session", workspaceOverride = "", historyLimit = 0) {
   const historical = sessionId === "history-session";
   const longHistory = sessionId === "long-session";
@@ -1318,29 +1251,10 @@ function openSession(sessionId = "demo-session", workspaceOverride = "", history
   };
 }
 
-function openSubagentSession() {
-  return {
-    ...openSession("demo-session"),
-    thread_id: "subagent-research",
-    agent_name: "researcher",
-    history: [
-      { role: "user", content: "Inspect persistence", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
-      { role: "assistant", content: "Subagent inspected the persistence boundary.", tool_calls: [], tool_call_id: "", status: "", data: null, error: null, artifacts: [], images: [] },
-    ],
-    history_cursor: null,
-  };
-}
-
 function usage() {
   return {
-    input_tokens: 800,
-    output_tokens: 200,
-    total_tokens: 1000,
-    requests: 3,
-    context_tokens: 800,
-    cache_read_input_tokens: 0,
-    cache_creation_input_tokens: 0,
-    prompt_cache_write_tokens: 0,
+    total_counters: { input: 800, output: 200, cache_read: 0, cache_create: 0, prompt_cache_write: 0 },
+    latest_turn_observation: { estimated_input_tokens: 800, observed_context: { kind: "provider_measured", tokens: 800 } },
   };
 }
 
@@ -1373,28 +1287,32 @@ function runtimeSse(
     sequence: number;
   }>,
   after: number,
+  sessionId: string,
+  threadId: string,
 ) {
   const body = [
     ...events.map((event) => ({
       protocol_version: "xbotv2.v3",
-      session_id: "demo-session",
-      thread_id: "agent",
-      request_id: event.requestId,
+      session_id: sessionId,
+      thread_id: threadId,
+      scope: event.type === "queue_updated"
+        ? { kind: "session" }
+        : { kind: "turn", turn_id: event.requestId },
       sequence: event.sequence,
-      type: event.type,
-      data: event.data,
+      kind: event.type,
+      payload: event.data,
     })),
     {
       protocol_version: "xbotv2.v3",
-      session_id: "demo-session",
-      thread_id: "agent",
-      request_id: "",
+      session_id: sessionId,
+      thread_id: threadId,
+      scope: { kind: "session" },
       sequence: events.at(-1)?.sequence ?? after,
-      type: "end",
-      data: { status: "ok" },
+      kind: "end",
+      payload: { status: "ok" },
     },
   ].map((event) => (
-    `event: ${event.type}\nid: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`
+    `event: ${event.kind}\nid: ${event.sequence}\ndata: ${JSON.stringify(event)}\n\n`
   )).join("");
   return route.fulfill({ status: 200, contentType: "text/event-stream", body });
 }
