@@ -207,7 +207,7 @@ class AgentsService(AgentRuntimePort):
                 metadata=self._state.metadata.value,
             ),
         )
-        self._restrict_tools(self._tools, self.runtime_config(definition), definition)
+        self._restrict_tools(self._tools, self.runtime_config(), definition)
         current = self._state.metadata.value.runtime_selection
         await self._state.metadata.replace_runtime_selection(
             current.model_copy(
@@ -285,11 +285,8 @@ class AgentsService(AgentRuntimePort):
             context_window=runtime.model.context_window,
         )
 
-    def runtime_config(
-        self,
-        definition: AgentDefinition | None = None,
-    ) -> RuntimeConfig:
-        """Resolve current runtime config with the active Agent overlay."""
+    def runtime_config(self) -> RuntimeConfig:
+        """Resolve the current instructions and tool configuration."""
         state = self._state
         config = self._runtime_config(
             self._settings.load_plugin_tree(
@@ -298,7 +295,6 @@ class AgentsService(AgentRuntimePort):
                 thread_id=state.session.thread_id,
             )
         )
-        definition = definition or self.active_definition()
         return config
 
     async def activate(self, name: str) -> AgentSelection:
@@ -309,7 +305,7 @@ class AgentsService(AgentRuntimePort):
 
         engine = self._require_engine()
         state = self._state
-        config = self.runtime_config(definition)
+        config = self.runtime_config()
         current = state.metadata.value.runtime_selection
         policy_route = definition.model_policy.route
         saved = state.metadata.value
@@ -586,9 +582,8 @@ class AgentsService(AgentRuntimePort):
         """Build the Agent-owned runtime view from generic plugin entries.
 
         Configuration loading only resolves the layered tree.  The Agent
-        composition boundary is the first place that needs developer
-        instructions and memory, so it validates the config plugin's own
-        declaration here and combines it with provider-neutral runtime facts.
+        composition boundary validates developer instructions and tool
+        configuration before constructing the runtime selection.
         """
         config_entry = tree.entry("config")
         settings = ConfigPluginConfig.model_validate(
@@ -601,7 +596,6 @@ class AgentsService(AgentRuntimePort):
         return RuntimeConfig(
             enabled_tools=coretools.enabled_tools,
             instructions=settings.instructions,
-            memory=self._settings.memory(),
         )
 
     @staticmethod

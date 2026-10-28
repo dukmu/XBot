@@ -35,7 +35,6 @@ class RuntimeConfig(StrictModel):
 
     enabled_tools: ToolSelection = Field(default_factory=AllTools)
     instructions: str = ""
-    memory: str = ""
 
 
 @dataclass(frozen=True, slots=True)

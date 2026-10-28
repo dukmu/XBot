@@ -10,6 +10,8 @@ before its permission and sandbox handlers apply the change. Newly opened
 threads resolve the current overlay on startup. The generic plugin configuration
 editor retains its separate new-session application boundary.
 
+`RuntimeConfig` contains resolved instructions and tool selection for Agent composition. The Agent loop reads memory separately through `SETTINGS.memory()` when it constructs the engine.
+
 The implementation owns routes, seed resources and persistence details. For example:
 
 ```python
