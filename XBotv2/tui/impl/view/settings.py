@@ -411,10 +411,6 @@ class SettingsPanel(Widget):
                 classes="settings-action",
                 compact=True,
             ),
-            Static(
-                "Choose a theme at startup with --theme terminal|dark|light or the client profile theme.",
-                classes="settings-copy",
-            ),
         )
 
     def _model_widgets(self) -> tuple[Static | Button, ...]:
