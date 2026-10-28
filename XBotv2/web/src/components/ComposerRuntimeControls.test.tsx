@@ -45,12 +45,12 @@ describe("ComposerRuntimeControls", () => {
         {...handlers}
       />,
     );
-    expect(getByLabelText("Standard mode, current: default")).toBeTruthy();
+    expect(getByLabelText("Agent: default")).toBeTruthy();
     expect(getByLabelText("Select model, current deepseek / deepseek-v4-flash")).toBeTruthy();
 
     // The ported menu lists every primary definition with its description, and
     // subagent definitions are not selectable as the running mode.
-    fireEvent.click(getByLabelText("Standard mode, current: default"));
+    fireEvent.click(getByLabelText("Agent: default"));
     const items = screen.getAllByRole("menuitem");
     expect(items.map((item) => item.textContent)).toEqual([
       "defaultFull coding agent with file editing and shell.",
@@ -71,7 +71,7 @@ describe("ComposerRuntimeControls", () => {
         onAgent={onAgent}
       />,
     );
-    fireEvent.click(screen.getByLabelText("Standard mode, current: default"));
+    fireEvent.click(screen.getByLabelText("Agent: default"));
     fireEvent.click(screen.getByRole("menuitem", { name: /minimal/ }));
     expect(onAgent).toHaveBeenCalledWith("minimal");
   });
@@ -86,11 +86,41 @@ describe("ComposerRuntimeControls", () => {
         {...handlers}
       />,
     );
-    // With no session the trigger names the mode alone, as the ported hero does.
-    const mode = getByLabelText("Standard mode") as HTMLButtonElement;
-    expect(mode.disabled).toBe(true);
-    expect(getByLabelText("Select model, current Select model")).toBeTruthy();
+    const agent = getByLabelText("Agent available after opening a session") as HTMLButtonElement;
+    const model = getByLabelText("Model available after opening a session") as HTMLButtonElement;
+    expect(agent.disabled).toBe(true);
+    expect(model.disabled).toBe(true);
+    expect(screen.queryByRole("combobox")).toBeNull();
+    expect(screen.queryByText("deepseek-v4-flash")).toBeNull();
   });
+  it("shows the actual model while its catalog is unavailable", () => {
+    render(<ComposerRuntimeControls current={current} agents={[]} providers={[]} disabled={false} {...handlers} />);
+    const model = screen.getByRole("button", { name: "deepseek / deepseek-v4-flash" }) as HTMLButtonElement;
+    expect(model.disabled).toBe(true);
+    expect(screen.queryByRole("combobox")).toBeNull();
+  });
+
+  it.each([
+    ["Agent: default", "menuitem"],
+    ["Reasoning effort, current: Default", "menuitemradio"],
+  ])("closes %s on Escape without reaching the workbench", (name, role) => {
+    const onEscape = vi.fn();
+    window.addEventListener("keydown", onEscape);
+    try {
+      render(<ComposerRuntimeControls current={current} agents={agents} providers={providers} disabled={false} {...handlers} />);
+      const trigger = screen.getByRole("button", { name });
+      fireEvent.click(trigger);
+      const item = screen.getAllByRole(role)[0];
+      item.focus();
+      fireEvent.keyDown(item, { key: "Escape" });
+      expect(screen.queryByRole(role)).toBeNull();
+      expect(document.activeElement).toBe(trigger);
+      expect(onEscape).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", onEscape);
+    }
+  });
+
 });
 
 /**

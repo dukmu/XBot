@@ -5,11 +5,13 @@ export function StatusBar({ state }: { state: RuntimeState }) {
   if (!current) {
     const reachable = state.serverReachable;
     const ready = reachable && state.catalogEventStreamConnected;
+    const connecting = state.loading && !reachable;
     return (
       <footer className="status-bar">
-        <span className={`connection-state ${ready ? "online" : "offline"}`} />
+        <span className={`connection-state ${ready ? "online" : connecting ? "connecting" : "offline"}`} />
         <span>{
-          !reachable
+          connecting ? "Connecting…"
+            : !reachable
             ? "Server unavailable"
             : ready ? "Server ready" : "Server ready · reconnecting session updates"
         }</span>
@@ -27,7 +29,8 @@ export function StatusBar({ state }: { state: RuntimeState }) {
   return (
     <footer className="status-bar">
       <span className={`connection-state ${live ? "online" : "offline"}`} title={connectionTitle} />
-      <span className="status-agent">agent:{current.agent_name}</span>
+      <span title={connectionTitle}>{live ? "Connected" : !state.serverReachable ? "Server unavailable" : !state.sessionAttached ? "Session detached" : "Reconnecting"}</span>
+      <span className="status-agent">{current.agent_name}</span>
       <span className="status-model" title={model}>{model}</span>
       {Object.entries(current.status_slots).map(([name, value]) => (
         <span className="status-slot" key={name}>{name}:{value}</span>

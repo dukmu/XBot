@@ -70,6 +70,12 @@ tree shows the current page; a child whose parent is on another page appears
 at the root of that page. The active thread status refreshes automatically;
 other threads show a snapshot until the user selects Refresh threads.
 
+At widths of 820 pixels or less, the session sidebar opens over the conversation
+and closes with Escape. Tool details open when a tool is selected; changing
+sessions or threads clears the selection. Escape cancels queue editing or closes
+an open settings menu without interrupting the running turn. The appearance
+setting applies the same light, dark, or system preference across the workbench.
+
 Message uploads use `media` entries with base64 data, MIME type and name;
 ordinary files use `attachments`. Media references in history retain artifact
 metadata and resolve through the artifact download endpoint.
@@ -93,6 +99,11 @@ change (with `Discard` to drop it), so a plugin layer is never edited from two
 places on the same page.
 
 ## Verification
+
+The current workbench changes were checked with focused component tests and
+mock browser scenarios for queue editing on desktop and mobile and for closing
+the mobile sidebar with Escape. Other older mock scenarios have not all been
+migrated to the current protocol fixture.
 
 The local Playwright real-server scenarios use the production loader and a
 MockLLM. They cover streaming, tool results, media history and reattachment

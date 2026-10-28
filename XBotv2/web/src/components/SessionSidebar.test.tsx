@@ -29,3 +29,27 @@ it("navigates the bounded workspace and member pages and selects a session", () 
   fireEvent.click(screen.getByRole("button", { name: "Archived" }));
   expect(select).toHaveBeenCalledWith({ kind: "archived" });
 });
+
+it("distinguishes loading and failures from an empty session page", () => {
+  const noop = vi.fn();
+  const refresh = vi.fn().mockResolvedValue(undefined);
+  const catalog = { items: [], archivedIds: [], scope: { kind: "all" as const }, canPrevious: false, canNext: false, eventCursor: 0, state: "loading" as const, error: null };
+  const workspacePage = { items: [], canPrevious: false, canNext: false, eventCursor: 0, state: "loading" as const, error: null };
+  const props = {
+    open: true, collapsed: false, width: 280, catalog, workspacePage,
+    threads: [], threadPreviousCursor: null, threadNextCursor: null, threadPageLoading: false, onPageThreads: noop,
+    current: null, onClose: noop, onToggle: noop, onSettings: noop, onNew: noop, onRefresh: refresh, refreshing: false,
+    onSession: noop, onThread: noop, onFork: noop, onDelete: noop, onRenameSession: noop, onArchiveSession: noop,
+    onRenameWorkspace: noop, onDeleteWorkspace: noop, onMoveWorkspace: noop, onMoveSession: noop,
+    onSelectCatalog: noop, onNextSessions: noop, onPreviousSessions: noop, onNextWorkspaces: noop, onPreviousWorkspaces: noop,
+  };
+  const { rerender } = render(<SessionSidebar {...props} />);
+  expect(screen.getByText("Loading workspaces…")).toBeVisible();
+  expect(screen.getByText("Loading sessions…")).toBeVisible();
+  expect(screen.queryByText("No sessions on this page")).toBeNull();
+  rerender(<SessionSidebar {...props} catalog={{ ...catalog, state: "error", error: new Error("offline") }} workspacePage={{ ...workspacePage, state: "error", error: new Error("offline") }} />);
+  expect(screen.getByText(/Could not load workspaces/)).toBeVisible();
+  expect(screen.getByText(/Could not load sessions/)).toBeVisible();
+  for (const retry of screen.getAllByRole("button", { name: "Retry" })) fireEvent.click(retry);
+  expect(refresh).toHaveBeenCalledTimes(2);
+});

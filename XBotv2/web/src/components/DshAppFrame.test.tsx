@@ -38,6 +38,18 @@ describe("DshAppFrame", () => {
     );
     expect(screen.getByText("collapsed")).toBeVisible();
   });
+
+  it("uses the mobile sidebar layout at tablet widths", () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 790 });
+    const { container } = render(
+      <DshAppFrame mobileSidebarOpen={false} detail={<aside>details</aside>}
+        sidebar={({ collapsed }) => <span>{collapsed ? "collapsed" : "expanded"}</span>}>
+        <main>conversation</main>
+      </DshAppFrame>,
+    );
+    expect(screen.getByText("expanded")).toBeVisible();
+    expect(container.querySelector('[data-side="details"]')).toBeNull();
+  });
 });
 
 /**

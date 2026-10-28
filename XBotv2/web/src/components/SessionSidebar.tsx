@@ -91,7 +91,7 @@ export function SessionSidebar(props: SessionSidebarProps) {
         <Plus size={rail ? 18 : 16} /><span className="sidebar-wide">New session</span>
       </button>
       <div className="sidebar-wide sidebar-content">
-        <div className="sidebar-search">
+        <div className="session-search">
           <Search size={14} />
           <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Search current page" aria-label="Search current page" />
           {query && (
@@ -107,6 +107,14 @@ export function SessionSidebar(props: SessionSidebarProps) {
           </button>
         </div>
         <nav className="session-list" aria-label="Sessions">
+          {props.workspacePage.state === "loading" && !props.workspacePage.items.length && (
+            <div className="sidebar-empty" role="status">Loading workspaces…</div>
+          )}
+          {props.workspacePage.state === "error" && (
+            <div className="sidebar-empty" role="alert">
+              Could not load workspaces. <button className="text-button" type="button" onClick={() => void props.onRefresh()}>Retry</button>
+            </div>
+          )}
           {props.workspacePage.items.map((workspace, index) => (
             <section className="workspace-group" key={workspace.workspace_id} onBlur={(event) => {
               if (!event.currentTarget.contains(event.relatedTarget)) setMenuWorkspace("");
@@ -201,7 +209,15 @@ export function SessionSidebar(props: SessionSidebarProps) {
               sessionIndex={props.catalog.items.findIndex((item) => item.session_id === session.session_id)}
             />
           ))}
-          {!rows.length && props.catalog.state !== "loading" && (
+          {props.catalog.state === "loading" && !rows.length && (
+            <div className="sidebar-empty" role="status">Loading sessions…</div>
+          )}
+          {props.catalog.state === "error" && (
+            <div className="sidebar-empty" role="alert">
+              Could not load sessions. <button className="text-button" type="button" onClick={() => void props.onRefresh()}>Retry</button>
+            </div>
+          )}
+          {!rows.length && props.catalog.state === "idle" && (
             <div className="sidebar-empty">{needle ? "No matches on this page" : "No sessions on this page"}</div>
           )}
           <div className="catalog-pager" aria-label="Session pages">

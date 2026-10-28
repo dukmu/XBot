@@ -1454,15 +1454,6 @@ details[open] > summary .summary-chevron {
 
 .composer {
   position: relative;
-  border: 1px solid #3a403a;
-  border-radius: 7px;
-  background: #1a1e1a;
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.18);
-}
-
-.composer:focus-within {
-  border-color: #5b705f;
-  box-shadow: 0 0 0 1px rgba(101, 193, 140, 0.1), 0 8px 24px rgba(0, 0, 0, 0.18);
 }
 
 /* Ported draft geometry: one scrollport, a hidden mirror that sets the full
@@ -1506,10 +1497,6 @@ details[open] > summary .summary-chevron {
   color: var(--text);
   background: transparent;
   resize: none;
-}
-
-.composer textarea::placeholder {
-  color: #687067;
 }
 
 .composer-images {
@@ -1647,7 +1634,7 @@ details[open] > summary .summary-chevron {
 }
 
 .connection-state.online { background: var(--green); }
-.status-agent { color: var(--blue); }
+.connection-state.connecting { background: var(--muted); }
 .status-model { color: var(--green); }
 .status-slot { color: var(--purple); }
 .status-spacer { flex: 1; }
@@ -2258,15 +2245,11 @@ details[open] > summary .summary-chevron {
 
 @media (max-width: 820px) {
   .session-sidebar {
-    position: fixed;
-    inset: 0 auto 0 0;
-    width: min(86vw, 300px);
-    transform: translateX(-102%);
-    transition: transform 180ms ease;
+    position: static;
+    width: 100%;
     box-shadow: 16px 0 45px rgba(0, 0, 0, 0.35);
   }
 
-  .session-sidebar.open { transform: translateX(0); }
   .sidebar-close { display: inline-grid !important; }
   .sidebar-scrim {
     position: fixed;

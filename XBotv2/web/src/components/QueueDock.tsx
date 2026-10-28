@@ -95,7 +95,10 @@ export function QueueDock({
                   value={editing.text}
                   onChange={(event) => setEditing({ id: item.message_id, text: event.currentTarget.value })}
                   onKeyDown={(event) => {
-                    if (event.key === "Escape") setEditing(null);
+                    if (event.key === "Escape") {
+                      event.stopPropagation();
+                      setEditing(null);
+                    }
                     if (event.key === "Enter" && !event.nativeEvent.isComposing) {
                       event.preventDefault();
                       void save();

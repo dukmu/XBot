@@ -3,7 +3,7 @@
  * Selectors are adapted to XBot's stable client state and component tree.
  */
 
-:root {
+body {
   --dsw-font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
     "Hiragino Sans GB", "Microsoft YaHei", "Helvetica Neue", Helvetica, Arial, sans-serif;
   --ds-font-family-code: "SF Mono", "JetBrains Mono", "Fira Code", Consolas,
@@ -87,7 +87,7 @@
   color-scheme: light;
 }
 
-:root[data-theme="dark"] {
+:root[data-theme="dark"] body {
   --dsw-static-deepseek-50: rgb(28 42 69);
   --dsw-static-deepseek-100: rgb(37 56 91);
   --dsw-static-deepseek-200: rgb(56 82 132);
@@ -266,6 +266,7 @@ body {
 
 .session-search {
   height: 34px;
+  margin: 0 12px 6px;
   border: 0;
   border-radius: 8px;
   background: var(--dsw-alias-interactive-bg-hover);
@@ -360,7 +361,18 @@ body {
   white-space: normal;
   overflow-wrap: anywhere;
   text-align: left;
+  color: var(--dsw-alias-label-secondary);
+  background: transparent;
+  border-radius: 6px;
 }
+
+.catalog-pager > button:hover:not(:disabled),
+.catalog-pager > button[aria-pressed="true"] {
+  color: var(--dsw-alias-label-primary);
+  background: var(--dsw-alias-interactive-bg-hover);
+}
+
+.catalog-pager > button:disabled { opacity: .45; }
 
 .workbench {
   --dsh-chat-content-width: 748px;

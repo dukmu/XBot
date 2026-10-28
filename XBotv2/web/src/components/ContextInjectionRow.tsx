@@ -11,10 +11,9 @@ export const COMPACTED_CONTEXT = "Compacted context";
 export function ContextInjectionRow({ entry }: { entry: RuntimeEntry }) {
   if (entry.source === "turn") {
     return (
-      <div className={`${styles.row} ${styles.lifecycle}`} role="status">
+      <div className={`${styles.row} ${styles.lifecycle}`} role="status" title={entry.event}>
         <Activity size={14} />
         <span>{entry.content}</span>
-        <code>{entry.event}</code>
       </div>
     );
   }

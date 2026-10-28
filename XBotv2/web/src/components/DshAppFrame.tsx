@@ -68,7 +68,7 @@ export function DshAppFrame({ mobileSidebarOpen, sidebar, detail, children }: Ds
   const detailOrigin = useRef(0);
   const detailStart = useRef(0);
   const narrow = viewport < SIDEBAR_AUTO_COLLAPSE;
-  const mobile = viewport <= 760;
+  const mobile = viewport <= 820;
   const collapsed = !mobile && (narrow ? !narrowExpanded : preference === 0);
   const mobileWidth = Math.min(SIDEBAR_MOBILE_MAX, Math.max(SIDEBAR_MOBILE_MIN, Math.round(viewport * 0.84)));
   const width = mobile ? mobileWidth : collapsed ? SIDEBAR_COLLAPSED : (preference || SIDEBAR_DEFAULT);

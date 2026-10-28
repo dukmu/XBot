@@ -62,3 +62,18 @@ describe("QueueDock", () => {
     expect(steer.getAttribute("title")).toBe(QUEUE_STEER_UNAVAILABLE);
   });
 });
+
+it("cancels editing without passing Escape to the workbench", () => {
+  const onEscape = vi.fn();
+  window.addEventListener("keydown", onEscape);
+  try {
+    render(<QueueDock items={[queued[0]]} running onUpdate={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "Edit queued message" }));
+    fireEvent.keyDown(screen.getByRole("textbox", { name: "Edit queued message" }), { key: "Escape" });
+    expect(screen.queryByRole("textbox", { name: "Edit queued message" })).toBeNull();
+    expect(screen.getByText("first queued")).toBeVisible();
+    expect(onEscape).not.toHaveBeenCalled();
+  } finally {
+    window.removeEventListener("keydown", onEscape);
+  }
+});

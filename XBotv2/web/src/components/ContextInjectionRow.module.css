@@ -24,12 +24,6 @@
   white-space: nowrap;
 }
 
-.lifecycle code {
-  flex: none;
-  color: var(--dsw-alias-label-caption);
-  font-size: 11px;
-}
-
 .row summary {
   display: flex;
   align-items: center;
@@ -73,7 +67,6 @@
   .row summary { min-height: 22px; font-size: 13px; }
   .body { padding: 3px 0 3px 18px; font-size: 12px; }
   .lifecycle { min-height: 22px; font-size: 12px; }
-  .lifecycle code { font-size: 10px; }
 }
 
 .compact summary {

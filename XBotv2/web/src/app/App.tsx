@@ -36,7 +36,7 @@ export function App() {
   // The details column follows the tool row the reader picked (ported
   // behaviour: picking a row in the message flow fills the column, closing it
   // empties the column but keeps the row reachable).
-  const [detailsOpen, setDetailsOpen] = useState(true);
+  const [detailsOpen, setDetailsOpen] = useState(false);
   const [selectedToolId, setSelectedToolId] = useState<string | null>(null);
   // The ported banner's two tabs: the message flow, or the durable records.
   const [surface, setSurface] = useState<"chat" | "trajectory">("chat");
@@ -51,6 +51,10 @@ export function App() {
   const [themePreference, setThemePreference] = useState<ThemePreference>(readThemePreference);
   const [inputHistory, setInputHistory] = useState<string[]>([]);
   const closeSettings = useCallback(() => setSettingsOpen(false), []);
+  const closeSidebar = useCallback(() => {
+    setSidebarOpen(false);
+    document.querySelector<HTMLButtonElement>('[aria-label="Open sessions"]')?.focus();
+  }, []);
   const recordSubmittedInput = useCallback((content: string) => {
     setInputHistory((current) => current[current.length - 1] === content
       ? current
@@ -67,6 +71,7 @@ export function App() {
         ? (media?.matches ? "dark" : "light")
         : themePreference;
       document.documentElement.dataset.theme = effective;
+      document.body.toggleAttribute("data-ds-dark-theme", effective === "dark");
       document.documentElement.style.colorScheme = effective;
       document.querySelector('meta[name="theme-color"]')?.setAttribute("content", effective === "dark" ? "#0f1115" : "#ffffff");
     };
@@ -79,7 +84,10 @@ export function App() {
   useEffect(() => {
     setCommandOutput(null);
     setHelpQuery(null);
-  }, [state.current?.session_id, state.current?.thread_id]);
+    setSelectedToolId(null);
+    setDetailsOpen(false);
+    setSelectedRecord(null);
+  }, [state.current?.session_id, state.current?.thread_id, runtime.view?.threadId]);
 
   const sendComposerInput = async (
     content: string,
@@ -162,7 +170,7 @@ export function App() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
+      if (event.key !== "Escape" || event.defaultPrevented) return;
       if (deleteCandidate) {
         setDeleteCandidate(null);
         return;
@@ -171,13 +179,19 @@ export function App() {
         setClearConfirmOpen(false);
         return;
       }
+      if (settingsOpen || newSessionOpen || helpQuery !== null ||
+          (event.target instanceof Element && event.target.closest('[role="dialog"]'))) return;
+      if (sidebarOpen) {
+        closeSidebar();
+        return;
+      }
       if (helpQuery === null && state.turnRunning && !state.interactions.length) {
         void runtime.interrupt();
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [clearConfirmOpen, deleteCandidate, helpQuery, runtime, state.interactions.length, state.turnRunning]);
+  }, [clearConfirmOpen, closeSidebar, deleteCandidate, helpQuery, newSessionOpen, runtime, settingsOpen, sidebarOpen, state.interactions.length, state.turnRunning]);
 
   const visibleEntries = runtime.view ? runtime.view.entries : state.entries;
   const selectedTool = useMemo(
@@ -272,7 +286,7 @@ export function App() {
         threadPageLoading={state.threadPageLoading}
         onPageThreads={(direction) => void runtime.pageThreads(direction)}
         current={state.current}
-        onClose={() => setSidebarOpen(false)}
+        onClose={closeSidebar}
         onToggle={toggle}
         onSettings={() => setSettingsOpen(true)}
         onNew={() => setNewSessionOpen(true)}
@@ -302,7 +316,7 @@ export function App() {
         onMoveSession={(workspaceId, sessionId, direction) => void runtime.moveSession(workspaceId, sessionId, direction)}
       />}
     >
-      {sidebarOpen && <button className="sidebar-scrim" aria-label="Close sidebar" onClick={() => setSidebarOpen(false)} />}
+      {sidebarOpen && <button className="sidebar-scrim" aria-label="Close sidebar" onClick={closeSidebar} />}
 
       <main className="workbench">
         <RuntimeHeader

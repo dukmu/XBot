@@ -1,6 +1,6 @@
 /* Model / agent / reasoning selectors, moved out of the header and into the
  * composer, which is where the WebUI these are ported from keeps them. */
-import { useCallback, useState } from "react";
+import { useCallback, useRef, useState } from "react";
 import { Check, ChevronDown } from "lucide-react";
 import type { AgentInfo, ProviderInfo } from "../api/types";
 import type { RuntimeSession } from "../state/runtime";
@@ -27,41 +27,43 @@ export function ComposerRuntimeControls({
     ? providers
       .find((provider) => provider.name === current.provider)
       ?.models.find((model) => model.model === current.model)
-    : providers[0]?.models.find((model) => model.model === providers[0]?.default_model);
-  const providerValue = current
-    ? JSON.stringify([current.provider, current.model])
-    : (selectedModel && providers[0]
-      ? JSON.stringify([providers[0].name, selectedModel.model])
-      : "");
+    : undefined;
+  const providerValue = current ? JSON.stringify([current.provider, current.model]) : "";
   const modelLabel = current
     ? `${current.provider} / ${current.model}`
-    : "Select model";
+    : "Model available after opening a session";
 
   return (
     <div className="composer-runtime-controls">
       <AgentPresetMenu
-        current={current?.agent_name ?? ""}
+        current={current?.agent_name ?? null}
         agents={agents}
-        disabled={disabled}
+        disabled={disabled || !current}
         onAgent={onAgent}
       />
-      <select
-        className="composer-select"
-        aria-label={`Select model, current ${modelLabel}`}
-        title={`Select model, current ${modelLabel}`}
-        value={providerValue}
-        disabled={disabled}
-        onChange={(event) => {
-          const [provider, model] = JSON.parse(event.target.value) as [string, string];
-          void onProvider(provider, model);
-        }}
-      >
-        {providers.flatMap((provider) => provider.models.map((model) => (
-          <option key={`${provider.name}/${model.model}`} value={JSON.stringify([provider.name, model.model])}>
-            {modelLabel === `${provider.name} / ${model.model}` ? model.model : `${provider.name} / ${model.model}`}
-          </option>
-        )))}
-      </select>
+      {current && selectedModel ? (
+        <select
+          className="composer-select"
+          aria-label={`Select model, current ${modelLabel}`}
+          title={`Select model, current ${modelLabel}`}
+          value={providerValue}
+          disabled={disabled}
+          onChange={(event) => {
+            const [provider, model] = JSON.parse(event.target.value) as [string, string];
+            void onProvider(provider, model);
+          }}
+        >
+          {providers.flatMap((provider) => provider.models.map((model) => (
+            <option key={`${provider.name}/${model.model}`} value={JSON.stringify([provider.name, model.model])}>
+              {modelLabel === `${provider.name} / ${model.model}` ? model.model : `${provider.name} / ${model.model}`}
+            </option>
+          )))}
+        </select>
+      ) : (
+        <button type="button" className="composer-select" disabled aria-label={modelLabel} title={modelLabel}>
+          {modelLabel}
+        </button>
+      )}
       {selectedModel && selectedModel.effort.length > 0 && (
         <EffortMenu
           effort={current?.model_mode ?? ""}
@@ -85,21 +87,22 @@ export function AgentPresetMenu({
   disabled,
   onAgent,
 }: {
-  current: string;
+  current: string | null;
   agents: AgentInfo[];
   disabled: boolean;
   onAgent: (name: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
   const selectable = agents.filter((agent) => agent.mode !== "subagent");
-  const label = current ? `Standard mode, current: ${current}` : "Standard mode";
+  const label = current === null ? "Agent available after opening a session" : current ? `Agent: ${current}` : "Agent unavailable";
+  const trigger = useRef<HTMLButtonElement>(null);
   const close = useCallback(() => setOpen(false), []);
 
   if (selectable.length === 0) {
     // Nothing to choose from: the draft session still shows the ported trigger.
     return (
-      <button type="button" className="composer-select composer-mode-select" disabled aria-label={label} title="Standard mode">
-        {current || "Standard mode"} <ChevronDown size={13} />
+      <button type="button" className="composer-select composer-mode-select" disabled aria-label={label} title={label}>
+        {label} <ChevronDown size={13} />
       </button>
     );
   }
@@ -107,24 +110,29 @@ export function AgentPresetMenu({
   return (
     <div className="composer-preset" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) close();
+    }} onKeyDown={(event) => {
+      if (open && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        close();
+        trigger.current?.focus();
+      }
     }}>
       <button
         type="button"
+        ref={trigger}
         className="composer-select composer-mode-select"
         aria-label={label}
         aria-haspopup="menu"
         aria-expanded={open}
-        title="Standard mode"
+        title={label}
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") close();
-        }}
       >
-        {current || "Standard mode"} <ChevronDown size={13} />
+        {label} <ChevronDown size={13} />
       </button>
       {open && (
-        <div className="composer-preset-menu" role="menu" aria-label="Standard mode">
+        <div className="composer-preset-menu" role="menu" aria-label="Agent">
           {selectable.map((agent) => (
             <button
               type="button"
@@ -170,14 +178,23 @@ export function EffortMenu({
   onEffort: (effort: string) => Promise<void>;
 }) {
   const [open, setOpen] = useState(false);
+  const trigger = useRef<HTMLButtonElement>(null);
   const levels = [EFFORT_DEFAULT, ...options.filter((option) => option !== EFFORT_DEFAULT)];
   const current = effort || EFFORT_DEFAULT;
   return (
     <div className="composer-preset" onBlur={(event) => {
       if (!event.currentTarget.contains(event.relatedTarget)) setOpen(false);
+    }} onKeyDown={(event) => {
+      if (open && event.key === "Escape") {
+        event.preventDefault();
+        event.stopPropagation();
+        setOpen(false);
+        trigger.current?.focus();
+      }
     }}>
       <button
         type="button"
+        ref={trigger}
         className="composer-select composer-effort-select"
         aria-label={`${EFFORT_LABEL}, current: ${current}`}
         aria-haspopup="menu"
@@ -185,9 +202,6 @@ export function EffortMenu({
         title={EFFORT_LABEL}
         disabled={disabled}
         onClick={() => setOpen((value) => !value)}
-        onKeyDown={(event) => {
-          if (event.key === "Escape") setOpen(false);
-        }}
       >
         {current} <ChevronDown size={13} />
       </button>
