@@ -778,16 +778,21 @@ summary:focus-visible {
   scrollbar-color: #3a403a transparent;
 }
 
-.timeline-latest {
+.timeline-latest-bar {
   position: sticky;
-  right: 0;
-  bottom: 16px;
+  top: 0;
+  z-index: 6;
+  padding: 6px 0;
+  background: var(--dsw-alias-bg-base);
+}
+
+.timeline-latest {
   display: flex;
   align-items: center;
   gap: 5px;
   width: max-content;
   min-height: 30px;
-  margin: -46px 20px 16px auto;
+  margin-left: auto;
   padding: 0 10px 0 8px;
   border: 1px solid #405147;
   border-radius: 15px;

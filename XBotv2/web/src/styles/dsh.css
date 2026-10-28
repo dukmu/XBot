@@ -731,8 +731,6 @@ body {
 @keyframes dsh-turn-status-shimmer { to { background-position: -150% 0; } }
 
 .timeline-latest {
-  right: max(20px, calc((100% - var(--dsh-chat-content-width)) / 2));
-  bottom: 148px;
   border-color: var(--dsw-alias-border-l2);
   color: var(--dsw-alias-label-primary);
   background: var(--dsw-alias-button-floating-fill);

@@ -206,6 +206,13 @@ export const Timeline = memo(function Timeline({
       className="timeline"
       ref={list}
     >
+      {showLatest && (
+        <div className="timeline-latest-bar">
+          <button className="timeline-latest" type="button" aria-label="Jump to latest activity" onClick={scrollToLatest}>
+            <ChevronRight size={14} className="timeline-latest-icon" /> Latest activity
+          </button>
+        </div>
+      )}
       <div className="timeline-inner" ref={inner}>
         {(range.start > 0 || hasOlder) && (
           <button className="timeline-older" type="button" disabled={loadingOlder} onClick={loadEarlier}>
@@ -236,11 +243,6 @@ export const Timeline = memo(function Timeline({
           <div className="turn-pending"><LoaderCircle size={15} className="spin" /> Working</div>
         )}
       </div>
-      {showLatest && (
-        <button className="timeline-latest" type="button" aria-label="Jump to latest activity" onClick={scrollToLatest}>
-          <ChevronRight size={14} className="timeline-latest-icon" /> Latest activity
-        </button>
-      )}
     </div>
   );
 }, (previous, next) => (
