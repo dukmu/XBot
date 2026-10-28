@@ -525,23 +525,13 @@ async def path(
         recursive: Recursively delete a non-empty directory (delete).
         parents: Create missing parent directories (mkdir).
     """
-    if operation == "move":
+    if operation in ("move", "copy"):
         if source is None or destination is None:
             return _failure_result(
-                "invalid_arguments", "move requires source and destination"
+                "invalid_arguments", f"{operation} requires source and destination"
             )
         return await _structured_operation(
-            "move",
-            {"source": source, "destination": destination, "overwrite": overwrite},
-            sandbox,
-        )
-    if operation == "copy":
-        if source is None or destination is None:
-            return _failure_result(
-                "invalid_arguments", "copy requires source and destination"
-            )
-        return await _structured_operation(
-            "copy",
+            operation,
             {"source": source, "destination": destination, "overwrite": overwrite},
             sandbox,
         )
