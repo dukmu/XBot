@@ -177,8 +177,6 @@ export type RuntimeAction =
   | { type: "opened"; session: SessionView }
   | { type: "session_deleted"; sessionId: string }
   | { type: "thread_synced" | "thread_observed"; thread: ThreadSummary }
-  | { type: "history"; history: HistoryViewItem[]; nextCursor?: string | null }
-  | { type: "history_prepend"; history: HistoryViewItem[]; nextCursor: string | null; expectedCursor: string }
   | { type: "history_loading"; value: boolean }
   | { type: "trajectory"; items: TrajectoryItem[]; nextCursor: string | null; bufferedEvents?: ViewEvent[] }
   | { type: "trajectory_prepend"; items: TrajectoryItem[]; nextCursor: string | null; expectedAnchor: number | null }
@@ -422,23 +420,6 @@ function applyRuntimeAction(state: RuntimeState, action: RuntimeAction): Runtime
           ? state.turnRunning : action.thread.turn_status === "running",
         viewingSubagent: action.thread.kind === "subagent",
       } : state;
-    case "history":
-      return {
-        ...state,
-        entries: carryStreamingAssistant(historyEntries(action.history), state.entries),
-        historyCursor: action.nextCursor === undefined ? state.historyCursor : action.nextCursor,
-      };
-    case "history_prepend": {
-      if (action.expectedCursor !== state.historyCursor) {
-        return { ...state, historyLoading: false };
-      }
-      return {
-        ...state,
-        entries: [...historyEntries(action.history), ...state.entries],
-        historyCursor: action.nextCursor,
-        historyLoading: false,
-      };
-    }
     case "history_loading":
       return { ...state, historyLoading: action.value };
     case "trajectory":

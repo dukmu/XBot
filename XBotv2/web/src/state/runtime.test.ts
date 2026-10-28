@@ -146,8 +146,8 @@ describe("runtimeReducer", () => {
 
   it("renders injected model context with provenance and content, not as a user", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      items: [{ position: 1, kind: "message", message_id: "context-1", message: {
         role: "user",
         content: "job finished with result 42",
         tool_calls: [],
@@ -158,7 +158,7 @@ describe("runtimeReducer", () => {
         artifacts: [],
         media: [],
         runtime: { source: "job-1", event: "notification" },
-      }],
+      } }],
       nextCursor: null,
     });
 
@@ -193,8 +193,8 @@ describe("runtimeReducer", () => {
 
   it("restores persisted assistant reasoning with its visible response", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      items: [{ position: 1, kind: "message", message_id: "answer-1", message: {
         role: "assistant",
         content: "final answer",
         reasoning: "inspect the state",
@@ -205,7 +205,7 @@ describe("runtimeReducer", () => {
         error: null,
         artifacts: [],
         media: [],
-      }],
+      } }],
       nextCursor: null,
     });
 
@@ -265,49 +265,47 @@ describe("runtimeReducer", () => {
     expect(state.entries).toEqual([]);
   });
 
-  it("prepends one server page and advances its cursor", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened,
-      history_cursor: "20",
-      history: [{
+  it("prepends one trajectory page and advances its cursor", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: opened });
+    state = runtimeReducer(state, { type: "trajectory", nextCursor: "20", items: [
+      { position: 20, kind: "message", message_id: "new", message: {
         role: "assistant", content: "new", tool_calls: [], tool_call_id: "", status: "",
         data: null, error: null, artifacts: [], media: [],
-      }],
-    } });
+      } },
+    ] });
     state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
+      type: "trajectory_prepend",
+      items: [{ position: 10, kind: "message", message_id: "old", message: {
         role: "user", content: "old", tool_calls: [], tool_call_id: "", status: "",
         data: null, error: null, artifacts: [], media: [],
-      }],
+      } }],
       nextCursor: null,
-      expectedCursor: "20",
+      expectedAnchor: 20,
     });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual(["old", "new"]);
     expect(state.historyCursor).toBeNull();
     expect(state.current).not.toHaveProperty("history");
   });
 
-  it("keeps live entries when an older persisted page is prepended", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened, history_cursor: "10",
-    } });
+  it("counts live output while an older trajectory page is displayed", () => {
+    let state = runtimeReducer(initialRuntimeState, { type: "trajectory", items: [], nextCursor: "10" });
+    state = runtimeReducer(state, {
+      type: "trajectory_prepend",
+      items: [{ position: 1, kind: "message", message_id: "old", message: {
+        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], media: [],
+      } }],
+      nextCursor: null,
+      expectedAnchor: null,
+    });
     state = runtimeReducer(state, {
       type: "event",
       event: event("assistant_message", { content: "live answer", tool_calls: [] }),
     });
-    state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
-        role: "user", content: "old question", tool_calls: [], tool_call_id: "", status: "",
-        data: null, error: null, artifacts: [], media: [],
-      }],
-      nextCursor: null,
-      expectedCursor: "10",
-    });
     expect(state.entries.map((entry) => entry.kind === "message" ? entry.content : "")).toEqual([
-      "old question", "live answer",
+      "old question",
     ]);
+    expect(state.pendingNewer).toBe(1);
   });
 
   it("projects task state from its authoritative client event", () => {
@@ -1078,24 +1076,27 @@ describe("runtimeReducer", () => {
     }]);
   });
 
-  it("ignores an older page response after the history cursor advanced", () => {
-    let state = runtimeReducer(initialRuntimeState, { type: "opened", session: {
-      ...opened, history_cursor: "10",
-    } });
-    state = runtimeReducer(state, {
-      type: "event",
-      event: event("history_updated", { history: [], history_cursor: "20" }),
+  it("ignores an older page response after the trajectory window moves", () => {
+    let state = runtimeReducer(initialRuntimeState, {
+      type: "trajectory", items: [], nextCursor: "10",
     });
+    state = runtimeReducer(state, { type: "trajectory", items: [{
+      position: 20, kind: "message", message_id: "current", message: {
+        role: "user", content: "current", tool_calls: [], tool_call_id: "", status: "",
+        data: null, error: null, artifacts: [], media: [],
+      },
+    }], nextCursor: "20" });
     state = runtimeReducer(state, {
-      type: "history_prepend",
-      history: [{
+      type: "trajectory_prepend",
+      items: [{ position: 1, kind: "message", message_id: "stale", message: {
         role: "user", content: "stale", tool_calls: [], tool_call_id: "", status: "",
         data: null, error: null, artifacts: [], media: [],
-      }],
+      } }],
       nextCursor: null,
-      expectedCursor: "10",
+      expectedAnchor: null,
     });
-    expect(state.entries).toEqual([]);
+    expect(state.entries).toHaveLength(1);
+    expect(state.entries[0]).toMatchObject({ content: "current" });
     expect(state.historyCursor).toBe("20");
   });
 
@@ -1162,8 +1163,9 @@ describe("runtimeReducer", () => {
 
   it("renders a persisted tool result even when its call is outside display history", () => {
     const state = runtimeReducer(initialRuntimeState, {
-      type: "history",
-      history: [{
+      type: "trajectory",
+      nextCursor: null,
+      items: [{ position: 1, kind: "message", message_id: "orphan", message: {
         role: "tool",
         content: "cached output",
         tool_calls: [],
@@ -1173,7 +1175,7 @@ describe("runtimeReducer", () => {
         error: null,
         artifacts: [],
         media: [],
-      }],
+      } }],
     });
 
     expect(state.entries[0]).toMatchObject({
