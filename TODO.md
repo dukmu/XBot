@@ -630,3 +630,23 @@
 
 - [x] 三轮生产源码共净减 51 行；测试净加 2 行，除本日志外总净减 49 行。没有通过删除说明文档或压缩换行凑数。逐文件审读完成，空白错误已修正。最终生产源码评估点 `f613669613e2664f63252060bb21e8e5c3dca8a2`，检查在提交前按各组受影响源码分段执行，不声称跑过一次整合全套。
 - [x] 本轮是局部可读性精简，没有新增性能测量或宣称吞吐提升；未重复旧全套、PTY、真实 provider、压力和安装验收。后续只提交本日志，不改已验证源码。用户未跟踪设计稿、`.worktrees/` 和本地日志均保留原归属，不推送、不合并 main。
+
+## 12. 扩大到结构精简（2026-10-28，完成）
+
+- [x] 用户指出“几十行不够”后，从 `24225f3c` 继续扩大实际删减。主代理把范围改为消除重复事件信封和会话接入流程；仍仅使用三名 Terra，第三名审查生命周期和历史展示边界，未强行合并不同职责。以下增删均按最终 git 差异计算，不累计试改、注释迁移或测试通过次数。
+
+### 第七轮：ACP 会话接入
+
+- [x] new/resume 共用打开主线程及读取 snapshot 的步骤，fork/resume 共用 workspace 检查；config 保留 agent/provider 明确分支并共用一次定位。删除 MCP 配置函数未读的 session_id 及过时 imports。load 仍回放，resume 不回放，fork 仍先生成独立会话；生产源码 +35/-66，净减 31 行。提交 `1d4b114f`。
+- [x] 复用 `XBotv2/tests/acp/test_adapter.py` 的官方 SDK JSON-RPC 节点 `test_official_sdk_jsonrpc_prompt_flow` 和真实运行根节点 `test_adapter_uses_real_xbot_session_runtime`，首次 2 passed / exit0（`/tmp/xbot-readable-acp-session.log`、`.exit`）。原运行根测试扩展检查 resume/load 差异及配置选择；添加配置断言后只复验该节点，1 passed / exit0（`/tmp/xbot-readable-acp-config.log`、`.exit`）。两次均由 subprocess.run 调用 `.venv/bin/pytest -q`，使用环境 `PYTHONPATH=XBotv2` 并选择以上明确节点、收集退出码；两轮包含重叠节点，不合计为三项独立覆盖。
+
+### 第八轮：去掉重复事件信封
+
+- [x] 删除 22 个仅承载既有模型的 TUI 私有 dataclass。验证后的领域模型直接进入 reducer：助手增量/完成、工具、usage、queue、任务/目标、compaction、错误、输入消费；随后将人类记录、内部通知、线程读数、快照、jobs 和回合开始的剩余包装一起移除。同步修改生产发射点、controller 的历史失效条件和原行为测试，无兼容别名。
+- [x] 同一对象从 `payload → wrapper → reducer.payload` 的链缩为直接投递与读取；删除无生产消费者的私有 `__all__` 清单和单用途转换函数。人类输入与内部通知继续按各自模型分别处理，成功/取消保留各自转换，本地输入/中断、gap 和显示页仍有明确客户端事件。整理机械迁移产生的重复 import，保留可读的正常分组。生产源码 +165/-400，净减 235 行。提交 `0f431072`。
+- [x] 首批协议/reducer/transport/controller/切换/相关视图集合为 483 passed / 1 failed，actual1（`/tmp/xbot-readable-events-tests.log`、`.actualexit`，命令 `.meta`）。唯一失败来自 Markdown reference 沿用旧 monokai，而产品先前已改为 ANSI 主题；最终 reference 使用实际配置，继续验证独立 Rich 绘制、测量和缓存一致性。只该节点局部复验，最终 1 passed / actual0（`/tmp/xbot-readable-events-retry-final.log`、`.actualexit`）；中间局部复验 `...events-retry.log` 保留，不重复整组。
+- [x] 清除剩余包装后仅选快照/连接/切换/线程读数/jobs/回合/发布消息/类型复用相关节点，首跑 111 passed / 15 failed、actual1（`/tmp/xbot-readable-events-rest-tests.log`、`.actualexit`，筛选命令 `.meta`）。15 项共因测试 backend 用动态对象模拟 list_jobs；改为公开 JobListResponse，生产代码不为假对象加分支。只重跑这 15 个失败节点，15 passed / actual0（`/tmp/xbot-readable-events-rest-retry.log`、`.actualexit`）。未变的 111 项及上一组不重复；这些集合有交集，不累加为总覆盖数。
+
+- [x] 边界审查保留三个不同关闭流程：thread 处理子孙/expected，session 处理 opening、拓扑和 owner，all 处理运行根清理。也没有将历史改写事件替换为另一次异步当前页请求：两者没有相同历史版本保证；canonical 小工具参数与显示预览亦有不同信息，增加中间投影不能有效减码。相关候选只读审查，没有引入版本、缓存或补偿状态。
+- [x] 追加两轮共净减生产代码 266 行，测试净减 22 行；相对本条用户请求的 `5c125aa8`，五轮累计生产净减 317 行，除 TODO 外总净减 337 行。没有通过删除既有测试或展示功能凑数。主代理审读最终差异并检查空白错误。
+- [x] 最终代码评估点为 `0f43107277b956e3d44a8a1084dc49561b7b6975`；验证在提交前按当时受影响源码分段执行，后续只提交本日志。没有把分段结果称为该提交的一次全套运行，也没有新增性能或真实 provider 结论。本轮不重复 PTY、压力、wheel 或无关旧套件；用户设计稿和 `.worktrees/` 保留，不推送、不合并 main。
