@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SessionView } from "../api/types";
 import type { ServerEvent } from "../api/wire";
-import { XBotApiError } from "../api/client";
+import { XBotApi, XBotApiError } from "../api/client";
 import { SessionEventConnection, type SessionEventListener } from "./SessionEventConnection";
 
 const session = {
@@ -11,6 +11,28 @@ const session = {
 } as SessionView;
 
 describe("SessionEventConnection", () => {
+  it("marks an idle stream connected after the HTTP response opens", async () => {
+    const fetchMock = vi.spyOn(globalThis, "fetch").mockResolvedValue(
+      new Response(new ReadableStream(), { status: 200 }),
+    );
+    const listener: SessionEventListener = {
+      onEvent: vi.fn(),
+      onConnection: vi.fn(),
+      onDisconnect: vi.fn(),
+      onResetRequired: vi.fn(),
+    };
+    const connection = new SessionEventConnection(new XBotApi("http://xbot.test"));
+    try {
+      connection.start(session, listener);
+      await vi.waitFor(() => expect(listener.onConnection).toHaveBeenCalledWith(true));
+      expect(listener.onEvent).not.toHaveBeenCalled();
+      expect(listener.onDisconnect).not.toHaveBeenCalled();
+    } finally {
+      connection.stop();
+      fetchMock.mockRestore();
+    }
+  });
+
   it("reconnects after a transport failure and delivers the next stream", async () => {
     let calls = 0;
     const cursors: number[] = [];

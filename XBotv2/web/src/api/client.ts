@@ -459,12 +459,14 @@ export class XBotApi {
     threadId: string,
     after: number,
     signal?: AbortSignal,
+    onConnected?: () => void,
   ) {
     for await (const event of this.stream(
       "GET",
       `${threadPath(sessionId, threadId)}/events?after=${encodeURIComponent(after)}`,
       undefined,
       signal,
+      onConnected,
     )) {
       yield event;
     }
@@ -495,6 +497,7 @@ export class XBotApi {
     path: string,
     body?: unknown,
     signal?: AbortSignal,
+    onConnected?: () => void,
   ): AsyncGenerator<ServerEvent> {
     const response = await fetch(`${this.baseUrl}${path}`, {
       method,
@@ -507,6 +510,7 @@ export class XBotApi {
     });
     if (!response.ok) await throwResponse(response);
     if (!response.body) throw new Error("XBot returned an empty event stream");
+    onConnected?.();
     for await (const event of decodeSseStream(response.body)) {
       yield event;
       if (event.kind === "end") return;

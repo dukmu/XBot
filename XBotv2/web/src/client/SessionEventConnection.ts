@@ -44,12 +44,20 @@ export class SessionEventConnection {
     let attempt = 0;
     let cursor = session.event_cursor;
     while (this.isCurrent(controller, generation)) {
+      let connected = false;
+      const markConnected = () => {
+        if (!connected && this.isCurrent(controller, generation)) {
+          connected = true;
+          listener.onConnection(true);
+        }
+      };
       try {
         for await (const event of this.api.streamEvents(
           session.session_id,
           session.thread_id,
           cursor,
           controller.signal,
+          markConnected,
         )) {
           if (!this.isCurrent(controller, generation)) return;
           if (event.sequence <= cursor) continue;
@@ -63,7 +71,7 @@ export class SessionEventConnection {
             return;
           }
           attempt = 0;
-          listener.onConnection(true);
+          markConnected();
           listener.onEvent(event);
           cursor = event.sequence;
         }
