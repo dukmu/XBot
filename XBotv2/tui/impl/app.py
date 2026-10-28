@@ -739,26 +739,19 @@ class TuiApp(App[None]):
             return
         provider_result = agent_result = policy_result = plugin_config_result = None
         if not read_only:
+            requests = [
+                self.controller.providers(),
+                self.controller.agents(),
+                self.controller.session_policy(),
+            ]
             if plugin_config_catalog is None:
-                (
-                    provider_result,
-                    agent_result,
-                    policy_result,
-                    plugin_config_result,
-                ) = await asyncio.gather(
-                    self.controller.providers(),
-                    self.controller.agents(),
-                    self.controller.session_policy(),
-                    self.controller.plugin_config(),
-                    return_exceptions=True,
-                )
+                requests.append(self.controller.plugin_config())
+            provider_result, agent_result, policy_result, *plugin_results = await asyncio.gather(
+                *requests, return_exceptions=True
+            )
+            if plugin_results:
+                plugin_config_result = plugin_results[0]
             else:
-                provider_result, agent_result, policy_result = await asyncio.gather(
-                    self.controller.providers(),
-                    self.controller.agents(),
-                    self.controller.session_policy(),
-                    return_exceptions=True,
-                )
                 plugin_config_result = plugin_config_catalog
         state = self.controller.state
         provider_error = (
@@ -777,29 +770,16 @@ class TuiApp(App[None]):
             if isinstance(plugin_config_result, BaseException)
             else ""
         )
-        providers = (
-            provider_options(provider_result, current=state.provider)
-            if not read_only and not isinstance(provider_result, BaseException)
-            else ()
-        )
-        models = (
-            model_options(provider_result, provider=state.provider)
-            if not read_only and not isinstance(provider_result, BaseException)
-            else ()
-        )
-        efforts = (
-            effort_options(
+        providers = models = efforts = agents = ()
+        if not read_only and not isinstance(provider_result, BaseException):
+            providers = provider_options(provider_result, current=state.provider)
+            models = model_options(provider_result, provider=state.provider)
+            efforts = effort_options(
                 effort_tiers(provider_result, provider=state.provider, model=state.model),
                 current=state.model_mode,
             )
-            if not read_only and not isinstance(provider_result, BaseException)
-            else ()
-        )
-        agents = (
-            agent_options(agent_result)
-            if not read_only and not isinstance(agent_result, BaseException)
-            else ()
-        )
+        if not read_only and not isinstance(agent_result, BaseException):
+            agents = agent_options(agent_result)
         visibility = self.view.transcript.visibility
         data = SettingsData(
             status=status_report(
