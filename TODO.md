@@ -606,3 +606,27 @@
 
 - [x] 最终代码评估点为 `d60a9e40b7daba8191a31f6e4b7cece380efd292`；各组检查在提交前对应的受影响源码上分段执行，不声称该提交 checkout 后跑过一次整合全套。主代理已审读全部差异并检查空白错误。后续本日志提交只改 TODO，不改变被验证的生产源码。
 - [x] 未重复旧全套、PTY、真实 provider、并发压力或 wheel 验收，本轮证据仅覆盖列明路径。未为尚不能证明无效的持久字段增设迁移；本轮删的是已确认无用字段、重复私有事件和中间容器，并消除实际扫描。用户未跟踪设计稿和 `.worktrees/` 保留；不提交本地探针/日志/缓存，不推送、不合并 main。
+
+## 11. 继续精简：人类可读、优雅和减少代码（2026-10-28，完成）
+
+- [x] 从 `refactor-all` 的 `5c125aa8`、tracked clean 继续。三个切片仍由三名 GPT-6.1 Terra 实施，主代理审读、调整和提交。优先合并同形流程、让接口直接列出业务参数，保留普通 if 和明确调用，不引入新框架、配置、校验或 hash。以下行数均相对本节起点的最终差异，不累计探索中删改量。
+
+### 第四轮：设置资料加载
+
+- [x] 合并 `_open_settings` 中两套重复的并发请求；仅在没有复用 catalog 时追加插件配置读取。provider 的三类选项共用一次成功判断，agent 单独处理。保留并发、单项失败隔离、只读设置和保存后复用 catalog；生产代码 +18/-38，净减 20 行。提交 `8238c19a`。
+- [x] 复用 7 个既有 Textual 定向节点：只读状态、模型目录、policy、插件目录、保存、revision 冲突后重试，以及 provider 失败时 agent 仍可选择。7 passed / actual0，日志 `/tmp/xbot-readable-tui-settings.log`、退出码 `.actualexit`，完整命令 `/tmp/xbot-readable-tui-settings.meta`。无新增 TUI 测试或视觉改动。
+
+### 第五轮：客户端请求
+
+- [x] 将 8 个目录/线程/历史/轨迹方法中重复的可选查询参数过滤移到已有 `_request` 边界；各公开方法直接列参数，唯一普通 if 只排除 None，保留 0 和空串。删除 SSE 私有 `_stream` 中从未变化的 method/payload 参数及无效 JSON 分支。公开方法、路由、类型、解码和错误处理保持；生产代码 +27/-48，净减 21 行。提交 `e60c26c9`。
+- [x] 首次 SSE 定向集合 4 passed / exit0（`/tmp/xbot-readable-client-stream.log`、`.exit`），含原有两个流式错误响应节点和两个临时成功路径节点；后者在审查中取消，不计为交付测试。查询初组 3 passed / exit0（`/tmp/xbot-readable-client-query.log`、`.exit`），随后取消独立的 8 路由 mock 分发测试，复用已有 thread 分页测试追加 0、空串及 None 省略断言，保留原正值筛选断言。
+- [x] 最终请求前普通 if 和精简后测试仅复验修改的 `test_thread_list_requests_filtered_pages`，1 passed / exit0（`/tmp/xbot-readable-client-query-final.log`、`.exit`）。未重复不受影响的 SSE 和 catalog 节点。最终测试仅净加 2 行，不保留为删几个形参而新增的请求快照集合。
+
+### 第六轮：路径工具分支
+
+- [x] 只合并 move/copy 的同形参数检查和操作调用，保留原操作、参数及错误。审查撤回 delete/mkdir 合并：它引入额外临时字典和嵌套判断，原来的短分支更清楚。最终生产代码 +3/-13，净减 10 行；执行仍走原 `_structured_operation` 和沙箱边界。提交 `f6136696`。
+- [x] 初始路径操作和临时缺参检查 5 passed / actual0（`/tmp/xbot-readable-files-focused.log`）；tuple membership 版本同组 5 passed / actual0（`/tmp/xbot-readable-files-focused-final.log`）。撤回 delete/mkdir 合并后只续验目录生命周期和两个相关临时缺参节点，3 passed / 2 deselected、actual0（`/tmp/xbot-readable-files-focused-final2.log`，内含命令）。其中既有 `test_directory_lifecycle` 覆盖真实创建、复制、移动、删除，是最终保留的验证路径。
+- [x] 最后取消本轮新增、仅锁旧错误文案的缺参测试，原测试文件恢复；生产源码不再改变，因此未再次重跑生命周期检查。最终工具测试无代码差异。未运行真实 bwrap；本轮没有修改权限、安全路径或物理文件操作。
+
+- [x] 三轮生产源码共净减 51 行；测试净加 2 行，除本日志外总净减 49 行。没有通过删除说明文档或压缩换行凑数。逐文件审读完成，空白错误已修正。最终生产源码评估点 `f613669613e2664f63252060bb21e8e5c3dca8a2`，检查在提交前按各组受影响源码分段执行，不声称跑过一次整合全套。
+- [x] 本轮是局部可读性精简，没有新增性能测量或宣称吞吐提升；未重复旧全套、PTY、真实 provider、压力和安装验收。后续只提交本日志，不改已验证源码。用户未跟踪设计稿、`.worktrees/` 和本地日志均保留原归属，不推送、不合并 main。
