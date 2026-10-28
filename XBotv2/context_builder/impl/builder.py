@@ -135,14 +135,10 @@ class ContextBuilder:
                     source=source,
                     text=content.strip(),
                 ))
-        registered = [
+        components.extend(
             component
             for owned in self._components.values()
             for component in owned
-        ]
-        components.extend(
-            component
-            for component in registered
             if component.text.strip()
         )
         components.extend(HistoryComponent(message=message) for message in history)

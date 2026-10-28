@@ -24,7 +24,7 @@ from XBotv2.core.api.domain import (
     UsageDelta,
 )
 from XBotv2.agentloop.api.events import (
-    Events, ModelRequestReady, ModelResponseObserved, ReplaceRequest, RetryRequest,
+    Events, ModelRequestReady, ModelResponseObserved, ReplaceContext, ReplaceRequest, RetryRequest,
 )
 from XBotv2.tests.runtime import thread_scope
 from XBotv2.core.api.parts import TextPart
@@ -97,7 +97,7 @@ async def test_application_exposes_diagnostics_from_the_actual_final_exchange(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scenario", ["normal", "replace", "retry", "retry_replace", "finalize"])
+@pytest.mark.parametrize("scenario", ["normal", "replace", "replace_context", "retry", "retry_replace", "finalize"])
 async def test_engine_shares_candidate_estimate_with_observers(
     temp_data_dir, temp_workspace, monkeypatch, scenario,
 ):
@@ -136,6 +136,10 @@ async def test_engine_shares_candidate_estimate_with_observers(
             extra = ProviderUser(parts=(TextPart(text="hook replacement"),))
             return ReplaceRequest(event.request.model_copy(update={"messages": (*event.request.messages, extra)}))
 
+    async def after_context(event):
+        if scenario == "replace_context":
+            return ReplaceContext((*event.context, ProviderUser(parts=(TextPart(text="context replacement"),))))
+
     async def retry(event):
         request = event.request
         if scenario == "retry_replace":
@@ -151,6 +155,7 @@ async def test_engine_shares_candidate_estimate_with_observers(
 
     monkeypatch.setattr(engine_module, "estimate_request_tokens", estimate)
     application.on(Events.BEFORE_MODEL_REQUEST, before)
+    application.on(Events.AFTER_CONTEXT_BUILD, after_context)
     application.on(Events.MODEL_REQUEST_ERROR, retry)
     application.on(Events.MODEL_REQUEST_READY, on_ready)
     application.on(Events.MODEL_RESPONSE_OBSERVED, on_response)
@@ -172,9 +177,14 @@ async def test_engine_shares_candidate_estimate_with_observers(
         latest = application.token_manager.diagnostics()["latest_request"]
         assert latest["estimated_context"]["tokens"] == observed[-1]
         assert latest["tool_count"] == len(requests[-1].tools)
+        if scenario == "replace_context":
+            assert requests[0].messages[-1] == ProviderUser(parts=(TextPart(text="context replacement"),))
         if scenario == "finalize":
             assert requests[0].tools
             assert not requests[-1].tools
+            assert requests[-1].messages[0].role == "system"
+            assert requests[-1].messages[1].role == "system"
+            assert "Iteration limit" in requests[-1].messages[1].parts[0].text
     finally:
         await application.root.close()
 

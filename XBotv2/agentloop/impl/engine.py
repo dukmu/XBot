@@ -20,7 +20,7 @@ import asyncio
 from contextlib import AsyncExitStack
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
@@ -579,18 +579,19 @@ class Engine:
                         yield context_build.event
                         turn_complete = True
                         break
-                    context_messages = list(context_build.messages)
+                    context_messages = context_build.messages
                     if finalizing:
                         notice_at = (
                             1
                             if context_messages and context_messages[0].role == "system"
                             else 0
                         )
-                        context_messages.insert(
-                            notice_at,
-                            ProviderSystem(
-                                parts=(TextPart(text=self._iteration_limit_notice()),)
-                            ),
+                        notice = ProviderSystem(
+                            parts=(TextPart(text=self._iteration_limit_notice()),)
+                        )
+                        context_messages = (
+                            *context_messages[:notice_at], notice,
+                            *context_messages[notice_at:],
                         )
                     model_preparation = await self._prepare_model_request(
                         context_messages, finalizing=finalizing
@@ -984,11 +985,11 @@ class Engine:
 
         after_result = await self._dispatch(
             Events.AFTER_CONTEXT_BUILD,
-            AfterContextBuild(tuple(context_messages)),
+            AfterContextBuild(context_messages),
             short_circuit=True,
         )
         if isinstance(after_result, ReplaceContext):
-            context_messages = list(after_result.context)
+            context_messages = after_result.context
         elif isinstance(after_result, HookCompleteTurn):
             if not is_loop_event(after_result.result):
                 raise TypeError("CompleteTurn result must be a LoopEvent")
@@ -999,11 +1000,11 @@ class Engine:
                 "CompleteTurn, or None"
             )
 
-        return _ContextReady(messages=tuple(context_messages))
+        return _ContextReady(messages=context_messages)
 
     async def _prepare_model_request(
         self,
-        context_messages: list[ProviderMessage],
+        context_messages: Sequence[ProviderMessage],
         *,
         finalizing: bool,
     ) -> _ModelRequestResult:

@@ -64,6 +64,15 @@ def test_builder_orders_system_components_before_canonical_history():
     builder.register_component("policy", InlinePromptComponent(
         stage="system_rules", source="policy", text="Never invent results.",
     ))
+    builder.register_component("other", InlinePromptComponent(
+        stage="system_rules", source="other-rule", text="Check the result.",
+    ))
+    builder.register_component("policy", InlinePromptComponent(
+        stage="system_rules", source="second-policy", text="Keep it clear.",
+    ))
+    builder.register_component("other", InlinePromptComponent(
+        stage="system_rules", source="empty-rule", text="  ",
+    ))
 
     messages = builder.build(
         history=(_human(),),
@@ -79,6 +88,9 @@ def test_builder_orders_system_components_before_canonical_history():
     system = messages[0].parts[0].text
     assert system.index("core_instructions") < system.index("agent_instructions")
     assert system.index("agent_instructions") < system.index("policy")
+    assert system.index('name="policy"') < system.index('name="second-policy"')
+    assert system.index('name="second-policy"') < system.index('name="other-rule"')
+    assert "empty-rule" not in system
     assert isinstance(messages[1], ProviderUser)
     assert messages[1].parts == (TextPart(text="hello"),)
 
