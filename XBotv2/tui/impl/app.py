@@ -193,7 +193,8 @@ class TuiApp(App[None]):
         render_interval: float = 0.1,
         new_input_id: Callable[[], str] | None = None,
     ) -> None:
-        super().__init__()
+        # Textual selects its NO_COLOR filter during construction.
+        super().__init__(ansi_color=True)
         self._backend = backend
         self._config = config or TransportConfig()
         self._workspace = workspace
