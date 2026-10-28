@@ -1,18 +1,12 @@
 """ACP Agent implementation backed by the XBot session runtime."""
 
 from __future__ import annotations
-from XBotv2.session.api.records import (
-    conversation_replay,
-    project_message,
-    project_human_input,
-)
+from XBotv2.session.api.records import conversation_replay
 from XBotv2.interactions.api.contracts import CLIENT_EVENTS
 from XBotv2.session.api.snapshot import thread_snapshot
-from XBotv2.agentloop.api.storage import ARCHIVE
 from XBotv2.agentloop.api.contracts import AGENT_LOOP
 from XBotv2.session.api.contracts import THREAD_EVENTS
 from XBotv2.agentloop.api.models import InterruptResult
-from XBotv2.agentloop.api.contracts import AGENT_LOOP
 
 import asyncio
 import re
@@ -65,7 +59,6 @@ from acp.schema import (
 from XBotv2.main import __version__
 from XBotv2.agentloop.api.outputs import LoopError, LoopTurnEnded
 from XBotv2.acp_plugin.impl.events import ACPEventMapper, replay_history
-from XBotv2.session.api.contracts import SessionEventFrame
 from XBotv2.agents.api.contracts import LIST_AGENTS, SELECT_AGENT, SelectAgent
 from XBotv2.commands.api.contracts import (
     EXECUTE_COMMAND,
@@ -96,6 +89,7 @@ from XBotv2.llm.api.contracts import LIST_PROVIDERS, SELECT_PROVIDER, SelectProv
 from XBotv2.mcp_plugin.api.models import MCP_PLUGIN_ID
 from XBotv2.agentloop.api.models import MediaInput, SendMessage
 from XBotv2.session.api.contracts import (
+    OpenedThread,
     OpenSession,
     SessionEventSubscription,
     SessionNotFound,
@@ -199,19 +193,7 @@ class XBotACPAgent:
     ) -> NewSessionResponse:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
-        opened_scope = await self.sessions.open(
-            OpenSession(
-                session_id=None,
-                thread_id="main",
-                provider_name=self.provider_name,
-                workspace_root=workspace,
-                selected_agent=self.selected_agent,
-                mode="new",
-                no_plugins=self.no_plugins,
-                plugin_configs=self._mcp_plugin_config(workspace, None, mcp_servers),
-            )
-        )
-        opened = await thread_snapshot(opened_scope)
+        opened = await self._open_session(None, workspace, mcp_servers)
         await self._prepare_session(opened.key.session_id, opened.event_cursor)
         self._log.info(
             "acp.session.created",
@@ -298,15 +280,7 @@ class XBotACPAgent:
         self._reject_additional_directories(additional_directories)
         workspace = _workspace(cwd)
         snapshot = await self.sessions.session_summary(session_id)
-        stored_workspace = snapshot.workspace_root
-        if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
-            raise RequestError.invalid_params(
-                {
-                    "sessionId": session_id,
-                    "cwd": cwd,
-                    "expectedCwd": stored_workspace,
-                }
-            )
+        self._validate_workspace(session_id, cwd, workspace, snapshot.workspace_root)
 
         try:
             forked_id = await self.sessions.fork_session(session_id)
@@ -443,21 +417,14 @@ class XBotACPAgent:
                     "value": value,
                 }
             )
+        if config_id not in {"agent", "provider"}:
+            raise RequestError.invalid_params({"configId": config_id})
         try:
+            loop = (await self.sessions.locate(session_id, "main")).require(AGENT_LOOP)
             if config_id == "agent":
-                await (
-                    (await self.sessions.locate(session_id, "main"))
-                    .require(AGENT_LOOP)
-                    .invoke(SELECT_AGENT, SelectAgent(value))
-                )
-            elif config_id == "provider":
-                await (
-                    (await self.sessions.locate(session_id, "main"))
-                    .require(AGENT_LOOP)
-                    .invoke(SELECT_PROVIDER, SelectProvider(value))
-                )
+                await loop.invoke(SELECT_AGENT, SelectAgent(value))
             else:
-                raise RequestError.invalid_params({"configId": config_id})
+                await loop.invoke(SELECT_PROVIDER, SelectProvider(value))
         except OperationError as exc:
             raise RequestError.invalid_params(
                 {
@@ -514,34 +481,37 @@ class XBotACPAgent:
             snapshot = await self.sessions.session_summary(session_id)
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
-        stored_workspace = snapshot.workspace_root
         workspace = _workspace(cwd)
-        if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
-            raise RequestError.invalid_params(
-                {
-                    "sessionId": session_id,
-                    "cwd": cwd,
-                    "expectedCwd": stored_workspace,
-                }
-            )
+        self._validate_workspace(session_id, cwd, workspace, snapshot.workspace_root)
         try:
-            opened_scope = await self.sessions.open(
-                OpenSession(
-                    session_id=session_id,
-                    thread_id="main",
-                    provider_name=self.provider_name,
-                    workspace_root=workspace,
-                    mode="resume",
-                    no_plugins=self.no_plugins,
-                    plugin_configs=self._mcp_plugin_config(
-                        workspace, session_id, mcp_servers
-                    ),
-                )
-            )
-            opened = await thread_snapshot(opened_scope)
+            opened = await self._open_session(session_id, workspace, mcp_servers)
         except SessionNotFound as exc:
             raise RequestError.resource_not_found(session_id) from exc
         await self._prepare_session(session_id, opened.event_cursor)
+
+    async def _open_session(
+        self, session_id: str | None, workspace: str, mcp_servers: list[Any] | None,
+    ) -> OpenedThread:
+        opened_scope = await self.sessions.open(OpenSession(
+            session_id=session_id,
+            thread_id="main",
+            provider_name=self.provider_name,
+            workspace_root=workspace,
+            selected_agent=self.selected_agent if session_id is None else None,
+            mode="new" if session_id is None else "resume",
+            no_plugins=self.no_plugins,
+            plugin_configs=self._mcp_plugin_config(workspace, mcp_servers),
+        ))
+        return await thread_snapshot(opened_scope)
+
+    @staticmethod
+    def _validate_workspace(
+        session_id: str, cwd: str, workspace: str, stored_workspace: str,
+    ) -> None:
+        if stored_workspace and Path(stored_workspace).resolve() != Path(workspace):
+            raise RequestError.invalid_params({
+                "sessionId": session_id, "cwd": cwd, "expectedCwd": stored_workspace,
+            })
 
     async def _prepare_session(self, session_id: str, event_cursor: int) -> None:
         existing = self._event_tasks.get(session_id)
@@ -893,7 +863,6 @@ class XBotACPAgent:
     def _mcp_plugin_config(
         self,
         workspace: str,
-        session_id: str | None,
         mcp_servers: list[Any] | None,
     ) -> dict[str, dict[str, JsonValue]] | None:
         if not mcp_servers:

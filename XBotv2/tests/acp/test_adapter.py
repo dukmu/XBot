@@ -585,10 +585,24 @@ async def test_adapter_uses_real_xbot_session_runtime(tmp_path) -> None:
             "agent",
             "provider",
         ]
+        for option in session.config_options:
+            changed = await agent.set_config_option(option.id, session.session_id, option.current_value)
+            assert changed.config_options
         response = await agent.prompt(
             session.session_id,
             [text_block("hello")],
         )
+        before_resume = len(connection.updates)
+        resumed = await agent.resume_session(session.session_id, str(workspace))
+        assert resumed.config_options
+        assert len(connection.updates) == before_resume
+        loaded = await agent.load_session(str(workspace), session.session_id)
+        assert loaded.config_options
+        replayed = [
+            update.content.text for _, update in connection.updates[before_resume:]
+            if getattr(update, "content", None) is not None
+        ]
+        assert replayed == ["hello", "real runtime"]
         forked = await agent.fork_session(
             session.session_id,
             str(workspace),
