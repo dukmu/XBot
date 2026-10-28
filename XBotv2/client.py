@@ -133,38 +133,34 @@ class XBotClient:
         self, *, limit: int = 100, cursor: str | None = None,
         workspace_root: str | None = None,
     ) -> SessionListResponse:
-        params: dict[str, JsonValue] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
-        if workspace_root is not None:
-            params["workspace_root"] = workspace_root
-        return await self._request("GET", "/sessions", SessionListResponse, params=params)
+        return await self._request(
+            "GET", "/sessions", SessionListResponse,
+            params={"limit": limit, "cursor": cursor, "workspace_root": workspace_root},
+        )
 
     async def list_workspaces(
         self, *, limit: int = 100, cursor: str | None = None,
     ) -> WorkspaceListResponse:
-        params: dict[str, JsonValue] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
-        return await self._request("GET", "/workspaces", WorkspaceListResponse, params=params)
+        return await self._request(
+            "GET", "/workspaces", WorkspaceListResponse,
+            params={"limit": limit, "cursor": cursor},
+        )
 
     async def list_workspace_sessions(
         self, workspace_id: str, *, limit: int = 100, cursor: str | None = None,
     ) -> WorkspaceSessionPageResponse:
-        params: dict[str, JsonValue] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
         return await self._request(
-            "GET", f"/workspaces/{_segment(workspace_id)}/sessions", WorkspaceSessionPageResponse, params=params
+            "GET", f"/workspaces/{_segment(workspace_id)}/sessions", WorkspaceSessionPageResponse,
+            params={"limit": limit, "cursor": cursor},
         )
 
     async def list_archived_sessions(
         self, *, limit: int = 100, cursor: str | None = None,
     ) -> WorkspaceSessionPageResponse:
-        params: dict[str, JsonValue] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
-        return await self._request("GET", "/workspaces/archived-sessions", WorkspaceSessionPageResponse, params=params)
+        return await self._request(
+            "GET", "/workspaces/archived-sessions", WorkspaceSessionPageResponse,
+            params={"limit": limit, "cursor": cursor},
+        )
 
     async def open_session(
         self,
@@ -273,16 +269,12 @@ class XBotClient:
         self, session_id: str, *, limit: int = 100, cursor: str | None = None,
         parent_thread_id: str | None = None, kind: Literal["main", "subagent"] | None = None,
     ) -> ThreadListResponse:
-        params: dict[str, JsonValue] = {"limit": limit}
-        if cursor is not None:
-            params["cursor"] = cursor
-        if parent_thread_id is not None:
-            params["parent_thread_id"] = parent_thread_id
-        if kind is not None:
-            params["kind"] = kind
         return await self._request(
             "GET", f"/sessions/{_segment(session_id)}/threads", ThreadListResponse,
-            params=params,
+            params={
+                "limit": limit, "cursor": cursor,
+                "parent_thread_id": parent_thread_id, "kind": kind,
+            },
         )
 
     async def open_thread(
@@ -413,16 +405,14 @@ class XBotClient:
             "GET",
             f"{thread_path(session_id, thread_id)}/messages",
             HistoryPage[ConversationRecord],
-            params={
-                key: value
-                for key, value in {"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id}.items()
-                if value is not None
-            },
+            params={"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id},
         )
 
     async def list_display_messages(self, session_id: str, thread_id: str, *, cursor: Cursor | None = None, limit: int = 50, before_id: str | None = None, after_id: str | None = None) -> HistoryPage[DisplayRecord]:
-        params = {key: value for key, value in {"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id}.items() if value is not None}
-        return await self._request("GET", f"{thread_path(session_id, thread_id)}/display-messages", HistoryPage[DisplayRecord], params=params)
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/display-messages", HistoryPage[DisplayRecord],
+            params={"cursor": cursor, "limit": limit, "before_id": before_id, "after_id": after_id},
+        )
 
     async def read_display_body(self, session_id: str, thread_id: str, message_id: str, *, field: str, offset: int = 0, limit: int = 4096) -> DisplayBodyPage:
         return await self._request("GET", f"{thread_path(session_id, thread_id)}/display-messages/{_segment(message_id)}/body", DisplayBodyPage, params={"field": field, "offset": offset, "limit": limit})
@@ -440,15 +430,7 @@ class XBotClient:
             "GET",
             f"{thread_path(session_id, thread_id)}/trajectory",
             TrajectoryRead,
-            params={
-                key: value
-                for key, value in {
-                    "cursor": cursor,
-                    "before": before,
-                    "limit": limit,
-                }.items()
-                if value is not None
-            },
+            params={"cursor": cursor, "before": before, "limit": limit},
         )
 
     async def read_artifact(
@@ -621,7 +603,6 @@ class XBotClient:
         after: int | None = None,
     ) -> AsyncGenerator[ServerEvent, None]:
         return self._stream(
-            "GET",
             f"{thread_path(session_id, thread_id)}/events",
             params={"after": after} if after is not None else None,
         )
@@ -633,7 +614,6 @@ class XBotClient:
     ) -> AsyncIterator[ServerEvent]:
         """Stream the process session/workspace catalog used by Web clients."""
         return self._stream(
-            "GET",
             "/workspaces/events",
             params={"after": after} if after is not None else None,
         )
@@ -647,6 +627,8 @@ class XBotClient:
         *,
         params: Mapping[str, JsonValue] | None = None,
     ) -> ResponseModel:
+        if params is not None:
+            params = {key: value for key, value in params.items() if value is not None}
         response = await self._http.request(
             method,
             path,
@@ -671,16 +653,13 @@ class XBotClient:
 
     async def _stream(
         self,
-        method: str,
         path: str,
-        payload: WireModel | None = None,
         *,
         params: Mapping[str, JsonValue] | None = None,
     ) -> AsyncGenerator[ServerEvent, None]:
         async with self._http.stream(
-            method,
+            "GET",
             path,
-            json=payload.model_dump() if payload is not None else None,
             params=params,
             headers={"Accept": "text/event-stream"},
             timeout=httpx.Timeout(self._timeout, read=None),

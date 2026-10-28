@@ -29,7 +29,7 @@ async def test_catalog_methods_request_one_page_with_cursor():
     assert all(page.next_cursor == "next" and page.previous_cursor == "previous" for page in pages)
     assert pages[2].archived_session_ids == pages[3].archived_session_ids == ["archived"]
 
-async def test_thread_list_requests_one_filtered_page():
+async def test_thread_list_requests_filtered_pages():
     requests = []
 
     def respond(request):
@@ -38,7 +38,9 @@ async def test_thread_list_requests_one_filtered_page():
 
     async with XBotClient("http://test", transport=httpx.MockTransport(respond)) as client:
         page = await client.list_threads("s1", limit=3, cursor="cursor", parent_thread_id="parent", kind="subagent")
-    assert len(requests) == 1
+        await client.list_threads("s1", limit=0, parent_thread_id="")
+    assert len(requests) == 2
     assert requests[0].url.path == "/sessions/s1/threads"
     assert dict(requests[0].url.params) == {"limit": "3", "cursor": "cursor", "parent_thread_id": "parent", "kind": "subagent"}
     assert page.previous_cursor == "back" and page.next_cursor == "forward"
+    assert dict(requests[1].url.params) == {"limit": "0", "parent_thread_id": ""}
