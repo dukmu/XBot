@@ -38,6 +38,16 @@ sandbox summary, runtime paths and turn number. Empty prompt text is omitted.
 No model prefix cache is owned here: prompt stage/source/order changes alter
 request content and can affect the provider's prefix caching naturally.
 
+The core instructions describe general execution responsibilities: follow the
+current objective, respect instruction and permission boundaries, await actual
+tool results, interpret attributed context, and report evidence accurately.
+They do not assume coding tools or a particular feature plugin. The built-in
+`default` Agent contributes the coding workflow separately: inspect ownership,
+implement scoped changes, integrate delegated work, and verify the affected
+behavior. Custom Agent definitions replace that role prompt without losing the
+general harness instructions. Plugin prompts retain their own feature-specific
+contracts; reminders do not require extra tool calls solely to acknowledge them.
+
 ```python
 from XBotv2.context_builder.api.contracts import CONTEXT_BUILDER, InlinePromptComponent
 
