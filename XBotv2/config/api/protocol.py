@@ -80,9 +80,3 @@ class SessionPolicyResponse(WireModel):
 class PluginConfigPatchRequest(WireModel):
     revision: str = Field(min_length=1)
     config: dict[str, JsonValue] = Field(default_factory=dict)
-
-
-class PluginOverlayDocument(WireModel):
-    scope: Literal["global", "workspace", "session"]
-    revision: str = Field(min_length=1)
-    text: str

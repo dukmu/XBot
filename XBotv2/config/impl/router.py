@@ -23,8 +23,9 @@ from XBotv2.protocol.api.http_util import HttpServerError
 from XBotv2.permissions.api.models import PermissionPolicy
 from XBotv2.sandbox.api.models import SandboxConfig
 from XBotv2.session.api.contracts import SessionsPort
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument, ConfigurationResourceNotFound
 from XBotv2.config.api.protocol import (
-    PluginConfigPatchRequest, PluginOverlayDocument, SessionPolicyPatch, SessionPolicyResponse,
+    PluginConfigPatchRequest, SessionPolicyPatch, SessionPolicyResponse,
 )
 
 def _policy_response(
@@ -44,8 +45,37 @@ def _policy_response(
     )
 
 
-def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIRouter:
+def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader, resources) -> APIRouter:
     router = APIRouter()
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/configuration", operation_id="list_configuration")
+    async def list_configuration(session_id: str, thread_id: str) -> ConfigurationCatalog:
+        ctx = await sessions.locate(session_id, thread_id)
+        return await resources.catalog(ctx)
+
+    @router.get("/sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}", operation_id="read_configuration")
+    async def read_configuration(session_id: str, thread_id: str, resource_id: str, scope: PluginConfigScope = Query(default="workspace")) -> ConfigurationDocument:
+        ctx = await sessions.locate(session_id, thread_id)
+        try:
+            return await resources.read(ctx, resource_id, scope)
+        except ConfigurationResourceNotFound as exc:
+            raise HttpServerError("configuration_not_found", str(exc), status=404) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_configuration", str(exc), status=400) from exc
+
+    @router.put("/sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}", operation_id="save_configuration")
+    async def save_configuration(session_id: str, thread_id: str, resource_id: str, payload: ConfigurationDocument, scope: PluginConfigScope = Query(default="workspace")) -> ConfigurationDocument:
+        if payload.id != resource_id or payload.scope != scope:
+            raise HttpServerError("invalid_configuration", "Resource id or scope does not match request", status=400)
+        ctx = await sessions.locate(session_id, thread_id)
+        try:
+            return await resources.save(ctx, payload)
+        except (PluginConfigConflict, FileExistsError) as exc:
+            raise HttpServerError("configuration_conflict", str(exc), status=409) from exc
+        except ConfigurationResourceNotFound as exc:
+            raise HttpServerError("configuration_not_found", str(exc), status=404) from exc
+        except ValueError as exc:
+            raise HttpServerError("invalid_configuration", str(exc), status=400) from exc
 
     async def _main_thread_id(session_id: str) -> str:
         """Find the main thread without scanning child-thread pages."""
@@ -124,21 +154,6 @@ def build_router(*, sessions: SessionsPort, paths: RuntimePaths, loader) -> APIR
             raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc
         except PluginConfigUnavailable as exc:
             raise HttpServerError("plugin_config_unavailable", str(exc), status=400) from exc
-        except ValueError as exc:
-            raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
-
-    @router.get("/sessions/{session_id}/threads/{thread_id}/plugin-overlay", operation_id="get_plugin_overlay")
-    async def get_plugin_overlay(session_id: str, thread_id: str, scope: PluginConfigScope = Query(default="workspace")) -> PluginOverlayDocument:
-        thread = await sessions.thread_summary(session_id, thread_id)
-        return read_overlay_document(paths, thread.workspace_root, scope, session_id)
-
-    @router.put("/sessions/{session_id}/threads/{thread_id}/plugin-overlay", operation_id="save_plugin_overlay")
-    async def save_plugin_overlay(session_id: str, thread_id: str, payload: PluginOverlayDocument) -> PluginOverlayDocument:
-        thread = await sessions.thread_summary(session_id, thread_id)
-        try:
-            return write_overlay_document(paths, thread.workspace_root, payload, session_id)
-        except PluginConfigConflict as exc:
-            raise HttpServerError("plugin_config_conflict", str(exc), status=409) from exc
         except ValueError as exc:
             raise HttpServerError("invalid_plugin_config", str(exc), status=400) from exc
 

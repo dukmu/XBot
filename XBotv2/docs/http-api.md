@@ -247,9 +247,6 @@ name or declaration alone.
 |---|---|---|---|
 | GET | `/sessions/{session_id}/threads/{thread_id}/agents` | `list_agents` | `AgentListResponse` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/agent` | `select_agent` | `AgentSelectionResponse` |
-| GET | `/sessions/{session_id}/threads/{thread_id}/agent-definitions` | `list_agent_definitions` | `AgentDefinitionNames` |
-| GET | `/sessions/{session_id}/threads/{thread_id}/agent-definitions/{name}` | `get_agent_definition` | `AgentDocument` |
-| PUT | `/sessions/{session_id}/threads/{thread_id}/agent-definitions/{name}` | `save_agent_definition` | `AgentDocument` |
 | GET | `/providers` | `list_providers` | `ProviderCatalog` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/provider` | `select_provider` | `ProviderSelectionResponse` |
 | PUT | `/sessions/{session_id}/threads/{thread_id}/effort` | `select_effort` | `EffortSelectionResponse` |
@@ -271,12 +268,10 @@ The policy PATCH accepts `replace_permissions` and `replace_sandbox` for complet
 
 ## Plugin configuration
 
-GET and PUT `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` read and replace the raw global, workspace, or session plugin overlay. The document carries a revision; stale writes are rejected. The server validates loader structure before an atomic write; plugin-specific configuration is validated when its plugin next mounts. Structural changes take effect when the relevant plugins next mount; restart the server or client as appropriate.
+Configuration resource owners publish a catalog at `GET /sessions/{session_id}/threads/{thread_id}/configuration`. Each resource supplies its id, title, supported scopes, format, and a description of when changes apply. Read and replace a document using `GET` and `PUT /sessions/{session_id}/threads/{thread_id}/configuration/{resource_id}?scope=...`. A document contains `id`, `scope`, `revision`, `content`, and optional `config_schema`. The PUT body is the document returned by GET with edited content. Stale revisions return 409; unknown resources return 404. The raw plugin overlay resource validates loader structure before an atomic write; plugin-specific configuration is validated when its plugin next mounts.
 
 | Method | Path | Operation | Result |
 |---|---|---|---|
-| GET | `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` | `get_plugin_overlay` | `PluginOverlayDocument` |
-| PUT | `/sessions/{session_id}/threads/{thread_id}/plugin-overlay` | `save_plugin_overlay` | `PluginOverlayDocument` |
 | GET | `/sessions/{session_id}/threads/{thread_id}/plugin-config?scope=global\|workspace\|session` | `list_plugin_config` | `PluginConfigCatalog` |
 | PATCH | `/sessions/{session_id}/threads/{thread_id}/plugin-config/{plugin_id}?scope=global\|workspace\|session` | `update_plugin_config` | updated `PluginConfigCatalog` |
 

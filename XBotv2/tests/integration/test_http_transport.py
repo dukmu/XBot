@@ -375,6 +375,50 @@ async def test_session_policy_api_persists_reloads_and_preserves_rules(http_app)
 
 
 @pytest.mark.asyncio
+async def test_session_policy_replacement_persists_empty_rules_over_inherited_rules(http_app) -> None:
+    from XBotv2.permissions.api.models import PermissionPolicy
+
+    async with XBotClient("http://test", transport=ASGITransport(app=http_app)) as sdk:
+        session_id = "empty-permission-rules"
+        await sdk.open_session(session_id=session_id, thread_id="main")
+        initial_ctx = await http_app.state.manager.locate(session_id, "main")
+        events = initial_ctx.require(THREAD_EVENTS).subscribe()
+        try:
+            await sdk.send_message(session_id, "main", "Persist this session", request_id="persist")
+            await _await_turn_end(events)
+        finally:
+            await events.aclose()
+        before = await sdk.get_session_policy(session_id)
+        assert before.effective_permissions.rules
+
+        updated = await sdk.update_session_policy(
+            session_id,
+            replace_permissions=PermissionPolicy(default_decision="deny", rules=()),
+        )
+        assert updated.permissions.rules == ()
+        assert updated.effective_permissions.rules == ()
+        ctx = await http_app.state.manager.locate(session_id, "main")
+        assert ctx.require(PERMISSIONS).check("shell") == "deny"
+        path = http_app.state.paths.session(session_id).config_file
+        rows = yaml.safe_load(path.read_text(encoding="utf-8"))["plugins"]
+        permission_config = next(row["config"] for row in rows if row["id"] == "permissions")
+        assert permission_config["rules"] == []
+        sandbox_updated = await sdk.update_session_policy(session_id, sandbox={"network": False})
+        assert sandbox_updated.effective_permissions.rules == ()
+        rows = yaml.safe_load(path.read_text(encoding="utf-8"))["plugins"]
+        permission_config = next(row["config"] for row in rows if row["id"] == "permissions")
+        assert permission_config["rules"] == []
+
+        await sdk.close_session(session_id)
+        await sdk.open_session(session_id=session_id, thread_id="main", mode="resume")
+        resumed = await sdk.get_session_policy(session_id)
+        assert resumed.permissions.rules == ()
+        assert resumed.effective_permissions.rules == ()
+        resumed_ctx = await http_app.state.manager.locate(session_id, "main")
+        assert resumed_ctx.require(PERMISSIONS).check("shell") == "deny"
+
+
+@pytest.mark.asyncio
 async def test_session_policy_api_rejects_update_during_turn(http_app) -> None:
     async with XBotClient(
         "http://test",
@@ -7117,3 +7161,92 @@ async def test_empty_thread_trajectory_validates_http_cursors_without_persisting
         assert invalid.status_code == 400
         assert invalid.json()["code"] == "invalid_cursor"
     assert not http_app.state.paths.session("empty-trajectory").root.exists()
+
+
+async def test_configuration_resources_http(client: httpx.AsyncClient, http_app) -> None:
+    opened = await client.post("/sessions", json={"session_id": "config-resource", "thread_id": "main"})
+    assert opened.status_code == 200
+    base = "/sessions/config-resource/threads/main/configuration"
+    response = await client.get(base)
+    assert response.status_code == 200, response.text
+    resources = {r["id"]: r for r in response.json()["resources"]}
+    assert {"config:overlay", "config:permissions", "config:sandbox"} <= resources.keys()
+    agent_id = next(key for key in resources if key.startswith("agent:"))
+    assert resources[agent_id]["format"] == "markdown"
+
+    policy_url = f"{base}/config:sandbox?scope=session"
+    policy = (await client.get(policy_url)).json()
+    assert policy["config_schema"]["properties"]["network"]
+    changed = {**policy, "content": {**policy["content"], "network": False}}
+    saved = await client.put(policy_url, json=changed)
+    assert saved.status_code == 200, saved.text
+    assert saved.json()["content"]["network"] is False
+    assert (await client.get("/sessions/config-resource/policy")).json()["sandbox"]["network"] is False
+    assert (await client.put(policy_url, json=changed)).status_code == 409
+    latest = saved.json()
+    competing = {**latest, "content": {**latest["content"], "network": True}}
+    outcomes = await asyncio.gather(client.put(policy_url, json=competing), client.put(policy_url, json=competing))
+    assert sorted(result.status_code for result in outcomes) == [200, 409]
+    assert (await client.get(f"{base}/config:sandbox?scope=global")).status_code == 400
+
+    agent_url = f"{base}/{agent_id}?scope=workspace"
+    doc = (await client.get(agent_url)).json()
+    assert doc["content"].startswith("---\n")
+    from XBotv2.agents.impl.resources import agent_path
+    ctx = await http_app.state.manager.locate("config-resource", "main")
+    source = agent_path(ctx, "global", agent_id.removeprefix("agent:"))
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(doc["content"] + "\nChanged inherited source.\n", encoding="utf-8")
+    assert (await client.put(agent_url, json=doc)).status_code == 409
+    doc = (await client.get(agent_url)).json()
+    raw = doc["content"] + "\nExtra instruction.\n"
+    written = await client.put(agent_url, json={**doc, "content": raw})
+    assert written.status_code == 200, written.text
+    assert written.json()["content"] == raw
+    assert (await client.put(agent_url, json=doc)).status_code == 409
+
+    plugin_id = next(key for key in resources if key.startswith("config:plugin."))
+    plugin = await client.get(f"{base}/{plugin_id}?scope=workspace")
+    assert plugin.status_code == 200, plugin.text
+    assert plugin.json()["config_schema"] is not None
+    overlay_url = f"{base}/config:overlay?scope=workspace"
+    overlay = (await client.get(overlay_url)).json()
+    saved_overlay = await client.put(overlay_url, json=overlay)
+    assert saved_overlay.status_code == 200, saved_overlay.text
+    assert (await client.get(f"{base}/missing:thing?scope=workspace")).status_code == 404
+
+
+async def test_configuration_accepts_unknown_owner_over_http(client, http_app, monkeypatch):
+    from XBotv2.config.api.resources import CONFIG_RESOURCES, ConfigurationDocument, ConfigurationResource
+    import XBotv2.config.impl.resources as resource_module
+
+    await client.post("/sessions", json={"session_id": "new-resource", "thread_id": "main"})
+    cleanup = []
+    monkeypatch.setattr(resource_module, "bound_effect", lambda callback: cleanup.append(callback))
+
+    class NewOwner:
+        value = "initial"
+
+        async def catalog(self, ctx):
+            return (ConfigurationResource(id="other:custom", title="Custom", scopes=("session",), format="json"),)
+
+        async def read(self, ctx, resource_id, scope):
+            return ConfigurationDocument(id=resource_id, scope=scope, revision=self.value,
+                                         content={"value": self.value},
+                                         config_schema={"type": "object", "properties": {"value": {"type": "string"}}})
+
+        async def save(self, ctx, document):
+            self.value = document.content["value"]
+            return await self.read(ctx, document.id, document.scope)
+
+    registry = http_app.state.test_context.require(CONFIG_RESOURCES)
+    registry.register("other", NewOwner())
+    base = "/sessions/new-resource/threads/main/configuration"
+    assert any(r["id"] == "other:custom" for r in (await client.get(base)).json()["resources"])
+    url = base + "/other:custom?scope=session"
+    document = (await client.get(url)).json()
+    assert document["config_schema"]["properties"]["value"]["type"] == "string"
+    result = await client.put(url, json={**document, "content": {"value": "updated"}})
+    assert result.json()["content"] == {"value": "updated"}
+    cleanup[0]()
+    assert (await client.get(url)).status_code == 404

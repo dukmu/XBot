@@ -7,10 +7,11 @@ from typing import Any, AsyncIterator, Literal, TypeVar
 from urllib.parse import quote
 import httpx
 from pydantic import JsonValue, TypeAdapter
-from XBotv2.agents.api.protocol import AgentDefinitionNames, AgentDocument, AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
+from XBotv2.agents.api.protocol import AgentListResponse, AgentSelectionRequest, AgentSelectionResponse
 from XBotv2.agentloop.api.protocol import ToolListResponse
-from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, PluginOverlayDocument, SessionPolicyPatch, SessionPolicyResponse
+from XBotv2.config.api.protocol import PermissionDecision, SandboxKey, SandboxValue, SessionPolicyPatch, SessionPolicyResponse
 from XBotv2.config.api.contracts import PatchPluginConfig, PluginConfigCatalog, PluginConfigScope
+from XBotv2.config.api.resources import ConfigurationCatalog, ConfigurationDocument
 from XBotv2.interactions.api.protocol import InteractionResponse, UserInputResponseRequest
 from XBotv2.jobs.api.protocol import JobListResponse, JobStopResponse
 from XBotv2.llm.api.protocol import EffortSelectionRequest, EffortSelectionResponse, ProviderSelectionRequest, ProviderSelectionResponse
@@ -195,14 +196,26 @@ class XBotClient:
             "GET", f"/sessions/{_segment(session_id)}", SessionSummary
         )
 
-    async def list_agent_definitions(self, session_id: str, thread_id: str) -> AgentDefinitionNames:
-        return await self._request("GET", f"{thread_path(session_id, thread_id)}/agent-definitions", AgentDefinitionNames)
+    async def list_configuration(self, session_id: str, thread_id: str) -> ConfigurationCatalog:
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/configuration", ConfigurationCatalog,
+        )
 
-    async def get_agent_document(self, session_id: str, thread_id: str, name: str, *, scope: Literal["global", "workspace"]) -> AgentDocument:
-        return await self._request("GET", f"{thread_path(session_id, thread_id)}/agent-definitions/{_segment(name)}", AgentDocument, params={"scope": scope})
+    async def get_configuration(
+        self, session_id: str, thread_id: str, resource_id: str, *, scope: PluginConfigScope,
+    ) -> ConfigurationDocument:
+        return await self._request(
+            "GET", f"{thread_path(session_id, thread_id)}/configuration/{_segment(resource_id)}",
+            ConfigurationDocument, params={"scope": scope},
+        )
 
-    async def update_agent_document(self, session_id: str, thread_id: str, document: AgentDocument) -> AgentDocument:
-        return await self._request("PUT", f"{thread_path(session_id, thread_id)}/agent-definitions/{_segment(document.name)}", AgentDocument, document)
+    async def save_configuration(
+        self, session_id: str, thread_id: str, document: ConfigurationDocument,
+    ) -> ConfigurationDocument:
+        return await self._request(
+            "PUT", f"{thread_path(session_id, thread_id)}/configuration/{_segment(document.id)}",
+            ConfigurationDocument, document, params={"scope": document.scope},
+        )
 
     async def get_session_policy(self, session_id: str) -> SessionPolicyResponse:
         return await self._request(
@@ -235,12 +248,6 @@ class XBotClient:
                 remove_sandbox=remove_sandbox or [],
             ),
         )
-
-    async def get_plugin_overlay(self, session_id: str, thread_id: str, *, scope: PluginConfigScope) -> PluginOverlayDocument:
-        return await self._request("GET", f"{thread_path(session_id, thread_id)}/plugin-overlay", PluginOverlayDocument, params={"scope": scope})
-
-    async def save_plugin_overlay(self, session_id: str, thread_id: str, document: PluginOverlayDocument) -> PluginOverlayDocument:
-        return await self._request("PUT", f"{thread_path(session_id, thread_id)}/plugin-overlay", PluginOverlayDocument, document)
 
     async def list_plugin_config(
         self,

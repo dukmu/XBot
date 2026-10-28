@@ -10,6 +10,8 @@ from XBotv2.config.api.contracts import (
     SETTINGS,
 )
 from XBotv2.config.impl.service import ConfigService
+from XBotv2.config.api.resources import CONFIG_RESOURCES
+from XBotv2.config.impl.resources import ConfigurationResources, ConfigResources
 from XBotv2.config.impl.seed import ensure_initial_config
 from XBotv2.loader.api.service import LOADER
 from XBotv2.core.api.operations import EmptyRequest
@@ -23,7 +25,7 @@ async def mount_http(ctx: Context) -> None:
         ctx,
         owner="xbot.config.http",
         router=build_router(
-            sessions=ctx.sessions, paths=ctx.runtime_paths, loader=ctx.require(LOADER)
+            sessions=ctx.sessions, paths=ctx.runtime_paths, loader=ctx.require(LOADER), resources=ctx.require(CONFIG_RESOURCES)
         ),
     )
 
@@ -47,6 +49,10 @@ def mount_settings(ctx: Context) -> None:
     ctx.on(UPDATE_POLICY.name, settings.update_policy)
 
 
+def mount_resources(ctx: Context) -> None:
+    ctx.require(CONFIG_RESOURCES).register("config", ConfigResources(ctx.runtime_paths, ctx.require(LOADER)))
+
+
 def mount_process(ctx, config):
     from XBotv2.session.api.storage import FORK_COPY_STATE
     from XBotv2.persistence.api.contracts import PERSISTENCE
@@ -58,14 +64,16 @@ def mount_process(ctx, config):
         event.handled.add("config")
 
     ctx.on(FORK_COPY_STATE, copy_state)
+    ctx.set(CONFIG_RESOURCES, ConfigurationResources())
+    ctx.inject(["runtime_paths", LOADER, CONFIG_RESOURCES], mount_resources)
     ensure_initial_config(ctx.runtime_paths)
-    ctx.inject(["server", "sessions", "runtime_paths", LOADER], mount_http)
+    ctx.inject(["server", "sessions", "runtime_paths", LOADER, CONFIG_RESOURCES], mount_http)
 
 
 from XBotv2.persistence.api.contracts import PERSISTENCE
 
 mount_process.inject = ("runtime_paths", PERSISTENCE)
-mount_process.provide = ()
+mount_process.provide = (CONFIG_RESOURCES,)
 mount_process.Config = ConfigPluginConfig
 
 

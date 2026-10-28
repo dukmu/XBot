@@ -3,12 +3,18 @@
 from __future__ import annotations
 
 import re
+import hashlib
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from pydantic import JsonValue
 import yaml
 from XBotv2.core.api.paths import RuntimePaths
 from XBotv2.loader.api.contracts import PluginOverlay
+
+
+def policy_revision(value: JsonValue) -> str:
+    return hashlib.sha256(json.dumps(value, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
 
 
 def load_session_policy(paths: RuntimePaths, session_id: str) -> dict[str, JsonValue]:
@@ -37,6 +43,7 @@ def patch_session_policy(
     path = paths.session(session_id).config_file
     rows = _read_rows(path)
     permission_config = dict(replace_permissions if replace_permissions is not None else _plugin_config(rows, "permissions"))
+    explicit_empty_rules = "rules" in permission_config and not permission_config["rules"]
     rules = list(permission_config.get("rules", []))
     for tool in (*remove_permissions, *(permissions or {})):
         pattern = re.escape(tool)
@@ -51,7 +58,7 @@ def patch_session_policy(
                 "decision": decision,
             },
         )
-    if rules:
+    if rules or replace_permissions is not None or explicit_empty_rules:
         permission_config["rules"] = rules
     else:
         permission_config.pop("rules", None)
