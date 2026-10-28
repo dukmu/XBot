@@ -8,6 +8,16 @@ screen layout, which no single widget owns.
 from __future__ import annotations
 
 TUI_CSS = """
+* {
+    scrollbar-size: 1 1;
+    scrollbar-color: ansi_bright_black;
+    scrollbar-color-hover: ansi_white;
+    scrollbar-color-active: ansi_white;
+    scrollbar-background: ansi_default;
+    scrollbar-background-hover: ansi_default;
+    scrollbar-background-active: ansi_default;
+    scrollbar-corner-color: ansi_default;
+}
 Screen {
     layout: vertical;
 }
