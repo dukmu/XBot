@@ -650,3 +650,19 @@
 - [x] 边界审查保留三个不同关闭流程：thread 处理子孙/expected，session 处理 opening、拓扑和 owner，all 处理运行根清理。也没有将历史改写事件替换为另一次异步当前页请求：两者没有相同历史版本保证；canonical 小工具参数与显示预览亦有不同信息，增加中间投影不能有效减码。相关候选只读审查，没有引入版本、缓存或补偿状态。
 - [x] 追加两轮共净减生产代码 266 行，测试净减 22 行；相对本条用户请求的 `5c125aa8`，五轮累计生产净减 317 行，除 TODO 外总净减 337 行。没有通过删除既有测试或展示功能凑数。主代理审读最终差异并检查空白错误。
 - [x] 最终代码评估点为 `0f43107277b956e3d44a8a1084dc49561b7b6975`；验证在提交前按当时受影响源码分段执行，后续只提交本日志。没有把分段结果称为该提交的一次全套运行，也没有新增性能或真实 provider 结论。本轮不重复 PTY、压力、wheel 或无关旧套件；用户设计稿和 `.worktrees/` 保留，不推送、不合并 main。
+
+## 13. 三名 Terra 并行判断剩余机会（2026-10-28，只读审查完成）
+
+- [x] 基于 `af58d8d6`，分别审查客户端/Web、运行/物理存储、配置/插件装配；三名均为 Terra，未再派子代理。主代理核对了下面优先候选的源码和消费点。本次只判断，不修改生产代码、不运行测试/构建/基准；仅追加本日志。下述规模全部是估算，不是已实现删减。
+- [x] 三组均未找到证据充分、可直接净删数百行的下一块低风险旧链。大文件和相似结构不等于冗余；已有 22 类 TUI 信封、ACP 打开流程及查询过滤成果不重复审改。
+
+以下是后续候选，尚未实施：
+
+- [ ] **优先：Web 退出旧历史 reducer 路径。** `web/src/state/runtime.ts:180–181,425–440` 的 `history/history_prepend` action 仅被测试构造，实际 `useXBot.ts` 加载均 dispatch `trajectory/trajectory_prepend`。可删两个 action/分支，原有测试中有意义的场景改为实际 trajectory 路径，预计生产净减 18–25 行。`history_updated`、首次 snapshot 的 `historyEntries`、`history_loading` 和游标仍有生产用途，保留。实施时验证 reducer/trajectory 加载、旧页、重连和 undo；不能把整个 history 机制当作死代码。
+- [ ] **明确无消费，但涉及接口：RuntimeConfig.memory。** `agents/impl/service.py:288–302,585–605` 为 runtime_config 的未读 definition 赋值，并额外调用 settings.memory() 填入 `config/api/contracts.py:33–38` 的公开字段；本仓库无该字段消费者，真正请求中的 memory 由 `agentloop/impl/plugin.py:86–97` 独立读取。预计净减 3–8 行并省掉重复文件读取；删除公开模型字段及 port 形参须作为接口变化记录，不能声称完全兼容。实施时验证 Agent bind/activate 与实际 context memory 注入。
+- [ ] **明确无消费查询：TaskStorage.get/completed_page。** `todolist/impl/storage.py:80–128` 的两次 counters SELECT 均丢弃结果。domain.exists 已检查声明的三张表，查询仍经过原只读事务；预计删除约 8 行、每条相应读取路径少一次 SQL。实施时核对 domain transaction 的 owner/损坏错误语义，验证真实任务查询及 completed/fork 分页，不增加另一层校验。
+- [ ] **小收益：图片解码多余返回值。** `coretools/impl/filesystem.py:211–228,253–374` 的三类私有读取函数返回 `(payload, media_type, metadata)`，唯一消费者统一丢弃 metadata。可删 path/url/source 临时字典和相关 source 状态，估计净减 5–10 行。保留大小、HTTP、媒体类型与来源校验；实施时复用 path/base64/data URL/URL/非法输入的现有节点。
+
+- [x] 低优先级：Web 单个 `event` action 也仅被测试使用，生产派发 `events`，但预计仅减 2–3 生产行且测试迁移较大；Web `listMessages` 无仓库调用、约 10 行，但为导出类方法，删除应记录导出接口变化；SQL replace 尾部与 jobs 通知仅约 5–15 行去重机会，抽参可能反而增加阅读跳转，不优先。
+- [x] 暂不推荐：合并 Web 两套轮询（统计观测与终态恢复、频率/失败语义不同）、provider 目录 refcount 与实际 client lease（共享粒度和取消语义不同）、surface/transcript 的前置定位（顺序验证与 compaction lineage 不同）、独立 ArtifactStore 的本地锁（独立使用和发布回滚仍有真实调用）。不为删行引入统一策略框架。
+- [x] 待进一步审查而非可删除结论：`web/src/styles/global.css` 与 `dsh.css` 有样式覆盖，可能比上述零碎项更值得单独看，但存在 responsive/状态选择器和层叠顺序；当前没有 computed styles/实际画面证据，未承诺规模，也不将删除旧 CSS 当作无风险精简。
